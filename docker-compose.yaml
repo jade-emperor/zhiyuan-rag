@@ -1,0 +1,117 @@
+# 端口改造:
+#   1) 宿主端口统一映射到 10086-10091,越常用越靠前:
+#        10086 -> Milvus gRPC 19530   (最关键:SDK / Attu / 测试脚本都连这里)
+#        10087 -> Redis 6379          (直接使用,密码 1234)
+#        10088 -> Milvus HTTP 9091    (WebUI,偶尔用)
+#        10089 -> MinIO S3 9000       (内部使用,基本不直接访问)
+#        10090 -> MinIO 控制台 9001   (内部,基本不用)
+#        10091 -> etcd 2379           (纯内部,基本不用)
+#        10092 -> 3000                (后面加的可视化管理界面工具)
+#      容器内部端口(19530/6379/9091/9000/9001/2379)不变,组件间互连不受影响。
+#   2) 关闭自启动:所有服务都不设 restart 策略(= no),Docker Desktop 启动时
+#      不会自动拉起这些容器;只有手动 docker compose up -d 才启动,不抢内存。
+#   3) 容器 / 网络 / 卷均跟随项目名:不写 container_name、不写网络名,Compose 会自动
+#      按 <项目名>_<服务名> 命名,例如:
+#        容器  rag_platform_standalone / rag_platform_redis / ...
+#        网络  rag_platform_default
+#        卷    rag_platform_etcd_data / rag_platform_milvus_data / ...
+# =============================================================================
+name: rag_platform
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1) etcd —— Milvus 的元数据存储
+  # ---------------------------------------------------------------------------
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_ENABLE_V2=true            # Milvus 2.x 需要 v2 API,不要删
+    ports:
+      - "10091:2379"                   # 纯内部使用;可注释掉这行更安全
+    volumes:
+      - etcd_data:/etcd/data
+    command: >-
+      etcd
+      -advertise-client-urls=http://etcd:2379
+      -listen-client-urls http://0.0.0.0:2379
+      --data-dir /etcd/data
+    # 说明:文档原文 advertise 写的是 http://127.0.0.1:2379,在容器网络里 127.0.0.1
+    # 指向 etcd 容器自身,standalone 可能连不上。这里改为服务名 etcd:2379。
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # 2) MinIO —— 对象存储,存索引文件和 binlog
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin     # 该版本 MinIO 仍用这两个旧变量名,保持与文档一致
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "10089:9000"                   # S3 API(内部使用)
+      - "10090:9001"                   # Web 控制台(基本不用)
+    volumes:
+      - minio_data:/minio/data
+    command: minio server /minio/data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # 3) Milvus standalone —— 向量库本体
+  # ---------------------------------------------------------------------------
+  standalone:
+    image: milvusdb/milvus:v2.4.4
+    command: ["milvus", "run", "standalone"]
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "10086:19530"                  # gRPC / SDK —— 最关键,直接用
+      - "10088:9091"                   # HTTP / WebUI
+    depends_on:
+      - etcd
+      - minio
+
+  # ---------------------------------------------------------------------------
+  # 4) Redis —— 缓存 / 会话记忆
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.2                  # 固定为 7.2(BSD 协议,不随 latest 漂移到 8.x)
+    restart: "no"                     # 不自启动(与其它服务一致)
+    ports:
+      - "10087:6379"                  # 直接使用(密码 1234)
+    volumes:
+      - redis_data:/data
+    command: redis-server --requirepass 1234
+
+  # ---------------------------------------------------------------------------
+  # 5) Attu —— Milvus 图形化管理界面(可选工具,默认不启动)
+  # ---------------------------------------------------------------------------
+  attu:
+    image: zilliz/attu:v2.4.9
+    restart: "no"
+    # profiles: ["tools"]              # 想让 Attu 随项目默认一起启动,注释掉这一行即可
+    environment:
+      - MILVUS_URL=standalone:19530  # 用服务名连 Milvus(在同一个网络里)
+    ports:
+      - "10092:3000"                 # 浏览器访问 http://localhost:10092
+    depends_on:
+      - standalone
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:
+  redis_data:

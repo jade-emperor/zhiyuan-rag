@@ -1,0 +1,10 @@
+env: dev
+log_level: INFO
+log_dir: logs
+
+llm:
+  model: deepseek-flash
+  base_url: https://api.deepseek.com/v1
+  temperature: 0.7
+  max_tokens: 4096
+  timeout_s: 60.0

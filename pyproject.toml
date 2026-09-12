@@ -1,0 +1,86 @@
+# =============================================================================
+# RAG 项目依赖 — 供 uv 使用
+# 组合:Python 3.13 + LangChain 1.4 + 最新稳定版配套包
+# 服务端不变:Milvus 2.4.4(gRPC 宿主 10086)+ Redis 7.2(宿主 10087,密码 1234)
+# =============================================================================
+# 用法:
+#   uv python pin 3.13        # 锁定 Python 3.13
+#   uv sync                   # 解析并安装,生成 uv.lock
+#
+# 说明:
+#   - 全部用「范围约束」,让 uv 解析到互相兼容的最新稳定版;
+#     各下界都是已确认支持 Python 3.13 的版本。
+#   - pymilvus 客户端 >=2.5.7(与 Milvus 2.4.4 服务端兼容);
+#     redis 客户端与 Redis 7.2 服务端兼容。
+# =============================================================================
+
+[project]
+name = "project-rag"
+version = "0.1.0"
+description = "RAG (Python 3.13 + LangChain 1.4 + Milvus 2.4.4 + Redis 7.2)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # ---- LangChain 1.4 主线 ----
+    "langchain>=1.4,<1.5",
+    "langchain-core>=1.6,<2.0",
+    "langchain-community>=0.4.1,<0.6",
+    "langchain-ollama>=1.0,<2.0",
+    "langchain-text-splitters>=1.1,<2.0",
+    "langchain-chroma>=1.1,<2.0",
+    "langchain-unstructured>=1.0,<2.0",
+    "langchain-experimental>=0.4,<0.6",
+    "langgraph>=1.0,<2.0",
+    # ---- 向量库 / 检索(客户端,对应服务端 Milvus 2.4.4 / Redis 7.2)----
+    "pymilvus>=2.5.7,<3.0",
+    "milvus-model>=0.2.5",
+    "chromadb>=1.5.4,<2.0",
+    "faiss-cpu>=1.9.0",
+    "rank-bm25>=0.2.2",
+    "redis>=5.3.1,<7.0",
+    # ---- 大模型 / 嵌入 / 本地推理 ----
+    "ollama>=0.6.0,<1.0",
+    "transformers>=4.52,<5.0",
+    "sentence-transformers>=4.0",
+    "FlagEmbedding>=1.3.5",
+    "peft>=0.18",
+    "modelscope>=1.23",
+    "datasets>=3.3",
+    "tiktoken>=0.7",
+    "sentencepiece>=0.2",
+    # ---- 文档解析 ----
+    "unstructured>=0.16,<1.0",
+    "python-docx>=1.1.2",
+    "python-pptx>=1.0",
+    "PyMuPDF>=1.25",
+    "pillow>=10.4",
+    "opencv-python>=4.10",
+    "rapidocr-onnxruntime>=1.4",
+    # ---- RAG 评估 ----
+    "ragas>=0.3",
+    # ---- 数据 / 通用工具 ----
+    "pandas>=2.3",
+    "numexpr>=2.11",
+    "nltk>=3.9",
+    "wikipedia>=1.4",
+    "jieba>=0.42",
+    "requests>=2.32.5,<3.0",
+    "pymysql>=1.1.1",
+    "addict>=2.4",
+    "simplejson>=3.19",
+    "sortedcontainers>=2.4",
+    "markdown>=3.6",
+    # ---- Web 服务 ----
+    "fastapi>=0.115",
+    "starlette>=0.46",
+    "langchain-deepseek>=1.1.0",
+    "langchain-openai>=1.6.1",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/project_rag"]

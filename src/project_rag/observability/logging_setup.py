@@ -1,0 +1,153 @@
+"""日志地基:统一装配 root logger,日志同时落到控制台与文件。
+
+三个关键设计:
+
+1. ``configure_logging()`` 每次调用都**重建**配置(dictConfig 的 force=True),
+   而不是「首次生效后短路」——既保证重复调用不叠加 handler,又保证换一份
+   settings 能立刻生效(单测/验收就是靠这个注入临时 log_dir 的)。
+2. ``log_dir`` 是相对路径时相对**项目根**(PROJECT_ROOT),不是当前工作目录(CWD)。
+3. ``disable_existing_loggers=False``:不去 disable 已经存在的 logger,
+   否则第三方库和业务模块的日志会被静默吞掉(和 YAML 前缀那个坑同类的静默失败)。
+"""
+
+from __future__ import annotations
+
+import logging
+import logging.config
+import logging.handlers  # dictConfig 要靠它把字符串 class 解析成类
+from pathlib import Path
+
+# 导入Settings是纯标注依赖,让pydantic等模块知道这个类
+from project_rag.config import PROJECT_ROOT, Settings, get_settings
+
+# 这些库默认爱刷 DEBUG/INFO,将这些库的日志等级抬到 WARNING 以上,避免把日志文件淹掉,日志文件只存业务日志。
+# 日志输出级别:DEBUG < INFO < WARNING < ERROR < CRITICAL,设置的等级表示最低放行标准
+NOISY_LOGGERS: tuple[str, ...] = (
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "requests",
+    "openai",
+    "grpc",
+    "pymilvus",
+    "chromadb",
+    "transformers",
+    "sentence_transformers",
+    "FlagEmbedding",
+    "PIL",
+    "matplotlib",
+    "numexpr",
+    "asyncio",
+)
+# 设置命名空间,统一前缀
+LOGGER_NAMESPACE = "project_rag"
+# 日志文件名
+LOG_FILE_NAME = "app.log"
+# 日志文件单个最大10M,写满了将当前文件命名为app.log.1,再写入新的日志文件app.log.再写满就app.log.1变app.log.2依此类推.
+# 最多5个旧日志,超过了旧删除最老的,只留5个.
+_MAX_BYTES = 10 * 1024 * 1024
+_BACKUP_COUNT = 5
+
+# 定义日志文件的格式长什么样子
+_FILE_FORMAT = (
+    "%(asctime)s | %(levelname)-8s | %(name)s | "
+    "%(process)d:%(threadName)s | %(message)s"
+)
+# 定义控制台的格式长什么样子
+_CONSOLE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+
+# 获得日志文件的绝对路径,如果是相对路径,会拼上项目根路径,这里就是只传入了logs(如果不手动传入settings的话)
+def resolve_log_file(settings: Settings) -> Path:
+    """把 settings.log_dir 解析成日志文件的绝对路径(相对路径按项目根算)。"""
+
+    # 如果路径想放在项目外使用~,会将~替换为用户目录(如果没传~的话,则这行代码无操作,直接是settings.log_dir)
+    log_dir = Path(settings.log_dir).expanduser()
+    # 如果是相对路径,拼上项目根路径
+    if not log_dir.is_absolute():
+        log_dir = PROJECT_ROOT / log_dir
+    # 拼上具体的文件名字
+    return log_dir / LOG_FILE_NAME
+
+
+# 将settings中配置翻译成dictConfig函数需要传入的字典
+# {
+#     "version": 1,                      ← 必须，固定为 1
+#     "disable_existing_loggers": False, ← 是否禁用已有 logger
+#     "formatters": {...},               ← 每行长什么样包括控制台和文件里
+#     "handlers": {...},                 ← 输出到哪
+#     "loggers": {...},                  ← 按名字配置的 logger
+#     "root": {...},                     ← 根 logger
+#     "force": True,                     ← 是否清掉旧配置重建
+# }
+def build_logging_config(settings: Settings, log_file: Path | None = None) -> dict:
+    """把 settings 翻译成 dictConfig 要的字典;单独抽出来便于单测。"""
+    # 这里获得日志文件的绝对路径,如果千前面代码不出错,这里就应该传入了这个参数流settings中的兜底
+    log_file = log_file or resolve_log_file(settings)
+    return {
+        "version": 1,
+        # 关键:别把别人的 logger 静默关掉
+        "disable_existing_loggers": False,
+        "formatters": {  # 定义格式
+            "file": {"format": _FILE_FORMAT, "datefmt": "%Y-%m-%d %H:%M:%S"},
+            "console": {"format": _CONSOLE_FORMAT, "datefmt": "%H:%M:%S"},
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",  # 使用哪个handler类
+                "formatter": "console",  # 使用formatters中哪个格式
+                "stream": "ext://sys.stderr",  # 传给handler的参数
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "formatter": "file",
+                "filename": str(log_file),  # 通过路径获得文件名字
+                # 必须追加:切成 WARNING 重建配置时,不能把前面的日志清掉
+                "mode": "a",
+                "maxBytes": _MAX_BYTES,
+                "backupCount": _BACKUP_COUNT,
+                "encoding": "utf-8",
+                "delay": True,  # 真正写第一条日志时才建文件
+            },
+        },
+        "root": {
+            "level": settings.log_level.upper(),  # 根 logger 的日志级别,upper()转大写
+            "handlers": ["console", "file"],  # 调用顺序：日志记录先给 console再给file。
+        },
+        "loggers": {  # 提升这些库的日志等级为warning,别让这些库刷debug和info
+            name: {"level": "WARNING", "propagate": True} for name in NOISY_LOGGERS
+        },
+        "force": True,  # 每次调用都清掉旧 handler 重建
+    }
+
+
+# 整个日志模块的入口函数,输入settings(传入的优先级高但是一般不用).
+def configure_logging(settings: Settings | None = None) -> None:
+    """按 settings 重建 root logger 配置;不传就用 get_settings()。"""
+    # 获取日志的配置,配置和绝对路径传入build_logging_config函数,获得配置字典
+    settings = settings or get_settings()
+    # 获得存放的日志文件的绝对路径
+    log_file = resolve_log_file(settings)
+    # 如果日志文件的父目录不存在,则创建父目录
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    # 将转化的配置字典传入dictConfig函数,进行日志的全局配置
+    logging.config.dictConfig(build_logging_config(settings, log_file))
+
+
+# 业务代码调用的函数,传入该日志的名字,返回logger日志对象.注:子节点会继承父节点的日志级别
+def get_logger(name: str | None = None) -> logging.Logger:
+    """取 project_rag 命名空间下的 logger:get_logger("ingest") -> project_rag.ingest"""
+    # logging模块维护的是一颗树,logger对象是树中的节点,用名字和点划分父子关系以及分支
+    if not name:
+        return logging.getLogger(LOGGER_NAMESPACE)
+    # 如果传入的名字是根名,或者是以根名开头的,则不要反复拼前缀(也就是根名)
+    if name == LOGGER_NAMESPACE or name.startswith(f"{LOGGER_NAMESPACE}."):
+        return logging.getLogger(name)
+    # 自动拼接前缀,这也是日常应该使用的方式
+    return logging.getLogger(f"{LOGGER_NAMESPACE}.{name}")
+
+
+if __name__ == "__main__":
+    configure_logging()
+    logger = get_logger()  # 没传入参数用根名,传入了用传入名(或者自动拼接根名前缀)
+    logger.info("hello world")
