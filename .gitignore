@@ -11,8 +11,5 @@ logs/
 # Virtual environments
 .venv
 
-# 临时文件夹
-tests/
-
 # 存放密钥等
 .env

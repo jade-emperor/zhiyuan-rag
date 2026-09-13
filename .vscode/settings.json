@@ -1,0 +1,29 @@
+{
+  // 从资源管理器隐藏 Python 缓存/构建产物（只影响显示，不删除磁盘文件）
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/*.pyo": true,
+    "**/*.pyd": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/.ipynb_checkpoints": true
+  },
+
+  // 搜索（Ctrl+Shift+F）也一并跳过
+  "search.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true
+  },
+
+  // Pylance 索引不包含这些目录，减少内存占用与误报
+  "python.analysis.exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/.pytest_cache"
+  ]
+}

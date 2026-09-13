@@ -17,10 +17,10 @@ import logging.config
 import logging.handlers  # dictConfig 要靠它把字符串 class 解析成类
 from pathlib import Path
 
-# 导入Settings是纯标注依赖,让pydantic等模块知道这个类
+# 导入Settings是纯标注依赖,给静态类型检查和 get_type_hints 用;运行时不会被求值
 from project_rag.config import PROJECT_ROOT, Settings, get_settings
 
-# 这些库默认爱刷 DEBUG/INFO,将这些库的日志等级抬到 WARNING 以上,避免把日志文件淹掉,日志文件只存业务日志。
+# 这些库默认爱刷 DEBUG/INFO,将这些库的日志等级抬到 WARNING 以上,只有error和critical会输出。
 # 日志输出级别:DEBUG < INFO < WARNING < ERROR < CRITICAL,设置的等级表示最低放行标准
 NOISY_LOGGERS: tuple[str, ...] = (
     "httpx",
@@ -82,7 +82,7 @@ def resolve_log_file(settings: Settings) -> Path:
 # }
 def build_logging_config(settings: Settings, log_file: Path | None = None) -> dict:
     """把 settings 翻译成 dictConfig 要的字典;单独抽出来便于单测。"""
-    # 这里获得日志文件的绝对路径,如果千前面代码不出错,这里就应该传入了这个参数流settings中的兜底
+    # 这里获得日志文件的绝对路径,如果前面代码不出错,这里应该传入了
     log_file = log_file or resolve_log_file(settings)
     return {
         "version": 1,
@@ -130,11 +130,11 @@ def configure_logging(settings: Settings | None = None) -> None:
     log_file = resolve_log_file(settings)
     # 如果日志文件的父目录不存在,则创建父目录
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    # 将转化的配置字典传入dictConfig函数,进行日志的全局配置
+    # 核心代码:将转化的配置字典传入dictConfig函数,进行日志的全局配置
     logging.config.dictConfig(build_logging_config(settings, log_file))
 
 
-# 业务代码调用的函数,传入该日志的名字,返回logger日志对象.注:子节点会继承父节点的日志级别
+# 业务代码调用的函数,传入该日志的名字,返回logger日志对象.注:子节点如果没设置会找最近设置了的祖先节点的日志级别
 def get_logger(name: str | None = None) -> logging.Logger:
     """取 project_rag 命名空间下的 logger:get_logger("ingest") -> project_rag.ingest"""
     # logging模块维护的是一颗树,logger对象是树中的节点,用名字和点划分父子关系以及分支
