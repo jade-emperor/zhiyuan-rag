@@ -20,7 +20,8 @@
 * 日志文件 = ``<PROJECT_ROOT>/<settings.log_dir>/app.log``；
   ``log_dir`` 是相对路径时相对**项目根**，不是当前工作目录（CWD）。
 * 目录不存在时自动创建。
-* 级别取自 ``settings.log_level``。
+* 级别取自 ``settings.root_log_level``（root 是第一道阀门），
+  ``console_log_level`` / ``file_log_level`` 再各自过滤一层。
 * 第三方库（httpx / urllib3 / pymilvus 等）的日志级别被抬到 WARNING 以上，
   避免把整个日志文件淹掉。
 """
@@ -28,12 +29,14 @@
 from __future__ import annotations
 
 import importlib
+import io
 import logging
 
 import subprocess
 import sys
 import tempfile
 import uuid
+from contextlib import redirect_stderr
 from pathlib import Path
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
@@ -84,7 +87,7 @@ def root_handlers() -> tuple[list[logging.Handler], list[logging.Handler]]:
 
 
 def configure_at(module, **overrides):
-    """用一份临时 Settings 装配日志，overrides 覆盖 log_level / log_dir 等字段。"""
+    """用一份临时 Settings 装配日志，overrides 覆盖 root_log_level / log_dir 等字段。"""
     from project_rag.config import Settings
 
     return module.configure_logging(Settings(**overrides))
@@ -158,9 +161,15 @@ def _() -> str:
     low, high = f"dbg-{uuid.uuid4().hex}", f"warn-{uuid.uuid4().hex}"
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            configure_at(module, log_level="DEBUG", log_dir=tmp)
+            # 三个级别全部显式钉死：本检查只测 root 这道阀门，
+            # 绝不能依赖 config.yaml 里恰好写了什么，否则脚本会「碰巧通过」
+            configure_at(
+                module, root_log_level="DEBUG", file_log_level="DEBUG", log_dir=tmp
+            )
             module.get_logger("acceptance").debug("debug 检查 %s", low)
-            configure_at(module, log_level="WARNING", log_dir=tmp)
+            configure_at(
+                module, root_log_level="WARNING", file_log_level="DEBUG", log_dir=tmp
+            )
             module.get_logger("acceptance").debug("debug 检查 %s", high)
             for handler in logging.getLogger().handlers:
                 handler.flush()
@@ -172,6 +181,40 @@ def _() -> str:
         finally:
             module.configure_logging()
     return "DEBUG 进 / WARNING 挡"
+
+
+@check("控制台与文件级别可各自独立设置（root 只做第一道阀门）")
+def _() -> str:
+    module = api()
+    dbg, wrn = f"onlyfile-{uuid.uuid4().hex}", f"both-{uuid.uuid4().hex}"
+    with tempfile.TemporaryDirectory() as tmp:
+        buf = io.StringIO()
+        try:
+            # console handler 绑的是配置那一刻的 sys.stderr，所以重定向要包住 configure 调用
+            with redirect_stderr(buf):
+                configure_at(
+                    module,
+                    root_log_level="NOTSET",
+                    console_log_level="WARNING",
+                    file_log_level="DEBUG",
+                    log_dir=tmp,
+                )
+                log = module.get_logger("acceptance")
+                log.debug("只该进文件 %s", dbg)
+                log.warning("两边都该有 %s", wrn)
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+            text = (Path(tmp) / "app.log").read_text(encoding="utf-8")
+            console = buf.getvalue()
+            if dbg not in text:
+                raise AssertionError("file_log_level=DEBUG，但 debug 没进文件")
+            if dbg in console:
+                raise AssertionError("console_log_level=WARNING，但 debug 仍打到控制台")
+            if wrn not in text or wrn not in console:
+                raise AssertionError("warning 应该同时进文件和屏幕")
+        finally:
+            module.configure_logging()
+    return "file=DEBUG / console=WARNING 各自生效"
 
 
 # ── 3. log_dir 的基准目录 ─────────────────────────────────────────────────────

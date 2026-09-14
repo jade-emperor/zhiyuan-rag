@@ -1,6 +1,8 @@
 env: dev
-log_level: INFO
-log_dir: logs
+root_log_level: NOTSET # 根日志等级,这是第一道阀门,开发环境可以调整为DEBUG,生产环境要提高等级,或者将设置权力交给handler
+console_log_level: INFO # 控制台日志等级
+file_log_level: DEBUG # 文件日志等级,先通过root过滤,如果root设置为INFO,这里设置为DEBUG也不会写入DEBUG的日志
+log_dir: logs 
 
 llm:
   model: deepseek-flash

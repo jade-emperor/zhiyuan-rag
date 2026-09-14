@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 # 项目根目录的路径和配置文件的路径,我这里的配置优先级：传入参数(如果传入参数) > 环境变量 > .env文件 > 配置文件 > 默认值
@@ -28,17 +28,28 @@ class Settings(BaseSettings):
         env_file=ENV_FILE,  # .env文件路径 ,这是第三优先级,第一优先级是传入的参数,第二优先级是环境变量
         env_prefix="RAG_",  # 环境变量写前缀防止全局命名冲突,加前缀声明去匹配,不匹配.yaml,主要用于环境变量注入
         env_nested_delimiter="__",  # 嵌套配置的分隔符,默认是.是读取环境变量的嵌套结构的时候用的,我这里没使用
-        yaml_file=CONFIG_FILE,  # 给 配置文件的路径
         extra="ignore",  # 忽略多传入的字段
     )
     # 这些属性当成类属性的时候统一都是默认值,当成实例的时候会使用显示传入的参数,没有传入的才使用默认值
     # 以下数据必须符合类型,否则会报错,但是可以不传入,默认值会自动生效
     # 声明敏感信息,在日志或者直接打印等情况下,会变成******,字段名必须和.env文件中的字段名一致,但是对大小写不敏感
-    deepseek_api_key: SecretStr = Field(..., alias="DEEPSEEK_API_KEY")  # 不进行前缀匹配
+    deepseek_api_key: SecretStr = Field(
+        default=SecretStr(""), alias="DEEPSEEK_API_KEY"
+    )  # 不进行前缀匹配
+
+    # 验证器,这个方法会自动被调用,验证DEEPSEEK_API_KEY字段的值,如果为空,会抛出异常
+    @field_validator("deepseek_api_key")
+    @classmethod
+    def _require_key(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value():
+            raise ValueError("DEEPSEEK_API_KEY 未设置或为空")
+        return v
 
     # 普通配置,优先传入的,若没有传入则使用下面定义的默认配置
     env: str = "dev"  # 声明当前环境是开发环境
-    log_level: str = "INFO"  # 日志级别设置为正常信息
+    root_log_level: str = "INFO"  # 日志级别默认设置为正常信息
+    console_log_level: str = "INFO"
+    file_log_level: str = "INFO"
     log_dir: str = "logs"  # 日志保存目录,这里指项目根目录下的logs目录
 
     # 嵌套配置,通过类型注解声明要把llm字典转化为LLMConfig类型的对象,自动将字典解包传入这个类中,若没有传入则使用默认值
@@ -59,7 +70,8 @@ class Settings(BaseSettings):
             env_settings,  # 2. 环境变量
             dotenv_settings,  # 3. .env
             file_secret_settings,
-            YamlConfigSettingsSource(settings_cls),  # 4. yaml文件,要主动添加,优先级第五
+            # 4. 优先级第五,并且给他配置文件的路径
+            YamlConfigSettingsSource(settings_cls, yaml_file=CONFIG_FILE),
         )
 
 
@@ -67,10 +79,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     # Settings类返回最终的配置类
-    # 以 model_config 里的 yaml_file 为准(唯一事实来源),这样验证的就是「真正会被读的那个文件」;
-    # 而不是另抄一份路径常量——两份路径一旦不一致,YamlConfigSettingsSource 会静默回退成空配置。不过这里的两个路径是相同的
     yaml_file = Settings.model_config.get("yaml_file") or CONFIG_FILE
-    if not Path(yaml_file).exists():
+    if not CONFIG_FILE.exists():
         raise FileNotFoundError(f"配置文件不存在：{yaml_file}")
     return Settings()
 

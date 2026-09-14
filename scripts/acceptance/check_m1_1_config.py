@@ -169,13 +169,14 @@ def _() -> str:
     return "0.1"
 
 
-@check(f"顶层字段可被环境变量覆盖（{ENV_PREFIX}LOG_LEVEL=DEBUG）")
+@check(f"顶层字段可被环境变量覆盖（{ENV_PREFIX}ROOT_LOG_LEVEL=DEBUG）")
 def _() -> str:
-    with env(**{f"{ENV_PREFIX}LOG_LEVEL": "DEBUG"}):
-        value = api().Settings().log_level
+    with env(**{f"{ENV_PREFIX}ROOT_LOG_LEVEL": "DEBUG"}):
+        value = api().Settings().root_log_level
     if value != "DEBUG":
         raise AssertionError(
-            f"期望 DEBUG，实际 {value}（检查 env_prefix 是否为 '{ENV_PREFIX}'）"
+            f"期望 DEBUG，实际 {value}（检查 env_prefix 是否为 '{ENV_PREFIX}'、"
+            "以及字段名是否还叫 root_log_level）"
         )
     return "DEBUG"
 
@@ -223,11 +224,16 @@ def _() -> str:
     module = api()
     sentinel = Path(tempfile.gettempdir()) / "definitely-missing-config.yaml"
     settings_cls = module.Settings
-    saved_const = module.CONFIG_FILE
     saved_cfg = dict(settings_cls.model_config)
+    # 校验可能读包上的常量，也可能读实现模块里的常量——把两个命名空间都打上补丁，
+    # 这样脚本不依赖「常量定义在哪个文件」这种内部细节
+    patched: list[tuple[object, Path]] = []
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("project_rag.config") and hasattr(mod, "CONFIG_FILE"):
+            patched.append((mod, mod.CONFIG_FILE))
+            mod.CONFIG_FILE = sentinel
+    settings_cls.model_config["yaml_file"] = sentinel
     try:
-        module.CONFIG_FILE = sentinel
-        settings_cls.model_config["yaml_file"] = sentinel
         module.get_settings.cache_clear()
         try:
             module.get_settings()
@@ -238,7 +244,8 @@ def _() -> str:
             "不要放在模块导入时——否则 Settings 无法被单测直接构造"
         )
     finally:
-        module.CONFIG_FILE = saved_const
+        for mod, original in patched:
+            mod.CONFIG_FILE = original
         settings_cls.model_config.clear()
         settings_cls.model_config.update(saved_cfg)
         module.get_settings.cache_clear()

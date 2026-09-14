@@ -1,5 +1,5 @@
 # 端口改造:
-#   1) 宿主端口统一映射到 10086-10091,越常用越靠前:
+#   1) 宿主端口统一映射到 10086-10093,越常用越靠前:
 #        10086 -> Milvus gRPC 19530   (最关键:SDK / Attu / 测试脚本都连这里)
 #        10087 -> Redis 6379          (直接使用,密码 1234)
 #        10088 -> Milvus HTTP 9091    (WebUI,偶尔用)
@@ -7,6 +7,7 @@
 #        10090 -> MinIO 控制台 9001   (内部,基本不用)
 #        10091 -> etcd 2379           (纯内部,基本不用)
 #        10092 -> 3000                (后面加的可视化管理界面工具)
+#        10093 -> MySQL 3306          (宿主 10093 -> 容器 3306)
 #      容器内部端口(19530/6379/9091/9000/9001/2379)不变,组件间互连不受影响。
 #   2) 关闭自启动:所有服务都不设 restart 策略(= no),Docker Desktop 启动时
 #      不会自动拉起这些容器;只有手动 docker compose up -d 才启动,不抢内存。
@@ -97,7 +98,37 @@ services:
     command: redis-server --requirepass 1234
 
   # ---------------------------------------------------------------------------
-  # 5) Attu —— Milvus 图形化管理界面(可选工具,默认不启动)
+  # 5) MySQL —— FAQ 问答对等结构化数据
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.0                 # 8.0 是长期维护线;要绝对确定可钉 mysql:8.0.43
+    restart: "no"                    # 与其他服务一致:不随 Docker Desktop 自启
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-1234}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag}
+      MYSQL_USER: ${MYSQL_USER:-rag}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-1234}
+      TZ: Asia/Shanghai
+    ports:
+      - "10093:3306"                 # 宿主 10093 -> 容器 3306
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 想让容器首次启动自动建表/灌 FAQ:把 .sql 放进 ./docker/mysql/init/ 并打开下一行
+      # - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    # 必须写成「列表」形式,不能写成一行字符串——见下方说明
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+
+  # ---------------------------------------------------------------------------
+  # 6) Attu —— Milvus 图形化管理界面(可选工具,可以考虑默认不启动)
   # ---------------------------------------------------------------------------
   attu:
     image: zilliz/attu:v2.4.9
@@ -115,3 +146,4 @@ volumes:
   minio_data:
   milvus_data:
   redis_data:
+  mysql_data:

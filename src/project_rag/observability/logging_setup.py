@@ -1,4 +1,6 @@
 """日志地基:统一装配 root logger,日志同时落到控制台与文件。
+关键函数:
+    (1)configure_logging()进行全局日志配置。(2)get_logger(参数)获得logger日志对象。
 
 三个关键设计:
 
@@ -86,7 +88,7 @@ def build_logging_config(settings: Settings, log_file: Path | None = None) -> di
     log_file = log_file or resolve_log_file(settings)
     return {
         "version": 1,
-        # 关键:别把别人的 logger 静默关掉
+        # 关键:别把别人(第三方库)的 logger 静默关掉
         "disable_existing_loggers": False,
         "formatters": {  # 定义格式
             "file": {"format": _FILE_FORMAT, "datefmt": "%Y-%m-%d %H:%M:%S"},
@@ -96,25 +98,29 @@ def build_logging_config(settings: Settings, log_file: Path | None = None) -> di
             "console": {
                 "class": "logging.StreamHandler",  # 使用哪个handler类
                 "formatter": "console",  # 使用formatters中哪个格式
-                "stream": "ext://sys.stderr",  # 传给handler的参数
+                "stream": "ext://sys.stderr",  # stream参数绑定sys.stderr对象,有等价写法
+                "level": settings.console_log_level.upper(),  # 单独设置控制台日志级别
             },
             "file": {
                 "class": "logging.handlers.RotatingFileHandler",
                 "formatter": "file",
-                "filename": str(log_file),  # 通过路径获得文件名字
-                # 必须追加:切成 WARNING 重建配置时,不能把前面的日志清掉
+                "filename": str(log_file),  # log_file是Path对象,这里要求输入的是字符串
+                # 必须追加:切成 WARNING 重建配置时,不能把前面的日志清掉,且不存在时构建
                 "mode": "a",
                 "maxBytes": _MAX_BYTES,
                 "backupCount": _BACKUP_COUNT,
                 "encoding": "utf-8",
                 "delay": True,  # 真正写第一条日志时才建文件
+                "level": settings.file_log_level.upper(),
             },
         },
         "root": {
-            "level": settings.log_level.upper(),  # 根 logger 的日志级别,upper()转大写
+            # 根 logger 的日志级别,upper()转大写,先经过root过滤,再经过handlers过滤,也可以通过loggers单独设计级别绕过root
+            "level": settings.root_log_level.upper(),
             "handlers": ["console", "file"],  # 调用顺序：日志记录先给 console再给file。
         },
-        "loggers": {  # 提升这些库的日志等级为warning,别让这些库刷debug和info
+        # 这里可以单独设置日志级别
+        "loggers": {  # 提升这些库的日志等级为warning,别让这些库刷debug和info,字典推导式写法
             name: {"level": "WARNING", "propagate": True} for name in NOISY_LOGGERS
         },
         "force": True,  # 每次调用都清掉旧 handler 重建
@@ -151,3 +157,4 @@ if __name__ == "__main__":
     configure_logging()
     logger = get_logger()  # 没传入参数用根名,传入了用传入名(或者自动拼接根名前缀)
     logger.info("hello world")
+    logger.debug("这是一段debug信息")
