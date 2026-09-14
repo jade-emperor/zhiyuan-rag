@@ -7,7 +7,6 @@ wheels/
 *.egg-info
 *.ses
 logs/
-docs/
 
 # Virtual environments
 .venv

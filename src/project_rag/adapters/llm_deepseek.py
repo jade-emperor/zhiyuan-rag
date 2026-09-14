@@ -1,7 +1,7 @@
 """DeepSeek 适配器:全项目唯一 import langchain 的地方。
 
 两件事都只在这里做:领域类型 <-> SDK 类型的转换、发请求。
-异常不在这里吞 —— 翻译成人话是 interfaces 层的事。
+异常不在这里吞 —— 翻译成人话是 cli 层的事。
 """
 
 from __future__ import annotations

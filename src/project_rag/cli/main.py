@@ -1,6 +1,6 @@
 """命令行入口。只做:建解析器 → 装配进程级依赖 → 分发。
 
-子命令本体都在 interfaces/commands/ 下,一个模块一个子命令,
+子命令本体都在 cli/commands/ 下,一个模块一个子命令,
 所以这个文件不会随着子命令变多而变长。
 """
 
@@ -10,7 +10,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from project_rag.interfaces import commands
+from project_rag.cli import commands
 from project_rag.observability import configure_logging, get_logger
 from project_rag.ports import LLMClient
 

@@ -92,4 +92,4 @@ dev = [
 
 [project.scripts]
 # 构建映射,通过project-rag可以找到cli()函数
-project-rag = "project_rag.interfaces.cli:cli"
+project-rag = "project_rag.cli.main:cli"

@@ -100,15 +100,19 @@ def _public():
 def api():
     """给各检查项用的导入入口。
 
-    公开入口不可用时**降级**到内部模块，好让「优先级」「嵌套字段」这些独立问题
+    公开入口不可用时**降级**到实现模块，好让「优先级」「嵌套字段」这些独立问题
     照常暴露出来，而不是被第一条失败全部掩盖。降级会记录在报告末尾。
+
+    注意：这里只 import 包路径 `project_rag.config`，**不写死内部文件名**
+    （曾经写死过 project_rag.config.setting，config 包拍平成 config.py 后立刻失效——
+    这条正是"内部文件名可以随便改"的反面教材）。
     """
     global _FALLBACK_NOTE
     try:
         return _public()
     except Exception as exc:  # noqa: BLE001
         _FALLBACK_NOTE = str(exc)
-        module = importlib.import_module("project_rag.config.setting")
+        module = importlib.import_module("project_rag.config")
         missing = [
             n
             for n in ("Settings", "get_settings", "CONFIG_FILE")
@@ -120,9 +124,7 @@ def api():
 
 
 # ── 1. 包结构与单例 ────────────────────────────────────────────────────────────
-@check(
-    "公开入口可导入（from project_rag.config.setting import Settings, get_settings, CONFIG_FILE）"
-)
+@check("公开入口可导入（from project_rag.config import Settings, get_settings, CONFIG_FILE）")
 def _() -> str:
     module = _public()
     return f"{module.__name__} @ {Path(module.__file__).parent if module.__file__ else '?'}"
@@ -288,24 +290,30 @@ def _() -> str:
 
 @check("源码与日志中不含明文密钥")
 def _() -> str:
-    settings = api().Settings()
+    module = api()
+    settings = module.Settings()
     secret = settings.deepseek_api_key.get_secret_value()
-    root = Path(api().__file__).resolve().parents[2]  # src/
+    # 不再用 parents[N] 做算术：config 从包拍平成模块时，parents[2] 会悄悄从 src/ 变成仓库根，
+    # 于是扫描范围扩大到 .venv 并误报。改用包的目录 + 公开的 PROJECT_ROOT。
+    src_root = Path(module.__file__).resolve().parent  # src/project_rag
+    logs_root = Path(module.PROJECT_ROOT) / "logs"
+    sources = list(src_root.rglob("*.py"))
+    logs = [p for p in logs_root.rglob("*") if p.is_file()] if logs_root.is_dir() else []
     offenders = [
         str(p)
-        for p in list(root.rglob("*.py")) + list((root.parent / "logs").rglob("*"))
-        if p.is_file() and (secret in p.read_text(encoding="utf-8", errors="ignore"))
+        for p in sources + logs
+        if secret in p.read_text(encoding="utf-8", errors="ignore")
     ]
     pattern_hits = [
         str(p)
-        for p in root.rglob("*.py")
+        for p in sources
         if re.search(
             r"sk-[A-Za-z0-9]{8,}", p.read_text(encoding="utf-8", errors="ignore")
         )
     ]
     if offenders or pattern_hits:
         raise AssertionError(f"疑似泄漏：{offenders + pattern_hits}")
-    return "干净"
+    return f"干净（扫描 {len(sources)} 个源文件 + {len(logs)} 个日志文件）"
 
 
 # ── 7. 与工作目录无关 ─────────────────────────────────────────────────────────
@@ -316,7 +324,7 @@ def _() -> str:
             [
                 sys.executable,
                 "-c",
-                "from project_rag.config.setting import get_settings;"
+                "from project_rag.config import get_settings;"
                 "s=get_settings();print(len(s.deepseek_api_key.get_secret_value()))",
             ],
             cwd=tmp,

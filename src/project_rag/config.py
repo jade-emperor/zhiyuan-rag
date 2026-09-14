@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 # 项目根目录的路径和配置文件的路径,我这里的配置优先级：传入参数(如果传入参数) > 环境变量 > .env文件 > 配置文件 > 默认值
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# 本文件位于 src/project_rag/config.py,所以 parents[0]=project_rag, [1]=src, [2]=项目根
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = PROJECT_ROOT / "config" / "config.yaml"
 ENV_FILE = PROJECT_ROOT / ".env"
 
@@ -83,6 +84,15 @@ def get_settings() -> Settings:
     if not CONFIG_FILE.exists():
         raise FileNotFoundError(f"配置文件不存在：{yaml_file}")
     return Settings()
+
+
+__all__ = [
+    "CONFIG_FILE",
+    "ENV_FILE",
+    "PROJECT_ROOT",
+    "Settings",
+    "get_settings",
+]
 
 
 if __name__ == "__main__":

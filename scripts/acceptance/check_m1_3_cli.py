@@ -7,9 +7,14 @@
 
 固化的公开契约：
 
-* ``from project_rag.interfaces import cli``
-  ``cli(argv: list[str] | None = None, *, llm_factory: Callable[[], LLMClient] | None = None) -> int``
+* ``from project_rag.cli import cli, Deps``
+  ``cli(argv: list[str] | None = None, *, deps: Deps | None = None) -> int``
   返回进程退出码，自己不要 ``sys.exit``；用法错误交给 argparse 抛 ``SystemExit(2)``。
+
+  ``deps=None`` = 真实装配（读 Settings、装日志）；传入 ``Deps`` = 不读 .env、不装日志、不联网。
+  ``Deps`` 的字段与默认值由 ``check_m2_faq.py``（M2 契约）固化；M1.3 只用它的 ``llm_factory``::
+
+      Deps(llm_factory=lambda: FakeLLM())
 * 子命令 ``chat``：``-p/--prompt`` 必填；用户提问必须以 **user** 角色送出。
 * 分层（静态扫描，不靠自觉）：
   - ``domain/`` 只准出现标准库；
@@ -59,12 +64,29 @@ def check(name: str):
 
 
 def cli_api():
-    module = importlib.import_module("project_rag.interfaces")
+    module = importlib.import_module("project_rag.cli")
     if not hasattr(module, "cli"):
         raise AssertionError(
-            "project_rag.interfaces 没有导出 cli；请在 interfaces/__init__.py 里 re-export"
+            "project_rag.cli 没有导出 cli；请在 cli/__init__.py 里 re-export"
         )
     return module.cli
+
+
+def deps_api():
+    """M2 起组合根换成 Deps dataclass（替换 llm_factory 关键字）。"""
+    module = importlib.import_module("project_rag.cli")
+    if not hasattr(module, "Deps"):
+        raise AssertionError(
+            "project_rag.cli 没有导出 Deps；"
+            "M2 契约（check_m2_faq.py）要求 cli(argv, *, deps: Deps | None = None)，"
+            "并在 cli/__init__.py 里 re-export"
+        )
+    return module.Deps
+
+
+def inject(deps_cls, fake) -> object:
+    """把假 LLM 包成注入用的 Deps；只给 llm_factory，其余依赖不该被 chat 碰到。"""
+    return deps_cls(llm_factory=lambda: fake)
 
 
 class FakeLLM:
@@ -96,10 +118,10 @@ def run_cli(argv: list[str]) -> subprocess.CompletedProcess:
 
 
 # ── 1. 接口与用法 ─────────────────────────────────────────────────────────────
-@check("公开入口可导入（from project_rag.interfaces import cli）")
+@check("公开入口可导入（from project_rag.cli import cli）")
 def _() -> str:
     cli_api()
-    return "project_rag.interfaces.cli"
+    return "project_rag.cli.cli"
 
 
 @check("python -m project_rag --help 退出码 0")
@@ -124,13 +146,13 @@ def _() -> str:
 
 
 # ── 2. 依赖注入：整条链路可测 ──────────────────────────────────────────────────
-@check("注入 FakeLLM 后能跑通并返回 0（不联网、不读 .env）")
+@check("注入 Deps(FakeLLM) 后能跑通并返回 0（不联网、不读 .env）")
 def _() -> str:
     cli = cli_api()
     fake = FakeLLM()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        code = cli(["chat", "-p", "介绍一下 Milvus"], llm_factory=lambda: fake)
+        code = cli(["chat", "-p", "介绍一下 Milvus"], deps=inject(deps_api(), fake))
     if code != 0:
         raise AssertionError(f"退出码应为 0，实际 {code}")
     if buf.getvalue().strip() != "".join(fake.chunks):
@@ -144,7 +166,7 @@ def _() -> str:
     fake = FakeLLM()
     prompt = "介绍一下 Milvus"
     with contextlib.redirect_stdout(io.StringIO()):
-        cli(["chat", "-p", prompt], llm_factory=lambda: fake)
+        cli(["chat", "-p", prompt], deps=inject(deps_api(), fake))
     hit = [role for role, content in fake.seen if content == prompt]
     if not hit:
         raise AssertionError(f"FakeLLM 没收到提问内容，实际收到 {fake.seen}")
@@ -161,7 +183,7 @@ def _() -> str:
     cli = cli_api()
     err = io.StringIO()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-        code = cli(["chat", "-p", "hi"], llm_factory=lambda: BoomLLM())
+        code = cli(["chat", "-p", "hi"], deps=inject(deps_api(), BoomLLM()))
     if code != 1:
         raise AssertionError(f"退出码应为 1，实际 {code}（异常被吞了或没翻译）")
     return "1 + 人话错误信息"
@@ -270,14 +292,31 @@ def _() -> str:
     return ", ".join(f"{k} ← {v}" for k, v in sorted(implemented.items()))
 
 
-@check("控制台脚本 project-rag 已注册（[project.scripts]）")
+@check("控制台脚本 project-rag 已注册，且登记的目标能真的解析到（改名/移动包后必查）")
 def _() -> str:
     entry_points = importlib.metadata.entry_points(group="console_scripts")
     found = {ep.name: ep.value for ep in entry_points}
     if "project-rag" not in found:
         raise AssertionError(f"没有注册 project-rag 入口，已注册：{sorted(found)[:8]}")
+
+    # 注册表里写着目标 ≠ 目标还存在。.venv 里的 entry_points.txt 是安装时生成的快照，
+    # 改了 [project.scripts] 或移动了模块之后必须重装（uv sync）才会刷新，
+    # 否则出现「python -m 正常、控制台命令 ModuleNotFoundError」这种最难查的组合。
+    target = found["project-rag"]  # 形如 pkg.mod:func
+    module_path, _, attr = target.partition(":")
+    try:
+        module = importlib.import_module(module_path)
+    except Exception as exc:  # noqa: BLE001
+        raise AssertionError(
+            f"登记的目标 {target!r} 已失效：{type(exc).__name__}: {exc}。"
+            "执行 `uv sync` 重新生成控制台脚本即可（python -m project_rag 不受影响，"
+            "所以这个坑不会自己暴露）"
+        ) from exc
+    if not callable(getattr(module, attr, None)):
+        raise AssertionError(f"登记的目标 {target!r} 里 {attr!r} 不是可调用对象")
+
     where = shutil.which("project-rag")
-    return f"{found['project-rag']}" + (f"（可执行：{where}）" if where else "（当前 PATH 里找不到，非致命）")
+    return f"{target}" + (f"（可执行：{where}）" if where else "（当前 PATH 里找不到，非致命）")
 
 
 def main() -> int:

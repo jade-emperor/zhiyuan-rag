@@ -20,7 +20,13 @@ uv run python scripts/acceptance/check_m1_1_config.py     # 12 通过
 uv run python scripts/acceptance/check_m1_2_logging.py    #  8 通过
 uv run python scripts/acceptance/check_m1_3_cli.py        # 11 通过
 uv run python scripts/acceptance/check_env_services.py    #  5 通过（需先起容器）
+uv run python scripts/acceptance/check_m2_faq.py          # 23 项 M2 契约（实现前为红灯）
 ```
+
+> M2 契约**先行**：`check_m2_faq.py` 的 docstring 是 M2 公开契约的权威来源，
+> 当前 0 通过 / 23 失败是预期起点，失败清单即待实现清单。
+> 契约从 M1 的 `llm_factory=` 换成 `Deps` 注入后，`check_m1_3_cli.py` 的 3 个注入检查
+> 在 M2 实现完成前也会是红灯。
 
 ## 基础设施
 
@@ -39,7 +45,7 @@ docker compose ps
 ## 阶段
 
 - [x] **M1 工程地基**：类型化配置、日志、LLM 端口/适配器、CLI、静态检查、验收体系
-- [ ] **M2 FAQ 通道**：MySQL + 相似匹配 + Redis（契约草案见 `docs/STATUS.md` 第 8 节）
+- [ ] **M2 FAQ 通道**：MySQL + 相似匹配 + Redis（契约已定稿，见 `docs/STATUS.md` 第 8 节；权威 = `scripts/acceptance/check_m2_faq.py`，当前红灯）
 - [ ] M3 向量知识库与 RAG 问答
 - [ ] M4 两通道融合路由
 - [ ] M5 评估闭环
