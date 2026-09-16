@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-# 表示Role只能是system、user、assistant三种字面量
 Role = Literal["system", "user", "assistant"]
+
+Source = Literal["faq", "llm"]
 
 
 # 这个装饰器,frozen=Tru参数表示这个类构建的对象不可变,不可动态添加属性.slots=True表示优化缓存
@@ -27,5 +28,32 @@ class ChatMessage:
     转换是适配器的职责(见 adapters/llm_deepseek.py 的 to_sdk_messages)。
     """
 
+    # 声明Role只能是system、user、assistant三种字面量
     role: Role
     content: str
+
+
+@dataclass(frozen=True, slots=True)
+class FaqEntry:
+    """一条问答对,对应mysql中的行数据"""
+
+    id: int
+    question: str
+    answer: str
+
+
+@dataclass(frozen=True, slots=True)
+class FaqMatch:
+    """问答对和和对应的匹配分数"""
+
+    entry: FaqEntry
+    score: float
+
+
+@dataclass(frozen=True, slots=True)
+class FaqAnswer:
+    """最终答案以及来源"""
+
+    answer: str
+    source: Source
+    score: float | None = None

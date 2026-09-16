@@ -56,6 +56,10 @@ def check(name: str):
             record(name, PASS, str(detail))
         except SkipCheck as exc:
             record(name, SKIP, str(exc))
+        except SystemExit as exc:
+            # 这个脚本会在进程内调用 cli()，argparse 的用法错误抛 SystemExit，
+            # 而它继承 BaseException 不是 Exception —— 不拦会打断 import，整份报告打不出来。
+            record(name, FAIL, f"SystemExit({exc.code})：子命令或参数还没实现，契约未落地")
         except Exception as exc:  # noqa: BLE001 - 验收脚本要显示任何失败
             record(name, FAIL, f"{type(exc).__name__}: {exc}")
         return fn

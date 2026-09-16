@@ -11,6 +11,7 @@ import sys
 from collections.abc import Callable
 
 from project_rag.cli import commands
+from project_rag.cli.deps import Deps, build_real_deps
 from project_rag.observability import configure_logging, get_logger
 from project_rag.ports import LLMClient
 
@@ -32,41 +33,36 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cli(
-    argv: list[str] | None = None,
-    *,
-    llm_factory: Callable[[], LLMClient] | None = None,
-) -> int:
-    """解析参数并分发到子命令。返回进程退出码。
-
-    llm_factory 是留给测试的缝:传一个假适配器工厂,整条 CLI 链路就能跑测试,
-    不联网、不花钱、结果确定。传了它,连 .env 都不需要。
+# 这个函数是冻结的,实际是解析命令行参数,映射成真正需要执行的函数。
+def cli(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     """
-    # --help / 用法错误在 parse_args 里以 SystemExit(0 / 2) 结束,原样抛给进程
+    解析命令行参数，并将参数和依赖一起分发到子命令。
+    返回进程退出码。
+    """
     # 加载参数解析器
     parser = _build_parser()
     # 从命令行解析命令行参数,并且获取这些参数组成的 argparse.Namespace 对象
     args = parser.parse_args(argv)
 
-    if llm_factory is None:
-        # 只有真实运行才装配日志。
-        # 注入 factory = 进程装配归调用方负责(测试场景),不碰真实日志目录,也不读.env
+    if deps is None:
+        # 只有真实运行才装配:注入 deps = 进程装配归调用方负责(测试场景)
         try:
-            configure_logging()  # 进行全局的日志配置
+            configure_logging()  # 加载全局日志配置
+            deps = build_real_deps()  # 获取依赖工厂
         except Exception as exc:  # 配置坏了就 fail-fast,别带着半个配置往下跑
             print(f"读取配置失败：{exc}", file=sys.stderr)
             return 1
         _log.debug("执行子命令:%s", args.cmd)
 
-    # 组合根:把「怎么造 LLMClient」挂到 args 上,哪个子命令需要就自己取
     # python的动态加属性方式
-    args.llm_factory = llm_factory
+    # 组合根:把装配好的依赖挂到 args 上,哪个子命令需要就自己取
+    args.deps = deps
 
-    # 构建字典,内容是模块名字:run函数,所以后面新建子命令入口一定要是run函数
+    # 构建字典,内容是{模块名:模块名.run},所以后面新建子命令入口一定要是run函数
     handlers = {module.NAME: module.run for module in commands.ALL}
 
-    # args.cmd表示命令行打的子命令handlers[args.cmd]表示执行的函数,args则是一个命名空间对象
-    # 这里是真正的核心逻辑,命令行写子命令+其他参数,这里就调用对应子命令的run函数并且将包括子命令名字的所有参数传入
+    # args.cmd表示命令行打的子命令handlers[args.cmd]表示执行的函数run,args则是一个命名空间对象
+    # 核心逻辑,命令行写子命令+其他参数,这里就调用对应子命令的run函数(如chat.run(args))并且将包括子命令名字的所有参数传入
     return handlers[args.cmd](args)
 
 

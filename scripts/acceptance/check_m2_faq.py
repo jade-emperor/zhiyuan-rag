@@ -150,6 +150,11 @@ def check(name: str):
             record(name, PASS, str(detail))
         except SkipCheck as exc:
             record(name, SKIP, str(exc))
+        except SystemExit as exc:
+            # argparse 的用法错误抛的是 SystemExit，它继承 BaseException 而不是 Exception，
+            # 不拦就会穿透装饰器、打断模块 import —— 结果是**整份报告一行都打不出来**。
+            # 契约未落地时（子命令/参数还不存在）必须走这里，而不是让脚本静默死掉。
+            record(name, FAIL, f"SystemExit({exc.code})：子命令或参数还没实现，契约未落地")
         except Exception as exc:  # noqa: BLE001 - 验收脚本要显示任何失败
             record(name, FAIL, f"{type(exc).__name__}: {exc}")
         return fn

@@ -1,5 +1,5 @@
-"""端口:只声明「业务需要什么能力」。
-
+"""
+端口:只声明业务需要什么能力。
 只 import domain,不 import 任何第三方 —— 这是它能当"端口"的前提。
 换 Ollama / 换厂商 = 新增一个 adapters/ 下的文件,cli 一行都不用改。
 """
@@ -19,4 +19,5 @@ class LLMClient(Protocol):
     cli 就不得不认识 langchain —— 那端口就白设了。
     """
 
+    # sequence的子类型包括list,tuple等
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]: ...

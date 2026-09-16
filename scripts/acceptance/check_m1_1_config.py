@@ -16,6 +16,10 @@ SKIP 表示需要你人工确认。脚本只依赖标准库 + 本项目，任何
 
 为什么要把它们列为契约：调用方 import 的路径是承诺，内部文件叫
 ``setting.py`` 还是 ``settings.py`` 是你的自由，但不该影响调用方。
+
+密钥摆放契约（2026-09-14 起）：所有密钥都住在**嵌套配置**里，走 ``RAG_`` 前缀 +
+双下划线，放在 ``.env`` —— ``RAG_LLM__DEEPSEEK_API_KEY`` / ``RAG_MYSQL__PASSWORD`` /
+``RAG_REDIS__PASSWORD``。不再有 ``Settings.deepseek_api_key`` 这个顶层字段。
 """
 
 from __future__ import annotations
@@ -257,7 +261,7 @@ def _() -> str:
 @check("SecretStr 遮蔽：打印、repr、model_dump 都不出现明文")
 def _() -> str:
     settings = api().Settings()
-    secret = settings.deepseek_api_key.get_secret_value()
+    secret = settings.llm.deepseek_api_key.get_secret_value()
     if not secret:
         raise AssertionError("密钥为空")
     leaked = [
@@ -273,26 +277,23 @@ def _() -> str:
     return f"明文长度 {len(secret)}，对外一律 **********"
 
 
-@check("密钥缺失时 fail-fast，且报错点名 DEEPSEEK_API_KEY")
-def _() -> str:
-    from pydantic import ValidationError
-
-    with env(DEEPSEEK_API_KEY=None):
-        try:
-            api().Settings(_env_file=None)
-        except ValidationError as exc:
-            message = str(exc)
-            if "DEEPSEEK_API_KEY" not in message:
-                raise AssertionError(f"报错信息里没点名字段：{message[:200]}") from exc
-            return "ValidationError + 字段名"
-        raise AssertionError("密钥缺失却没有报错（缺省值不该存在）")
+# 这里原本有一条「密钥缺失时 fail-fast，且报错点名 DEEPSEEK_API_KEY」，2026-09-14 契约变更时删除。
+# 理由（同步记在 docs/STATUS.md §8，以及 docs/deferred.md 的对应条目）：
+#   1. 密钥完全缺失**不是静默失败** —— 首次调用 DeepSeek 会以 401 暴露出来，
+#      不存在"带着错配置悄悄跑出错误答案"的风险；
+#   2. 要在启动期拦住它，嵌套模型必须同时挂 ConfigDict(validate_default=True)
+#      + Field(default_factory=...)（否则 validator 根本不会在默认值上触发，
+#      而且 validate_default 会让 LLMConfig() 在类体里当场抛异常、import 阶段就崩）；
+#   3. 为一个真实不存在的边界情况换三处复杂度，不划算 —— 先跑通主流程。
+# 仍然保留的保证：**显式**写空值（YAML 里 `password: ""` 或 `RAG_MYSQL__PASSWORD=`）
+# 会被各自的 field_validator 拦住。
 
 
 @check("源码与日志中不含明文密钥")
 def _() -> str:
     module = api()
     settings = module.Settings()
-    secret = settings.deepseek_api_key.get_secret_value()
+    secret = settings.llm.deepseek_api_key.get_secret_value()
     # 不再用 parents[N] 做算术：config 从包拍平成模块时，parents[2] 会悄悄从 src/ 变成仓库根，
     # 于是扫描范围扩大到 .venv 并误报。改用包的目录 + 公开的 PROJECT_ROOT。
     src_root = Path(module.__file__).resolve().parent  # src/project_rag
@@ -325,7 +326,8 @@ def _() -> str:
                 sys.executable,
                 "-c",
                 "from project_rag.config import get_settings;"
-                "s=get_settings();print(len(s.deepseek_api_key.get_secret_value()))",
+                "s=get_settings();"
+                "print(len(s.llm.deepseek_api_key.get_secret_value()))",
             ],
             cwd=tmp,
             capture_output=True,

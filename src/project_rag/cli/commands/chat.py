@@ -7,7 +7,6 @@ import sys
 
 from project_rag.domain import ChatMessage
 from project_rag.observability import get_logger
-from project_rag.ports import LLMClient
 
 _log = get_logger("cli.chat")
 
@@ -25,25 +24,18 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def run(args) -> int:
     # 延迟 import:--help 时不必把 langchain 拖进来
-    from project_rag.adapters import DeepSeekLLM
-    from project_rag.config import get_settings
 
-    if args.llm_factory is None:
-        try:
-            settings = get_settings()  # 获得配置
-        except Exception as exc:  # 配置缺失/写错:启动期就失败,别拖到调用时才炸
-            print(f"读取配置失败：{exc}", file=sys.stderr)
-            return 1
+    deps = args.deps
 
-        def factory() -> LLMClient:  # 这里是工厂函数,返回一个LLMClient的实例对象
-            return DeepSeekLLM(settings)  # 切换适配器就改这里即可
-
-    else:
-        # 测试注入的假适配器工厂
-        factory = args.llm_factory
+    if deps.llm_factory is None:
+        print(
+            "缺少依赖 llm_factory；用 Deps(...) 注入,或让 build_real_deps() 装配",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
-        client = factory()
+        client = deps.llm_factory()
         # 通过domain领域类创建一个领域值对象的列表
         messages = [ChatMessage(role="user", content=args.prompt)]
         # print(f"{messages[0].role},{messages[0].content}")

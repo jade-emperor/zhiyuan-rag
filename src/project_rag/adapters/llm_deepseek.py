@@ -11,7 +11,7 @@ from collections.abc import Iterator, Sequence
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
-from project_rag.config import Settings
+from project_rag.config import LLMConfig
 from project_rag.domain import ChatMessage
 from project_rag.ports import LLMClient
 
@@ -35,15 +35,15 @@ def to_sdk_messages(messages: Sequence[ChatMessage]) -> list:
 class DeepSeekLLM(LLMClient):
     """满足 LLMClient 端口(结构化子类型,不需要显式继承)。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, config: LLMConfig) -> None:
         self._client = ChatDeepSeek(
-            model=settings.llm.model,
+            model=config.model,
             # 密钥只从 settings 来并显式传入,不让 SDK 自己去读环境变量,否则又多一个配置源
-            api_key=settings.deepseek_api_key,
-            base_url=settings.llm.base_url,
-            temperature=settings.llm.temperature,
-            max_tokens=settings.llm.max_tokens,
-            timeout=settings.llm.timeout_s,  # timeout 是 request_timeout 的 alias
+            api_key=config.deepseek_api_key,
+            base_url=config.base_url,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            timeout=config.timeout_s,  # timeout 是 request_timeout 的 alias
             streaming=True,
         )  # 这里获得deepseek的策略类
 
