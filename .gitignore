@@ -7,7 +7,15 @@ wheels/
 *.egg-info
 *.ses
 logs/
+
+# 本地工作材料：只在磁盘上保留，不进版本库
+#   data/    语料与评估集（课程方版权 + 体积大），来源与形状见 data/README.md
+#   docs/    讲义底稿、STATUS、决策登记（deferred.md）
+#   scripts/ 验收脚本与一次性工具
+# 换机器时按各自 README 重建；历史里已有的版本仍可从 git log 取回。
+data/
 docs/
+scripts/
 
 # Virtual environments
 .venv
@@ -17,12 +25,3 @@ docs/
 
 # 生成物（讲义提取、临时实验等），可随时重建
 .cache/
-
-# 课程方（黑马教育）提供的二进制语料：体积大 + 版权归课程方，不公开分发。
-# 本地保留即可，换机器按 data/README.md「来源路径」重新拷贝。
-# 结构化的小数据（CSV/JSON）照常入库 —— 评估数字要能复现。
-data/corpus/**/*.pdf
-data/corpus/**/*.pptx
-data/corpus/**/*.docx
-data/corpus/**/*.png
-data/corpus/**/*.zip
