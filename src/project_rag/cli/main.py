@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Callable
 
 from project_rag.cli import commands
 from project_rag.cli.deps import Deps, build_real_deps
 from project_rag.observability import configure_logging, get_logger
-from project_rag.ports import LLMClient
 
 # 创建日志子节点project_rag.cli
 _log = get_logger("cli")
@@ -22,7 +20,12 @@ PROG = "project-rag"
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """构建根解析器和子命令解析器,然后把 commands.ALL 里每个模块的参数声明循环装进子命令解析器。"""
+    """构建根解析器和子命令解析器,然后把 commands.ALL 里每个模块的参数声明循环装进子命令解析器。
+
+    输入:无
+    行为:建根解析器,遍历 commands.ALL 注册子命令
+    输出:根解析器
+    """
     # 参数1表示根参数解析器的名字,参数2表示根参数解析器的描述
     parser = argparse.ArgumentParser(prog=PROG, description="RAG 项目命令行入口")
     # 开启子命令,参数1表示命令行第一个参数传给args.cmd属性,required=True表示必须传子命令,参数3表示子命令帮助信息的描述
@@ -37,7 +40,9 @@ def _build_parser() -> argparse.ArgumentParser:
 def cli(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
     """
     解析命令行参数，并将参数和依赖一起分发到子命令。
-    返回进程退出码。
+    输入:argv 命令行参数,deps 可选依赖
+    行为:解析 -> 需要就装配依赖并挂到 args -> 查表分发到子命令的 run
+    输出:进程退出码
     """
     # 加载参数解析器
     parser = _build_parser()

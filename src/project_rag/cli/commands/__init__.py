@@ -18,6 +18,6 @@ cli.py 完全不用动 —— 它不认识任何一个具体子命令。
     否则 uv run project-rag --help 会被这些包拖慢。
 """
 
-from . import chat
+from . import ask, chat
 
-ALL = (chat,)
+ALL = (chat, ask)

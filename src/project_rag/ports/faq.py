@@ -14,4 +14,6 @@ from project_rag.domain import FaqEntry
 class FaqStore(Protocol):
     """FAQ问答对存储接口"""
 
-    def load_all(self) -> Sequence[FaqEntry]: ...
+    def load_all(self) -> Sequence[FaqEntry]:
+        """输入:无。行为:读取全部问答对,顺序稳定。输出:问答对序列。"""
+        ...

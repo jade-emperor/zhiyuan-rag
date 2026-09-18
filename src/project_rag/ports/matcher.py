@@ -24,4 +24,6 @@ class TextMatcher(Protocol):
 
     def best_match(
         self, query: str, candidates: Sequence[FaqEntry]
-    ) -> FaqMatch | None: ...
+    ) -> FaqMatch | None:
+        """输入:用户问题 + 候选问答对。行为:按相似度排序取 top1。输出:最像的一条;候选为空给 None。"""
+        ...

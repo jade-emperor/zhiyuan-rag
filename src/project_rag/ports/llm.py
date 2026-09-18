@@ -20,4 +20,6 @@ class LLMClient(Protocol):
     """
 
     # sequence的子类型包括list,tuple等
-    def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]: ...
+    def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
+        """输入:领域消息列表。行为:调模型流式生成。输出:文本片段的迭代器。"""
+        ...

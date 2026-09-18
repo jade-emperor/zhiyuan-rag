@@ -18,10 +18,13 @@ _CONNECT_TIMEOUT_S = 5
 
 class MySQLFaqStore(FaqStore):
     def __init__(self, mysql_config: MySQLConfig, faq_config: FaqConfig) -> None:
+        """输入:MySQL 配置 + FAQ 配置。行为:只记下连接参数和表名,不建连接。输出:无。"""
         self._config = mysql_config
         self._table = faq_config.table
 
+    # 获得热题表中所有数据
     def load_all(self) -> Sequence[FaqEntry]:
+        """输入:无。行为:连库查全表并按 id 排序,连不上抛错点名 host:port。输出:领域问答对序列。"""
         # 目标地址,主要用于错误日志,告诉到底是连不上谁
         target = f"{self._config.host}:{self._config.port}"
         # 建立mysql连接
@@ -51,7 +54,7 @@ class MySQLFaqStore(FaqStore):
         finally:
             conn.close()  # 无论成败都要关连接
 
-        # 列表推导式,将数据库返回的每一列(列表套元组)都转成领域类型(列表套领域对象)
+        # 列表推导式,将数据库返回的每一行(列表套元组)都转成领域类型(列表套领域对象)
         return [
             FaqEntry(id=int(row[0]), question=str(row[1]), answer=str(row[2]))
             for row in rows

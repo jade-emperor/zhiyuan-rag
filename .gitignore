@@ -7,9 +7,22 @@ wheels/
 *.egg-info
 *.ses
 logs/
+docs/
 
 # Virtual environments
 .venv
 
 # 存放密钥等
 .env
+
+# 生成物（讲义提取、临时实验等），可随时重建
+.cache/
+
+# 课程方（黑马教育）提供的二进制语料：体积大 + 版权归课程方，不公开分发。
+# 本地保留即可，换机器按 data/README.md「来源路径」重新拷贝。
+# 结构化的小数据（CSV/JSON）照常入库 —— 评估数字要能复现。
+data/corpus/**/*.pdf
+data/corpus/**/*.pptx
+data/corpus/**/*.docx
+data/corpus/**/*.png
+data/corpus/**/*.zip

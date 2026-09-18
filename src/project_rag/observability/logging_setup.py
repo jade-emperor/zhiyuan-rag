@@ -1,6 +1,6 @@
 """日志地基:统一装配 root logger,日志同时落到控制台与文件。
 关键函数:
-    (1)configure_logging()进行全局日志配置。(2)get_logger(参数)获得logger日志对象。
+    (1)configure_logging()进行全局日志配置。(2)get_logger(日志名字)获得logger日志对象。
 
 三个关键设计:
 
@@ -61,7 +61,12 @@ _CONSOLE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
 # 获得日志文件的绝对路径,如果是相对路径,会拼上项目根路径,这里就是只传入了logs(如果不手动传入settings的话)
 def resolve_log_file(settings: Settings) -> Path:
-    """把 settings.log_dir 解析成日志文件的绝对路径(相对路径按项目根算)。"""
+    """把 settings.log_dir 解析成日志文件的绝对路径(相对路径按项目根算)。
+
+    输入:配置对象
+    行为:展开 ~,相对路径拼项目根,再拼日志文件名
+    输出:日志文件绝对路径
+    """
 
     # 如果路径想放在项目外使用~,会将~替换为用户目录(如果没传~的话,则这行代码无操作,直接是settings.log_dir)
     log_dir = Path(settings.log_dir).expanduser()
@@ -83,7 +88,12 @@ def resolve_log_file(settings: Settings) -> Path:
 #     "force": True,                     ← 是否清掉旧配置重建
 # }
 def build_logging_config(settings: Settings, log_file: Path | None = None) -> dict:
-    """把 settings 翻译成 dictConfig 要的字典;单独抽出来便于单测。"""
+    """把 settings 翻译成 dictConfig 要的字典;单独抽出来便于单测。
+
+    输入:配置对象、可选的日志文件路径
+    行为:组装 formatters/handlers/root,并把噪声库抬到 WARNING
+    输出:dictConfig 用的配置字典
+    """
     # 这里获得日志文件的绝对路径,如果前面代码不出错,这里应该传入了
     log_file = log_file or resolve_log_file(settings)
     return {
@@ -129,7 +139,12 @@ def build_logging_config(settings: Settings, log_file: Path | None = None) -> di
 
 # 整个日志模块的入口函数,输入settings(传入的优先级高但是一般不用).
 def configure_logging(settings: Settings | None = None) -> None:
-    """按 settings 重建 root logger 配置;不传就用 get_settings()。"""
+    """按 settings 重建 root logger 配置;不传就用 get_settings()。
+
+    输入:可选的配置对象
+    行为:建日志目录,用 dictConfig(force=True) 重建,重复调用不叠加 handler
+    输出:无
+    """
     # 获取日志的配置,配置和绝对路径传入build_logging_config函数,获得配置字典
     settings = settings or get_settings()
     # 获得存放的日志文件的绝对路径
@@ -142,7 +157,12 @@ def configure_logging(settings: Settings | None = None) -> None:
 
 # 业务代码调用的函数,传入该日志的名字,返回logger日志对象.注:子节点如果没设置会找最近设置了的祖先节点的日志级别
 def get_logger(name: str | None = None) -> logging.Logger:
-    """取 project_rag 命名空间下的 logger:get_logger("ingest") -> project_rag.ingest"""
+    """取 project_rag 命名空间下的 logger:get_logger("ingest") -> project_rag.ingest
+
+    输入:可选的日志名
+    行为:空了用根名,已带前缀不重复拼,否则自动加 project_rag. 前缀
+    输出:logger 对象
+    """
     # logging模块维护的是一颗树,logger对象是树中的节点,用名字和点划分父子关系以及分支
     if not name:
         return logging.getLogger(LOGGER_NAMESPACE)

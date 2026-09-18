@@ -25,6 +25,7 @@ class LLMConfig(BaseModel):
     @field_validator("deepseek_api_key")
     @classmethod
     def _require_key(cls, v: SecretStr) -> SecretStr:
+        """输入:LLM 的密钥字段。行为:校验非空,空则抛 ValueError 让启动 fail-fast。输出:原样密钥。"""
         if not v.get_secret_value():
             raise ValueError("RAG_LLM__DEEPSEEK_API_KEY 未设置或为空")
         return v
@@ -40,6 +41,7 @@ class MySQLConfig(BaseModel):
     @field_validator("password")
     @classmethod
     def _require_key(cls, v: SecretStr) -> SecretStr:
+        """输入:MySQL 密码字段。行为:校验非空,空则抛 ValueError 让启动 fail-fast。输出:原样密码。"""
         if not v.get_secret_value():
             raise ValueError("RAG_MYSQL__PASSWORD 未设置或为空")
         return v
@@ -54,13 +56,16 @@ class RedisConfig(BaseModel):
     @field_validator("password")
     @classmethod
     def _require_key(cls, v: SecretStr) -> SecretStr:
+        """输入:Redis 密码字段。行为:校验非空,空则抛 ValueError 让启动 fail-fast。输出:原样密码。"""
         if not v.get_secret_value():
             raise ValueError("RAG_REDIS__PASSWORD 未设置或为空")
         return v
 
 
 class FaqConfig(BaseModel):
-    # 表名和阈值
+    # 表名和阈值。阈值口径见 adapters/matcher_bm25.py:
+    # score = top1 原始分 / 该条问自己的分,一字不差 ≈ 1.000,完全无关 ≤ 0.274,
+    # 所以 0.85 表示「只答近乎一字不差的问题」,改写问法交给 RAG 通道。
     threshold: float = 0.85
     table: str = "faq"
 
@@ -102,6 +107,7 @@ class Settings(BaseSettings):
         dotenv_settings,
         file_secret_settings,
     ):
+        """输入:pydantic-settings 传入的各配置源。行为:按优先级排序,并把 yaml 排在最后。输出:配置源元组。"""
         return (  # 这里是一个元组,元组中的元素顺序就是优先级,越靠前的优先级越高
             init_settings,  # 1. 显式传入
             env_settings,  # 2. 环境变量
@@ -115,6 +121,7 @@ class Settings(BaseSettings):
 # 这个装饰器缓存了函数的输入输出，下次调用时如果传入的输入不变,直接返回缓存的结果，而不需要再次执行函数
 @lru_cache
 def get_settings() -> Settings:
+    """输入:无。行为:检查配置文件存在后构建 Settings,结果被 lru_cache 缓存复用。输出:全局唯一配置对象。"""
     # Settings类返回最终的配置类
     yaml_file = CONFIG_FILE
     if not CONFIG_FILE.exists():

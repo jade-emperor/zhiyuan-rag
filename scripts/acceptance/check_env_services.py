@@ -201,7 +201,11 @@ def main() -> int:
         print("\n未通过：")
         for name in failed:
             print(f"  ✘ {name}")
-        print("\n提示：先确认容器已启动  docker compose up -d ；再看具体报错。")
+        print(
+            "\n提示：连不上容器先看 Windows 侧 Docker Desktop 是否开着"
+            "（不是代码回归，见 docs/STATUS.md §5 第 10 条）；"
+            "再用 docker compose ps 确认状态，没起就 docker compose up -d。"
+        )
     return 1 if failed else 0
 
 

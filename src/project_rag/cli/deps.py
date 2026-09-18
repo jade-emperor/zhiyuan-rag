@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from project_rag.ports import Cache, FaqStore, LLMClient, TextMatcher
 
+# 与 config.FaqConfig.threshold 保持一致;口径见 adapters/matcher_bm25.py
 DEFAULT_FAQ_THRESHOLD = 0.85
 
 
@@ -33,27 +34,31 @@ class Deps:
 def build_real_deps() -> Deps:
     """真实装配:读一次 Settings,把四个工厂装好。
 
-    工厂里只捕获 settings、不建连接 —— 真正的连接发生在命令用到它的时候。
-    适配器延迟 import:否则 --help 会把 langchain / pymysql / redis / jieba 全拖进来。
+    输入:无
+    行为:读配置,工厂只捕获 settings 不建连接,真正的连接发生在命令用到它的时候;
+         适配器延迟 import,否则 --help 会把 langchain / pymysql / redis / jieba 全拖进来
+    输出:进程级 Deps
 
     核心:这些依赖会统一交给args.Deps并且传给所有子命令,子命令再根据自身需要创建策略类
 
     """
     from project_rag.adapters import (
+        BM25TextMatcher,
         DeepSeekLLM,
         MySQLFaqStore,
-        # RedisCache,
-        # SimpleTextMatcher,
+        RedisCache,
     )
     from project_rag.config import get_settings
 
     settings = get_settings()
-    # lambda是为了构建闭包形式,也可以在前面def定义,但是不够优雅
-    # 这些变量都指向函数和类而不是直接实现,Deos.属性()才真正执行的,惰性加载策略类(懒汉模式)
+    # 提前创建对象,后续的BM25索引才可用
+    matcher = BM25TextMatcher()
+    # lambda是为了构建闭包形式,让函数记住参数,后面调用不用传参,也可以在前面def定义,但是不够优雅
+    # 这些变量都指向函数和类而不是直接实现,Deps.属性()才真正执行的,惰性加载策略类(懒汉模式)
     return Deps(
         llm_factory=lambda: DeepSeekLLM(settings.llm),
         faq_store_factory=lambda: MySQLFaqStore(settings.mysql, settings.faq),
-        # matcher_factory=SimpleTextMatcher,  # 类本身就是无参工厂
-        # cache_factory=lambda: RedisCache(settings.redis),
-        # faq_threshold=settings.faq.threshold,
+        matcher_factory=lambda: matcher,
+        cache_factory=lambda: RedisCache(settings.redis),
+        faq_threshold=settings.faq.threshold,
     )
