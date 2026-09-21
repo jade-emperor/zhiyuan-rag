@@ -34,6 +34,7 @@ uv run python scripts/acceptance/check_m1_1_config.py      # 11 通过 / 0 失�
 uv run python scripts/acceptance/check_m1_2_logging.py     #  8 通过 / 0 失败
 uv run python scripts/acceptance/check_m1_3_cli.py         # 11 通过 / 0 失败
 uv run python scripts/acceptance/check_m2_faq.py           # 27 通过 / 0 失败 / 0 跳过（容器运行时）
+uv run python scripts/acceptance/check_m3_rag.py           # 37 通过 / 0 失败 / 1 跳过（容器运行时）
 uv run python scripts/acceptance/check_env_services.py     #  5 通过 / 0 失败（需先起容器）
 ```
 
@@ -61,7 +62,7 @@ uv run python scripts/acceptance/check_env_services.py     #  5 通过 / 0 失�
 | ③-3.3 优化·阈值分流 | 够像直答，否则 LLM 兜底 | `answer_faq(threshold=...)` ← `RAG_FAQ__THRESHOLD` | ✅ |
 | ③-3.3 优化·语料缓存 | 问题列表 + 分词结果进 Redis（省全表扫描 + N 次分词） | 未做 | ⬜ |
 | ③-3.4 BM25 | `BM25L` 最小演示 | `adapters/matcher_bm25.py`（`BM25Plus` + **自身分归一化**口径，阈值 0.85） | ✅ |
-| ④ 基于 Milvus 的问答系统 | 文档处理 / 向量存储 / 混合检索+重排 / 意图识别 / 策略选择 | **M3** | ⬜ |
+| ④ 基于 Milvus 的问答系统 | 文档处理 / 向量存储 / 两路召回+融合 / 意图识别 / 策略选择 | **M3** | 🔶 M3.1–M3.8 已落地（检索链路可跑），M3.9 重排待做 |
 | ⑤ RAG 系统评估 | RAGAS 四指标与评估代理 | **M4** | ⬜ |
 | ⑥ 融合 Mysql 的 RAG 系统 | 双通道融合 + 对话历史 + 流式 + FastAPI | **M5** | ⬜ |
 | ⑦ 企业级生产环境部署 | Docker / 服务化 / 接口文档 | **M6** | ⬜ |
@@ -73,7 +74,10 @@ uv run python scripts/acceptance/check_env_services.py     #  5 通过 / 0 失�
 
 - [x] **M1 工程地基**：类型化配置、日志、LLM 端口/适配器、CLI、静态检查、验收体系
 - [x] **M2 FAQ 通道**：MySQL + BM25 匹配 + Redis 缓存 + `ask` 子命令（契约已同步；真实链路检查等容器起来复跑）
-- [ ] **M3 向量知识库与 RAG 问答**（讲义 ④）
+- [ ] **M3 向量知识库与 RAG 问答**（讲义 ④）—— 🔶 完成 M3.1–M3.8：
+      配置三段 / domain+ports+内存实现 / BGE-M3 适配器 / 中文两级切分+ingest /
+      Milvus 适配器（数据真进库）/ `rag` 带引用问答 / 父子分层 / BM25+RRF 两路融合。
+      **待做 M3.9 重排**（`bge-reranker-v2-m3`）
 - [ ] **M4 评估闭环**（讲义 ⑤）—— 先有尺子，再谈优化
 - [ ] **M5 两通道融合与 FastAPI**（讲义 ⑥）
 - [ ] **M6 服务化与部署**（讲义 ⑦）

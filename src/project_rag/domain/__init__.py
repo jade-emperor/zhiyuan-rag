@@ -1,3 +1,33 @@
-from .models import ChatMessage, FaqAnswer, FaqEntry, FaqMatch, Role
+from .models import (
+    ChatMessage,
+    Chunk,
+    ChunkGroup,
+    Citation,
+    Document,
+    Embedding,
+    FaqAnswer,
+    FaqEntry,
+    FaqMatch,
+    FusedChunk,
+    RagAnswer,
+    RetrievalOptions,
+    RetrievedChunk,
+    Role,
+)
 
-__all__ = ["ChatMessage", "FaqAnswer", "FaqEntry", "FaqMatch", "Role"]
+__all__ = [
+    "ChatMessage",
+    "Chunk",
+    "ChunkGroup",
+    "Citation",
+    "Document",
+    "Embedding",
+    "FaqAnswer",
+    "FaqEntry",
+    "FaqMatch",
+    "FusedChunk",
+    "RagAnswer",
+    "RetrievalOptions",
+    "RetrievedChunk",
+    "Role",
+]

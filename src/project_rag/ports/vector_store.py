@@ -1,0 +1,82 @@
+"""
+端口:子块的向量存储与相似检索(**只管稠密一路**)。
+
+只依赖 ``domain`` + 标准库。``pymilvus`` 的类型、Milvus 的字段名都不许出现在这里 ——
+换 Milvus / 换 pgvector / 换内存实现,用例层一行都不用改。
+
+**为什么没有 hybrid / 引擎内融合**:关键字那一路由 BM25 在进程内独立完成(另立端口),
+两路的融合发生在用例层。两条理由:
+
+1. 融合逻辑放在自己手里才能测、才能换、才能做消融;交给引擎的 ranker 只能调参,
+   既看不见过程,也没法把「RRF vs 加权」摆到同一份评估集上比;
+2. 本项目的向量库里没有内置 BM25(Milvus 2.4.4),真要引擎内融合得先升级服务端 ——
+   为一个可以自己写的 20 行函数去动基础设施,不划算。
+
+所以这个端口只回答一个问题:**给定查询向量,最像的 k 个块是谁。**
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Protocol
+
+from project_rag.domain import Chunk, Embedding, RetrievedChunk
+
+
+class VectorStore(Protocol):
+    """子块的向量库。"""
+
+    def upsert(self, chunks: Sequence[Chunk], embeddings: Sequence[Embedding]) -> int:
+        """输入:子块 + 对应向量(同序等长)。
+
+        行为:按 ``chunk_id`` 幂等写入(已存在则覆盖)。
+        输出:写入后集合内的子块**总数** —— 不是本次写入条数,
+        幂等重跑时总数不变才是对的行为。
+        """
+        ...
+
+    def search(
+        self,
+        query_embedding: Embedding,
+        *,
+        k: int,
+        source: str | None = None,
+    ) -> Sequence[RetrievedChunk]:
+        """输入:查询向量、返回条数、可选的来源过滤。
+
+        行为:向量相似检索,按分数降序取前 k。
+        输出:命中序列;空库给空序列(不抛错 —— 用例层要能走「没检索到」分支)。
+        """
+        ...
+
+    def delete_by_doc_id(self, doc_id: str) -> int:
+        """输入:文档标识。行为:删掉这份文档之前写入的全部子块。输出:删除条数。
+
+        **ingest 写之前必须先调它**。为什么:``chunk_id`` 里含内容哈希,
+        内容一改就是新 id,``upsert`` 覆盖不到旧块 —— 不清掉就会新旧并存。
+        更糟的是**过期内容往往排得更前**(它和当初的问法更像),
+        实测旧块 0.694 vs 新块 0.267,模型会拿过期答案回答用户。
+        """
+        ...
+
+    def load_all(self) -> Sequence[Chunk]:
+        """输入:无。行为:取出库里全部子块(顺序稳定)。输出:子块序列。
+
+        给关键字那一路建索引用的:BM25 要看到全量文本,而向量库里就有唯一的一份,
+        不必再维护第二个存储。代价是 O(N) —— 几千块无所谓,上万块时要改成
+        ingest 时喂索引 + 持久化(记在 deferred)。
+        """
+        ...
+
+    def delete_by_source(self, source: str) -> int:
+        """输入:来源标签。行为:删掉该来源的全部子块。输出:删除条数。
+
+        给「整份语料下架」用:目录里的文件被删掉时,按 doc_id 清是清不到的
+        (那些 doc_id 已经不在本次 ingest 的名单里了),只能按 source 整体清。
+        ingest 的日常路径用的是 ``delete_by_doc_id``。
+        """
+        ...
+
+    def drop(self) -> None:
+        """输入:无。行为:删除整个集合(重建与验收用,数据不可恢复)。输出:无。"""
+        ...

@@ -23,7 +23,41 @@ redis:
   db: 0
 
 faq:
-  # 口径 = top1 原始分 / 该条问自己的分(见 adapters/matcher_bm25.py)
+  # 口径 = top1 原始分 / 该条问自己的分
   # 0.85 = 只答近乎一字不差的问题;改写问法交给 RAG 通道
   threshold: 0.85
   table: faq
+
+  
+milvus:
+  host: 127.0.0.1
+  # 宿主端口,19530 映射到 10086
+  port: 10086
+  # 只准填已存在的库。Milvus 不会自动建库,当前环境里只有 default
+  database: default
+  collection: rag_chunks
+
+embedding:
+  # 目录相对项目根;写绝对路径也认
+  model_dir: models/bge-m3
+  # 重排模型,现在只把位置定下来
+  rerank_model_dir: models/bge-reranker-v2-m3
+  device: cpu
+  use_f16: false
+
+rag:
+  # 分块与检索默认值
+  parent_chunk_size: 1200
+  child_chunk_size: 300
+  chunk_overlap: 50
+  retrieval_k: 5          # 每一路各召回多少条(BM25 路 / 向量路)
+  candidate_m: 2          # 融合后最终进上下文的块数
+  # 融合:两路(进程内 BM25 关键字 + Milvus 稠密向量)合并成一个排序。
+  #   rrf      —— 只用排名,免标定,对两路分数量纲不敏感
+  #   weighted —— 各自归一化后加权,能表达「哪一路更可信」,但要调权重
+  # 两种都会实现,用 data/eval 的评估集选。
+  fusion: rrf
+  rrf_k: 60  # 各排名得分的分母,越大各排名的得分差距越小
+  # 两路权重:rrf 模式=排名权重,weighted 模式=分数权重。至少一个 > 0。
+  bm25_weight: 0.5
+  vector_weight: 0.5

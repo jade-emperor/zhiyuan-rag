@@ -25,3 +25,8 @@ scripts/
 
 # 生成物（讲义提取、临时实验等），可随时重建
 .cache/
+
+# 模型权重（bge-m3 / bge-reranker-v2-m3 各 2.2G）
+# 不进版本库：体积大 + 可以从课程包本地拷贝或 modelscope 下载
+# 取模型：.venv/bin/python scripts/tools/fetch_models.py [--with-reranker]
+models/

@@ -23,26 +23,15 @@ BM25 匹配适配器:jieba 分词 + BM25 打分 + 自身分归一化成 0~1 + �
     这是**故意的**:FAQ 只答近乎一字不差的问题,改写交给 M3 向量通道。
 """
 
-from __future__ import annotations
-
-import re
 from collections.abc import Sequence
 
-import jieba
 from rank_bm25 import BM25Plus
 
+# 分词口径与 BM25 关键字索引共用同一份实现 —— 两处各写一份的话,
+# 「同一条查询在两处切出不同的词」这种 bug 极难查
+from project_rag.adapters.chinese_tokens import tokens
 from project_rag.domain import FaqEntry, FaqMatch
 from project_rag.ports import TextMatcher
-
-# 只保留含「词字符」的 token,过滤掉标点和空白(中文标点不在 \w 里)
-_WORDISH = re.compile(r"\w")
-
-
-def _tokens(text: str) -> list[str]:
-    """输入:一段文本。行为:jieba 分词,丢掉标点和空白。输出:词列表。"""
-    return [
-        t for t in (tok.strip() for tok in jieba.lcut(text)) if t and _WORDISH.search(t)
-    ]
 
 
 class BM25TextMatcher(TextMatcher):
@@ -91,12 +80,12 @@ class BM25TextMatcher(TextMatcher):
         分母与分子同源 —— 语料变大变冗余时两者一起变,所以分数不漂移。
         """
         index = self._index_for(entries)  # ← 唯一改动:不再每次 new
-        raw = [float(s) for s in index.get_scores(_tokens(query))]
+        raw = [float(s) for s in index.get_scores(tokens(query))]
 
         # 取第一个最大值(同分时保留 id 更小的那条,顺序稳定)
         top_index = max(range(len(raw)), key=lambda i: raw[i])
         baseline = float(
-            index.get_scores(_tokens(entries[top_index].question))[top_index]
+            index.get_scores(tokens(entries[top_index].question))[top_index]
         )
 
         if raw[top_index] <= 0.0 or baseline <= 0.0:
@@ -117,6 +106,6 @@ class BM25TextMatcher(TextMatcher):
         """
         fingerprint = tuple((e.id, e.question) for e in entries)
         if fingerprint != self._fingerprint or self._index is None:
-            self._index = BM25Plus([_tokens(e.question) for e in entries])
+            self._index = BM25Plus([tokens(e.question) for e in entries])
             self._fingerprint = fingerprint
         return self._index

@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 # 项目根目录的路径和配置文件的路径,我这里的配置优先级：传入参数(如果传入参数) > 环境变量 > .env文件 > 配置文件 > 默认值
@@ -70,6 +73,84 @@ class FaqConfig(BaseModel):
     table: str = "faq"
 
 
+class MilvusConfig(BaseModel):
+    host: str = "127.0.0.1"
+    # 宿主端口:服务端在容器里,compose 把 gRPC 19530 映射到 10086
+    port: int = 10086
+    # 只准填已存在的库(milvus内置):Milvus 不会自动建库,命名库得先 create_database
+    database: str = "default"
+    collection: str = "rag_chunks"
+
+
+class EmbeddingConfig(BaseModel):
+    # 目录既能相对项目根,也能写绝对路径 —— 由下面的 model_path 负责解析
+    model_dir: str = "models/bge-m3"
+    # 先把位置定下来,免得后面改两处配置
+    rerank_model_dir: str = "models/bge-reranker-v2-m3"
+    device: str = "cpu"
+    use_f16: bool = False
+
+    # property装饰器,将方法调用转为属性调用
+    @property
+    def model_path(self) -> Path:
+        """输入:无。行为:model_dir 解析成绝对路径(相对路径挂到项目根下)。输出:嵌入模型绝对路径。
+
+        pathlib 的 / 遇到绝对右值会丢弃左值,所以 YAML 里写绝对路径也照样对。
+        """
+        return (PROJECT_ROOT / self.model_dir).resolve()
+
+    @property
+    def rerank_model_path(self) -> Path:
+        """输入:无。行为:rerank_model_dir 解析成绝对路径。输出:重排模型绝对路径。"""
+        return (PROJECT_ROOT / self.rerank_model_dir).resolve()
+
+
+class RagConfig(BaseModel):
+    """分块与检索参数。"""
+
+    parent_chunk_size: int = 1200
+    child_chunk_size: int = 300
+    chunk_overlap: int = 50
+    retrieval_k: int = 5
+    candidate_m: int = 2
+    # 融合方式。两路 = 进程内 BM25 关键字 + Milvus 稠密向量(不用嵌入模型的稀疏向量:
+    # 它和 BM25 都是词面匹配,重叠度高,留着只会让融合多一路、评估多一维)。
+    #   rrf      —— 只用排名,免标定,对两路分数量纲不敏感
+    #   weighted —— 各自归一化后加权,能表达「哪一路更可信」,但要调权重
+    fusion: Literal["rrf", "weighted"] = "rrf"
+    # RRF 的平滑常数:分数 = Σ w / (rrf_k + rank)。越大越弱化头部优势,60 是常见默认。
+    rrf_k: int = 60
+    # 两路权重:rrf 模式是排名权重,weighted 模式是分数权重。
+    bm25_weight: float = 0.5
+    vector_weight: float = 0.5
+
+    @model_validator(mode="after")
+    def _check_sizes(self) -> RagConfig:
+        """输入:无。行为:在校验之后,再加一层自定义检验参数的逻辑。输出:self。
+
+        为什么在配置层拦:overlap >= child_size 时切分器要么抛错、要么原地打转,
+        等 ingest 跑一半才发现,代价是一整轮嵌入调用。
+        """
+        if self.chunk_overlap >= self.child_chunk_size:
+            raise ValueError(
+                f"chunk_overlap({self.chunk_overlap}) 必须小于 "
+                f"child_chunk_size({self.child_chunk_size})"
+            )
+        if self.child_chunk_size > self.parent_chunk_size:
+            raise ValueError(
+                f"child_chunk_size({self.child_chunk_size}) 不能大于 "
+                f"parent_chunk_size({self.parent_chunk_size})"
+            )
+        if self.bm25_weight <= 0 and self.vector_weight <= 0:
+            raise ValueError(
+                "bm25_weight 与 vector_weight 不能同时为 0 —— 两路都不给权重,"
+                "融合结果全是 0,排序退化成随机"
+            )
+        if self.rrf_k < 0:
+            raise ValueError(f"rrf_k 不能为负,收到 {self.rrf_k}")
+        return self
+
+
 # pydantic的写法,也是配置类的标准写法,比__init__(self.env="dev"....)强大的多,可以设置内部去读取.env和yaml文件中的配置
 # 优先级是根据SettingsConfigDict写的关键字顺序定的,越靠前的优先级越高
 # 关于字段名的匹配,显式传入的参数字段名必须一一对应,.env中的字段大小写不敏感,但是要对应上.__表示层级
@@ -96,6 +177,9 @@ class Settings(BaseSettings):
     mysql: MySQLConfig = MySQLConfig()
     redis: RedisConfig = RedisConfig()
     faq: FaqConfig = FaqConfig()
+    milvus: MilvusConfig = MilvusConfig()
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    rag: RagConfig = RagConfig()
 
     # 这个类方法,是用来定义配置的来源和优先级顺序的
     @classmethod
@@ -133,6 +217,13 @@ __all__ = [
     "CONFIG_FILE",
     "ENV_FILE",
     "PROJECT_ROOT",
+    "EmbeddingConfig",
+    "FaqConfig",
+    "LLMConfig",
+    "MilvusConfig",
+    "MySQLConfig",
+    "RagConfig",
+    "RedisConfig",
     "Settings",
     "get_settings",
 ]
