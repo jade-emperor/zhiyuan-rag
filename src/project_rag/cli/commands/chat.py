@@ -45,9 +45,15 @@ def run(args) -> int:
         # 通过domain领域类创建一个领域值对象的列表
         messages = [ChatMessage(role="user", content=args.prompt)]
         # print(f"{messages[0].role},{messages[0].content}")
-        for text in client.stream(messages):
-            print(text, end="", flush=True)  # flush=True:否则攒在缓冲区,看着像卡死
+        truncated = False
+        for delta in client.stream(messages):
+            if delta.last:
+                truncated = delta.truncated
+            print(delta.text, end="", flush=True)  # flush=True:否则攒在缓冲区,看着像卡死
         print()
+        if truncated:
+            # 半截答案比「答不出来」更容易误导 —— 必须让人看见
+            print("[注意] 回答被截断（模型没说完），不要当成完整答案", file=sys.stderr)
     except Exception as exc:  # 这一层才翻译人话:堆栈进日志,短消息给用户
         _log.error("调用模型失败：%s", exc)  # 控制台/文件都收,不带堆栈
         _log.debug("调用模型失败（堆栈）", exc_info=True)  # 堆栈只进文件

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 # 数据类
-from project_rag.domain import ChatMessage, FaqAnswer
+from project_rag.domain import ChatMessage, FaqAnswer, FaqMatch
 
 # 创建日志的方法
 from project_rag.observability import get_logger
@@ -81,6 +81,29 @@ def _safe_set(cache: Cache | None, key: str, value: str, ttl: int) -> None:
         _logger.warning("缓存写入失败,按未命中处理: %s", e)
 
 
+def match_faq(
+    query: str,
+    *,
+    store: FaqStore,
+    matcher: TextMatcher,
+    threshold: float = 0.85,
+) -> FaqMatch | None:
+    """输入:问题 + FAQ 存储 + 匹配器 + 阈值。
+
+    行为:取全量问答对、取最像的一条,``score >= threshold`` 才算命中(取等号)。
+    输出:命中的匹配(带 entry 与 score);没命中给 None。
+
+    **命中判定只有这一处**:FAQ 单通道(``answer_faq``)与合流通道(``answer_question``)
+    都从它拿结论 —— 两个地方各写一遍比较运算符,「≥ 还是 >」「边界算不算命中」
+    迟早各长一套。刻意**不碰缓存、不调 LLM**:缓存与兜底是通道自己的事,
+    合流只借它一句「命中还是没命中」。
+    """
+    match = matcher.best_match(query, store.load_all())
+    if match is not None and match.score >= threshold:
+        return match
+    return None
+
+
 def answer_faq(
     query: str,
     *,  # 后面的参数只能关键字传参,不能位置传参
@@ -104,18 +127,28 @@ def answer_faq(
         source, answer = _decode(cached)  # source 跟着一起解出来,不能一律当 faq
         return FaqAnswer(answer=answer, source=source)
 
-    # 从数据库加载所有热题数据并进行匹配
-    match = matcher.best_match(query, store.load_all())
+    # 命中判定借 match_faq:阈值语义只准有一处实现
+    match = match_faq(query, store=store, matcher=matcher, threshold=threshold)
     # 匹配到了,然后拼接缓存键,进行缓存
-    if match is not None and match.score >= threshold:
+    if match is not None:
         _safe_set(cache, key, _encode("faq", match.entry.answer), cache_ttl)
         return FaqAnswer(answer=match.entry.answer, source="faq", score=match.score)
 
     # 调用大模型的流式方法,输入stream.[ChatMessage(角色,内容),ChatMessage()....]
     # 返回生成器,将生成器通过.join()转为字符串
-    text = "".join(llm.stream([ChatMessage(role="user", content=query)]))
+    deltas = list(llm.stream([ChatMessage(role="user", content=query)]))
+    text = "".join(delta.text for delta in deltas)
+    # 结束原因在最后一帧(适配器的约定);provider 没说就是 None,按「没截断」处理
+    truncated = deltas[-1].truncated if deltas else False
+    if truncated:
+        _logger.warning(
+            "模型兜底回答被截断(finish_reason=%s),只拿到 %d 字:%s",
+            deltas[-1].finish_reason,
+            len(text),
+            query,
+        )
     # 穿透防御:兜底答案也缓存。否则同一个超纲问题每问一次就烧一次 token。
     # 空答案不缓存 —— 否则空串会被后续查询当成有效命中,用户看到一片空白。
     if text:
         _safe_set(cache, key, _encode("llm", text), cache_ttl)
-    return FaqAnswer(answer=text, source="llm")
+    return FaqAnswer(answer=text, source="llm", truncated=truncated)

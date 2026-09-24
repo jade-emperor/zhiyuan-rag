@@ -2,7 +2,7 @@
 mysql适配器,FAQ问答对的存储实现
 """
 
-# 优化注释,提升启动性能
+# 注解延迟求值(存成字符串),省掉导入时的求值开销
 from __future__ import annotations
 
 from collections.abc import Sequence

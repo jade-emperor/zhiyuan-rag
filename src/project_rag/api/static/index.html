@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>project-rag 知识库问答问答</title>
+  <style>
+    body { font-family: system-ui, "Microsoft YaHei", sans-serif; max-width: 46rem; margin: 3rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    .hint { color: #666; font-size: .875rem; }
+    #q { width: 32rem; padding: .4rem .6rem; font-size: 1rem; }
+    button { padding: .4rem 1rem; font-size: 1rem; }
+    #out { white-space: pre-wrap; background: #f6f7f9; border: 1px solid #e3e5e8; border-radius: 6px;
+           padding: .8rem; margin-top: 1rem; min-height: 4rem; }
+  </style>
+</head>
+<body>
+  <h1>知识库问答问答</h1>
+  <p class="hint">FAQ 命中直答；否则走知识库（答案带引用）。句子中间带寒暄不会被当成寒暄拦掉。</p>
+  <div>
+    <input id="q" placeholder="问点什么…（回车发送）" autofocus>
+    <button id="send">发送</button>
+  </div>
+  <div id="out"></div>
+
+  <script>
+    const out = document.getElementById('out');
+    const input = document.getElementById('q');
+    let socket = null;
+
+    function connect() {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      socket = new WebSocket(`${scheme}://${location.host}/api/stream`);
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(event.data);
+        if (frame.type === 'token') {
+          out.textContent += frame.text;
+        } else if (frame.type === 'done') {
+          if (frame.citations && frame.citations.length) {
+            const lines = frame.citations.map(c => `  [${c.index}] ${c.source} ${c.doc_id} ${c.preview}…`);
+            out.textContent += '\n\n引用:\n' + lines.join('\n');
+          }
+          if (frame.refused) out.textContent += '\n（拒答：没有检索到相关资料）';
+          if (frame.truncated) out.textContent += '\n[注意] 回答被截断，不要当成完整答案';
+        } else if (frame.type === 'error') {
+          out.textContent += `\n[错误] ${frame.detail}`;
+        }
+      };
+    }
+    connect();
+
+    async function send() {
+      const query = input.value.trim();
+      if (!query) return;
+      input.value = '';
+      out.textContent = '';
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        connect();
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      socket.send(JSON.stringify({ query }));
+    }
+
+    document.getElementById('send').onclick = send;
+    input.addEventListener('keydown', event => { if (event.key === 'Enter') send(); });
+  </script>
+</body>
+</html>

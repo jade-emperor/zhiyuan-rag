@@ -2396,11 +2396,13 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
     { name = "unstructured" },
+    { name = "uvicorn" },
     { name = "wikipedia" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "httpx" },
     { name = "pyright" },
 ]
 
@@ -2454,11 +2456,15 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.7" },
     { name = "transformers", specifier = ">=4.52,<5.0" },
     { name = "unstructured", specifier = ">=0.16,<1.0" },
+    { name = "uvicorn", specifier = ">=0.30" },
     { name = "wikipedia", specifier = ">=1.4" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyright", specifier = ">=1.1.414" }]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pyright", specifier = ">=1.1.414" },
+]
 
 [[package]]
 name = "propcache"

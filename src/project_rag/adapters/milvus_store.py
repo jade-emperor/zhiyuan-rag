@@ -167,7 +167,7 @@ class MilvusVectorStore(VectorStore):
         schema.add_field("source", DataType.VARCHAR, max_length=64)
         # doc_id 是 ingest 用来清旧块的抓手(见 delete_by_doc_id)
         schema.add_field("doc_id", DataType.VARCHAR, max_length=64)
-        # 父子分层:M3.7 才填,现在允许空串
+        # 父子分层字段:父子分层之前入库的扁平块没有父块,所以允许空串;新写入的都带
         schema.add_field("parent_id", DataType.VARCHAR, max_length=64)
         schema.add_field("parent_content", DataType.VARCHAR, max_length=_MAX_PARENT)
 

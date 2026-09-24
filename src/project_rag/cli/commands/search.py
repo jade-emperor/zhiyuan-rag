@@ -1,4 +1,4 @@
-"""search 子命令:只做检索,把每一路捞回了什么、以及融合后长什么样摊开给你看。
+"""search 子命令:只做检索,把每一路捞回了什么、融合后长什么样、重排又改了什么摊开给你看。
 
 **刻意不调用大模型**:这一层的价值就是让你看见"检索到底捞回了什么"。
 带了生成反而看不清 —— 答案不对时,你分不清是检索没捞到还是模型没答好。
@@ -8,8 +8,11 @@
 余弦在 [0,1]),混在一起打印会让人误以为能比大小。分开看还有一个用处:
 调融合权重之前,先确认每一路**单独**是能用的 —— 一路本身就是烂的,融合救不回来。
 
-``--route both`` 会打三段:向量 / BM25 / 融合。**融合那段才是线上真正用的排序**,
-前两段是给你对照用的 —— 融合把某条从第 5 拉到了第 1,你要能一眼看出来。
+``--route both`` 会打四段:向量 / BM25 / 融合 / 重排。
+
+- **融合那段是「重排之前」的排序**,重排那段才是线上真正用的。
+- 重排段每条都标了「融合第 N → 重排第 M」:融合把某条从第 5 拉到第 1、重排又把它
+  打回第 4,你要能一眼看出来 —— 那是判断重排值不值得开的唯一现场证据。
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ _ROUTES = ("both", "vector", "bm25")
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """输入:子命令注册器。行为:注册 search,声明 -q / --k / --source / --route。输出:该子命令的解析器。"""
     parser = sub.add_parser(
-        NAME, help="只做检索:打印每一路与融合后的命中(不调用大模型)"
+        NAME, help="只做检索:打印每一路、融合与重排后的命中(不调用大模型)"
     )
     parser.add_argument("--question", "-q", required=True, help="要检索的问题")
     parser.add_argument(
@@ -40,7 +43,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--route",
         choices=_ROUTES,
         default="both",
-        help="看哪一路:vector=向量 / bm25=关键字 / both=两路 + 融合(默认)",
+        help="看哪一路:vector=向量 / bm25=关键字 / both=两路 + 融合 + 重排(默认)",
     )
     return parser
 
@@ -85,18 +88,40 @@ def _print_fused(options, fused) -> None:
         print(f"      {preview}…")
 
 
+def _print_reranked(citations, before: dict[str, int]) -> None:
+    """输入:重排后的引用、重排前的名次表。行为:打印重排后的排序与名次变化。输出:无。"""
+    print(f"\n[重排] 命中 {len(citations)} 条")
+    for index, citation in enumerate(citations, start=1):
+        chunk = citation.chunk
+        # 预览用 context_text:重排打分的和模型读的是同一段正文,这里也必须一致
+        preview = chunk.context_text[:50].replace("\n", "⏎")
+        was = before.get(chunk.chunk_id)
+        if citation.rerank_score is None:
+            # 候选只有一条时用例层会跳过重排 —— 说清楚,别让人以为重排给了它 0 分
+            head = "未重排(候选只有 1 条)"
+        else:
+            head = f"{citation.rerank_score:.4f}  融合第 {was} → 重排第 {index}"
+        print(
+            f"  [{index}] {head}  {chunk.source}  {chunk.doc_id}  {chunk.chunk_id[:12]}"
+        )
+        print(f"      {preview}…")
+
+
 def run(args) -> int:
-    """输入:解析好的参数(含 deps)。行为:按 --route 跑对应的一路或多路,并在两路时打融合结果。输出:退出码 0/1。"""
+    """输入:解析好的参数(含 deps)。行为:按 --route 跑对应的一路或多路,并在两路时打融合+重排。输出:退出码 0/1。"""
     from project_rag.config import get_settings
     from project_rag.domain import RetrievalOptions
 
     deps = args.deps
+    settings = get_settings()
     # 按路径要依赖:只跑 BM25 就不该强制要求嵌入模型 —— 那条路上模型纯属白加载
     required = []
     if args.route in ("both", "vector"):
         required += ["embedder_factory", "vector_store_factory"]
     if args.route in ("both", "bm25"):
         required += ["keyword_index_factory"]
+    if args.route == "both" and settings.rag.rerank:
+        required += ["reranker_factory"]
     missing = [name for name in required if getattr(deps, name, None) is None]
     if missing:
         print(
@@ -105,7 +130,6 @@ def run(args) -> int:
         )
         return 1
 
-    settings = get_settings()
     options = RetrievalOptions(
         k=args.k if args.k is not None else settings.rag.retrieval_k,
         source=args.source,
@@ -150,17 +174,29 @@ def run(args) -> int:
             from project_rag.application import retrieve
 
             # 融合那段走与 rag 完全相同的入口(retrieve):「看到什么」就是「模型拿到什么」。
-            # 检索会因此重跑一遍 —— 融合前的两次检索是给人对照用的,可接受
-            _print_fused(
-                options,
-                retrieve(
+            # 检索会因此重跑 —— 融合和重排各要一次,加上前面给人对照的两路,一共四次。
+            # 这是 search 这个命令唯一肯付的代价:它存在的意义就是把管道摊开
+            fused = retrieve(
+                args.question,
+                embedder=embedder,
+                store=store,
+                keyword_index=index,
+                options=options,
+            )
+            _print_fused(options, fused)
+            before = {item.chunk.chunk_id: item.index for item in fused}
+
+            if settings.rag.rerank:
+                # 重排器只造一次:每次调用都是一次 1.6s 的模型加载
+                reranked = retrieve(
                     args.question,
                     embedder=embedder,
                     store=store,
                     keyword_index=index,
+                    reranker=deps.reranker_factory(),
                     options=options,
-                ),
-            )
+                )
+                _print_reranked(reranked, before)
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("检索失败:%s", exc)
         _logger.debug("检索失败详情:", exc_info=True)

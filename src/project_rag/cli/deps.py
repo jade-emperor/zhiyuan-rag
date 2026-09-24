@@ -9,16 +9,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TypeVar
 
 from project_rag.adapters.bm25_index import BM25KeywordIndex
+from project_rag.domain import ConversationTurn, QaEvent, RetrievalOptions
 from project_rag.ports import (
     Cache,
+    ConversationStore,
     Embedder,
     FaqStore,
     LLMClient,
+    Reranker,
     TextMatcher,
     VectorStore,
 )
@@ -44,10 +48,17 @@ class Deps:
     # 关键字那一路。它的语料也是从向量库取的(全量文本只有那一份),
     # 所以它跟 vector_store_factory 共享同一个实例 —— 见 build_real_deps 里的 lru_cache
     keyword_index_factory: Callable[[], KeywordIndex] | None = None
+    # 重排。**注意它和上面几个不一样:工厂存在 ≠ 每次都用** ——
+    # 用不用由 config 的 rag.rerank 决定,而那个开关只在命令层读。
+    # 这样「关掉重排」不会顺带把模型加载也省掉,语义干净:
+    # 组合根负责「造得出来」,命令负责「这一次要不要用」。
+    reranker_factory: Callable[[], Reranker] | None = None
+    # M5.2 起:会话历史。带了 --session 才用得到,不注入就不造(同其它工厂)。
+    conversation_store_factory: Callable[[], ConversationStore] | None = None
 
 
 def build_real_deps() -> Deps:
-    """真实装配:读一次 Settings,把六个工厂装好。
+    """真实装配:读一次 Settings,把八个工厂装好。
 
     输入:无
     行为:读配置,工厂只捕获 settings 不建连接,真正的连接发生在命令用到它的时候;
@@ -60,15 +71,17 @@ def build_real_deps() -> Deps:
     from project_rag.adapters import (
         BM25TextMatcher,
         DeepSeekLLM,
+        MySQLConversationStore,
         MySQLFaqStore,
         RedisCache,
     )
     from project_rag.adapters.embedder_bge_m3 import BGEM3Embedder
     from project_rag.adapters.milvus_store import MilvusVectorStore
+    from project_rag.adapters.reranker_bge import BGEReranker
     from project_rag.config import get_settings
 
     settings = get_settings()
-    # 提前创建对象,后续的BM25索引才可用
+    # 匹配器只造一个:工厂每次调用都返回同一个实例,它按语料指纹缓存的索引才有意义
     matcher = BM25TextMatcher()
 
     # 两路共用同一个向量库实例:BM25 那一路要从库里取全量语料,
@@ -89,5 +102,63 @@ def build_real_deps() -> Deps:
         embedder_factory=lambda: BGEM3Embedder(settings.embedding),
         vector_store_factory=_vector_store,
         keyword_index_factory=lambda: BM25KeywordIndex(_vector_store()),
+        # 重排模型同样上 G 内存(实测加载 1.6s),所以也是惰性工厂;
+        # 而且它跟嵌入共用 embedding 段配置(rerank_model_dir / device / use_f16)
+        reranker_factory=lambda: BGEReranker(settings.embedding),
+        # M5.2:会话历史。pymysql 很轻,但同样只在 --session 用到时才构造
+        conversation_store_factory=lambda: MySQLConversationStore(
+            settings.mysql, settings.conversation
+        ),
         faq_threshold=settings.faq.threshold,
     )
+
+
+_T = TypeVar("_T")
+
+
+def _required(factory: Callable[[], _T] | None, name: str) -> Callable[[], _T]:
+    """输入:一个可空工厂 + 它的名字。行为:为空则报错(组合根漏装),否则原样返回。输出:非空工厂。
+
+    命令层已经查过「缺哪个」并给了人话;这里再兜一层是为了让类型检查器把
+    ``Callable | None`` 收窄成 ``Callable`` —— 否则每个调用点都要手写一遍 assert。
+    """
+    if factory is None:
+        raise RuntimeError(f"{name} 没装配:合流问答要 FAQ 与知识库两条通道的端口")
+    return factory
+
+
+def knowledge_callable(
+    deps: Deps, query: str, options: RetrievalOptions, *, rerank: bool
+) -> Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]]:
+    """把知识库通道的端口拼成**一次调用的零参函数**(不调用它就什么都不构造)。
+
+    输入:依赖集合、问题、检索旋钮、要不要重排
+    行为:返回一个闭包;闭包被调用时才去调那几个惰性工厂(向量库/嵌入/BM25/重排)
+    输出:(历史轮次) -> 帧序列 —— 历史由用例层读出来再交进来,组合根不碰会话存储
+
+    为什么要有它:合流入口(``qa`` 命令、M5.4 的 FastAPI)都从这里拿「知识库通道」——
+    怎么拼只写一处,省得某条入口漏传了 source 或检索旋钮(讲义 ④-06 就是三条增强
+    检索路径都漏传 source_filter)。放在组合根而不是用例里,是因为「怎么造、什么时候造」
+    正是组合根的职责;用例只该知道「有个函数能给我答案」。**惰性也在这里落地**:
+    ``qa`` 命中 FAQ 时这个闭包一次都不会被调用,嵌入/重排模型也就不会被加载。
+    """
+
+    def call(history: Sequence[ConversationTurn]) -> Iterator[QaEvent]:
+        from project_rag.application import stream_rag
+
+        return stream_rag(
+            query,
+            embedder=_required(deps.embedder_factory, "embedder_factory")(),
+            store=_required(deps.vector_store_factory, "vector_store_factory")(),
+            llm=_required(deps.llm_factory, "llm_factory")(),
+            keyword_index=_required(
+                deps.keyword_index_factory, "keyword_index_factory"
+            )(),
+            reranker=_required(deps.reranker_factory, "reranker_factory")()
+            if rerank
+            else None,
+            options=options,
+            history=history,
+        )
+
+    return call

@@ -19,9 +19,33 @@ from project_rag.ports import Embedder, TextChunker, VectorStore
 
 _logger = get_logger("application.ingest_documents")
 
-# BGE-M3 在 CPU 上实测:8 块 1.5 块/秒、40 块 2.2 块/秒 —— 批量越大越划算
-# (padding 摊销 + 矩阵乘吃满)。所以默认按批走,而不是逐块调用。
+# 批量越大越划算(padding 摊销 + 矩阵乘吃满),所以默认按批走,而不是逐块调用。
 DEFAULT_BATCH_SIZE = 64
+
+# 主键摘要算法。**只在这一处定义**:换算法只改这一个字符串,
+# 不会出现「有的地方 sha256、有的地方 md5」那种半吊子状态。
+# 十六进制长度必须 ≤ Milvus schema 里 chunk_id / parent_id 的 max_length(64)。
+_DIGEST = "sha256"
+
+# 摘要各字段之间的分隔符。用单元分隔符而不是竖线:
+# 竖线是合法文件名字符、markdown 表格里也常见,而 f"{a}|{b}" 对
+# ("a|b", "c") 和 ("a", "b|c") 会给出同一个串。
+# 分隔符本来就该挑一个正文里不会出现的字符;
+# 这也是缓存 value 契约用的那个分隔符,口径一致。
+_FIELD_SEP = "\x1f"
+
+
+def _digest(*parts: str) -> str:
+    """输入:若干文本片段。行为:按 ``_FIELD_SEP`` 连接后取摘要。输出:十六进制摘要字符串。
+
+    **为什么不是 md5**:md5 已有实用的碰撞构造,而 ``chunk_id`` 是本项目**唯一**的
+    幂等依据 —— 一旦碰撞,两个不同的块会被当成同一个,``upsert`` 会**静默覆盖**掉一个,
+    表现成「语料里少了一块」而没有任何报错。这种静默的数据丢失,比多花几微秒糟得多。
+
+    sha256 的十六进制是 64 字符,正好等于 Milvus schema 里 ``chunk_id`` / ``parent_id``
+    的 ``max_length=64``,所以换算法**不需要改集合结构**。
+    """
+    return hashlib.new(_DIGEST, _FIELD_SEP.join(parts).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,28 +62,28 @@ class IngestReport:
 def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list[Chunk]:
     """输入:文档序列 + 切分器。行为:按父子分层切块并生成稳定 id。输出:子块列表。
 
-    ``chunk_id`` 与 ``parent_id`` 都是 ``md5(来源|文档|位置|内容)``,成分各有理由:
+    ``chunk_id`` 与 ``parent_id`` 都是 ``sha256(来源 / 文档 / 位置 / 内容)``,成分各有理由:
 
     - **带内容** → 同一位置换了内容就是新块,不会被旧块"覆盖成没更新";
-    - **带位置** → 不同位置出现相同文本不会互相顶掉(讲义用纯内容 md5,
+    - **带位置** → 不同位置出现相同文本不会互相顶掉(讲义用**纯内容**哈希,
       两条相同的块会合并成一条,父块归属就乱了);
     - **带文档路径** → 两份文件里恰好有同样的句子也不会撞;
     - **不带时间戳** → 同一份输入跑两次得到同一批 id,这就是 upsert 幂等的来源。
 
     子块 id 里**含父块序号**:同一段文本落在两个父块下时它们是两个块,
     各自记着自己的父块 —— 否则父块归属会张冠李戴。
+
+    ⚠️ **改这里的配方 = 所有旧块都变成「新块」**:``upsert`` 按 id 覆盖,覆盖不到上一套 id,
+    结果就是新旧两套并存(库里真的出现过这种残留)。所以改了配方**必须重新 ingest**。
     """
     chunks: list[Chunk] = []
     for document in documents:
         for parent_index, group in enumerate(chunker.split(document.text)):
-            prefix = f"{document.source}|{document.doc_id}|p{parent_index}"
-            parent_id = hashlib.md5(
-                f"{prefix}|{group.parent_text}".encode("utf-8")
-            ).hexdigest()
+            # 位置部分先在前面拼好,父块和子块共用同一份
+            where = (document.source, document.doc_id, f"p{parent_index}")
+            parent_id = _digest(*where, group.parent_text)
             for child_index, text in enumerate(group.children):
-                chunk_id = hashlib.md5(
-                    f"{prefix}|c{child_index}|{text}".encode("utf-8")
-                ).hexdigest()
+                chunk_id = _digest(*where, f"c{child_index}", text)
                 chunks.append(
                     Chunk(
                         chunk_id=chunk_id,

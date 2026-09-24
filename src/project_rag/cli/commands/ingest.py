@@ -1,9 +1,5 @@
 """
 ingest 子命令:把文档切块入库。
-
-M3.4 阶段只有 ``--dry-run`` 能从头跑到尾(加载 + 切分 + 打印统计)——
-真实写入要等 M3.5 的 Milvus 适配器与组合根装配,所以那条路径现在会 fail-fast 并说清楚原因,
-而不是悄悄写进内存实现(那是「静默退回假实现」,本项目明令禁止)。
 """
 
 from __future__ import annotations
@@ -19,10 +15,10 @@ _logger = get_logger("cli.ingest")
 
 NAME = "ingest"
 
-# 默认语料:课程大纲(纯 Markdown,26K)—— M3.4 的首选,先跑通再谈多格式
-_DEFAULT_PATH = "data/corpus/ai_data"
+# 默认语料:先跑通再谈多格式
+_DEFAULT_PATH = "data/corpus/bagu_ai_data"
 
-# 真实写入需要的两个工厂(M3.5 之前都是 None)
+# 真实写入需要的两个工厂
 _REQUIRED_FACTORIES = ("embedder_factory", "vector_store_factory")
 
 
@@ -111,15 +107,15 @@ def run(args) -> int:
     )
 
     if args.dry_run:
-        print("\n--dry-run:没有加载模型、没有写库")
+        print("\n--dry-run:识别到这个参数,直接退出,不进行下面的入库操作")
         return 0
 
     deps = args.deps
     missing = [name for name in _REQUIRED_FACTORIES if getattr(deps, name) is None]
     if missing:
         print(
-            f"缺少依赖 {missing}:真实写入要等 M3.5 的 Milvus 适配器与组合根装配;"
-            "现在请用 --dry-run 看切分质量",
+            f"缺少依赖 {missing}:检查 build_real_deps 有没有装配嵌入模型与向量库;"
+            "只想看切分质量就加 --dry-run",
             file=sys.stderr,
         )
         return 1

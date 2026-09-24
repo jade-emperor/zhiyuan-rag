@@ -67,10 +67,22 @@ class RedisConfig(BaseModel):
 
 class FaqConfig(BaseModel):
     # 表名和阈值。阈值口径见 adapters/matcher_bm25.py:
-    # score = top1 原始分 / 该条问自己的分,一字不差 ≈ 1.000,完全无关 ≤ 0.274,
-    # 所以 0.85 表示「只答近乎一字不差的问题」,改写问法交给 RAG 通道。
+    # score = top1 原始分 / 该条问自己的分,一字不差 ≈ 1.000,
+    # 完全无关 ≤ 0.303(463 条真实语料),所以 0.85 表示「只答近乎一字不差的问题」,
+    # 改写问法交给知识库通道。
     threshold: float = 0.85
     table: str = "faq"
+
+
+class ConversationConfig(BaseModel):
+    """会话历史(讲义 ⑥-6.2):表名与保留轮数。
+
+    轮数走配置,而不是像讲义那样在三处各硬编码一个 5 —— 读(取几轮喂提示词)与写
+    (把会话裁到几轮)用的是同一个值,改一处两处都变。0 或负数由读侧拒绝(见 Session)。
+    """
+
+    table: str = "conversations"
+    history_rounds: int = 5
 
 
 class MilvusConfig(BaseModel):
@@ -123,6 +135,11 @@ class RagConfig(BaseModel):
     # 两路权重:rrf 模式是排名权重,weighted 模式是分数权重。
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
+    # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次(讲义 ④-4 的做法)。
+    #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
+    #   CPU 上 ≈1.1 s/条(900 字),一条 query 多花 5~10s;关掉它就退回纯融合排序。
+    #   它是评估用的消融开关,不是永久配置 —— M4 要用它比「开/关重排」的指标
+    rerank: bool = True
 
     @model_validator(mode="after")
     def _check_sizes(self) -> RagConfig:
@@ -180,6 +197,7 @@ class Settings(BaseSettings):
     milvus: MilvusConfig = MilvusConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     rag: RagConfig = RagConfig()
+    conversation: ConversationConfig = ConversationConfig()
 
     # 这个类方法,是用来定义配置的来源和优先级顺序的
     @classmethod
@@ -217,6 +235,7 @@ __all__ = [
     "CONFIG_FILE",
     "ENV_FILE",
     "PROJECT_ROOT",
+    "ConversationConfig",
     "EmbeddingConfig",
     "FaqConfig",
     "LLMConfig",

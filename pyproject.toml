@@ -72,6 +72,7 @@ dependencies = [
     # ---- Web 服务 ----
     "fastapi>=0.115",
     "starlette>=0.46",
+    "uvicorn>=0.30",
     "langchain-deepseek>=1.1.0",
     "langchain-openai>=1.6.1",
     "pydantic-settings>=2.15.0",
@@ -88,8 +89,11 @@ packages = ["src/project_rag"]
 [dependency-groups]
 dev = [
     "pyright>=1.1.414",
+    # FastAPI 的 TestClient 依赖 httpx;验收脚本 import 它,所以显式声明
+    "httpx>=0.27",
 ]
 
 [project.scripts]
 # 构建映射,通过project-rag可以找到cli()函数
 project-rag = "project_rag.cli.main:cli"
+project-rag-api = "project_rag.api.app:run"

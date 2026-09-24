@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
 
 from project_rag.config import LLMConfig
-from project_rag.domain import ChatMessage
+from project_rag.domain import ChatMessage, LlmDelta
 from project_rag.ports import LLMClient
 
 # 角色 -> langchain 消息类,字典分派省掉 if/elif 链
@@ -54,7 +54,26 @@ class DeepSeekLLM(LLMClient):
         )  # 这里获得deepseek的策略类
 
     # 调用大模型,输入
-    def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
-        """输入:领域消息序列。行为:转换格式后调模型,逐块取 content。输出:文本片段迭代器。"""
+    def stream(self, messages: Sequence[ChatMessage]) -> Iterator[LlmDelta]:
+        """输入:领域消息序列。行为:转换格式后调模型,逐帧取 content 与 finish_reason。输出:帧迭代器。
+
+        **不再丢 finish_reason**(M4 实测到过半截答案,而它就是这么丢的):
+        收尾时补一帧 ``last=True``,把「这次是怎么结束的」明确交出去。
+
+        三个实测细节(2026-09-23,deepseek-flash):
+        ① finish_reason 在 ``chunk.response_metadata`` 里,不在 ``chunk.finish_reason``
+           (langchain 的 AIMessageChunk 根本没那个属性);
+        ② provider 在带 finish_reason 的那帧**之后**还会再发一个空帧(无内容、无元数据)——
+           那种帧没有信息,直接丢掉;否则消费方会以为「最后一帧没有结束原因」;
+        ③ ``chunk.content`` 可能是 None(收尾帧),``str(None)`` 会把字符串 "None" 混进答案。
+        """
+        reason: str | None = None
         for chunk in self._client.stream(to_sdk_messages(messages)):
-            yield str(chunk.content)
+            text = str(chunk.content or "")
+            got = (chunk.response_metadata or {}).get("finish_reason")
+            if got is not None:
+                reason = str(got)
+            if text:
+                yield LlmDelta(text=text)
+        # 恰好一帧 last:只说「流结束了、原因是这个」(provider 没说就给 None)
+        yield LlmDelta(finish_reason=reason, last=True)

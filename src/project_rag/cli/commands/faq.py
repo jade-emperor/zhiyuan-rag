@@ -1,4 +1,4 @@
-"""ask 子命令:拿一个问题去 FAQ 库检索,命中直答,未命中交给 LLM 兜底。"""
+"""faq 子命令:拿一个问题去 FAQ 库检索,命中直答,未命中交给 LLM 兜底。"""
 
 from __future__ import annotations
 
@@ -8,23 +8,23 @@ import sys
 from project_rag.observability import get_logger
 from project_rag.ports import Cache
 
-_logger = get_logger("cli.ask")
+_logger = get_logger("cli.faq")
 
 # 用于主命令查找
-NAME = "ask"
+NAME = "faq"
 
 # 3个必须要的依赖工厂
 _REQUIRED_FACTORIES = ("llm_factory", "faq_store_factory", "matcher_factory")
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    """添加 ask 子命令的解析器。
+    """添加 faq 子命令的解析器。
 
     输入:子命令注册器
-    行为:注册 ask 命令,声明必填的 -q/--question
+    行为:注册 faq 命令,声明必填的 -q/--question
     输出:该子命令的解析器
     """
-    parser = sub.add_parser("ask", help="问答子命令,输入问题,输出答案")
+    parser = sub.add_parser(NAME, help="FAQ 单通道:命中直答,未命中交给模型兜底")
     parser.add_argument("--question", "-q", help="具体检索的问题", required=True)
     return parser
 

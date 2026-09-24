@@ -42,7 +42,7 @@ embedding:
   model_dir: models/bge-m3
   # 重排模型,现在只把位置定下来
   rerank_model_dir: models/bge-reranker-v2-m3
-  device: cpu
+  device: cuda
   use_f16: false
 
 rag:
@@ -50,8 +50,12 @@ rag:
   parent_chunk_size: 1200
   child_chunk_size: 300
   chunk_overlap: 50
+  # 2026-09-22 用 M4 评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
+  # 10/3 把 recall 从 0.9654 抬到 0.9844,但 precision 0.9732→0.9595、
+  # faithfulness 0.9680→0.9491,四项均值 0.9347→0.9313 —— 花更多上下文买到更差的忠实度,
+  # 所以**回到 5/2**。证据留档:docs/STATUS.md §0.5 与 data/README.md。
   retrieval_k: 5          # 每一路各召回多少条(BM25 路 / 向量路)
-  candidate_m: 2          # 融合后最终进上下文的块数
+  candidate_m: 2          # 融合后最终进上下文的块数,也就是大模型收到的父块数量
   # 融合:两路(进程内 BM25 关键字 + Milvus 稠密向量)合并成一个排序。
   #   rrf      —— 只用排名,免标定,对两路分数量纲不敏感
   #   weighted —— 各自归一化后加权,能表达「哪一路更可信」,但要调权重
@@ -61,3 +65,12 @@ rag:
   # 两路权重:rrf 模式=排名权重,weighted 模式=分数权重。至少一个 > 0。
   bm25_weight: 0.5
   vector_weight: 0.5
+    # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次(讲义 ④-4 的做法)。
+  #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
+  rerank: true
+
+conversation:
+  # 会话历史(讲义 ⑥-6.2):表名 + 保留轮数。
+  # 读写共用 history_rounds:读最近 N 轮进提示词,写的时候把会话裁到最近 N 轮。
+  table: conversations
+  history_rounds: 5
