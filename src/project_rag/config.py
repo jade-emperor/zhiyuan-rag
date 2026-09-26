@@ -23,6 +23,14 @@ class LLMConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 4096
     timeout_s: float = 60.0
+    # 思考模式(DeepSeek V4 系列支持,**一个变量同时管开关与强度**):
+    #   auto         —— 不发任何参数,沿用服务端默认(开启、high)= 加这个字段之前的行为
+    #   off          —— 关掉思考:实测首个内容字 **~0.5s**(思考时 2~15s)
+    #   low/high/max —— 开启并指定强度(模型支持档位见 GET /models 的 effort.supported_levels)
+    # 两个要知道的副作用:① 思考模式下 temperature 会被 provider **忽略**(不报错也不生效),
+    # 只有 off 时才用得上;② 思考计入输出 token 计费,而且会吃掉 max_tokens 预算
+    # (思考吃满时 content 为 0 帧、finish_reason=length → 产品会按「空回答」降级成拒答话术)。
+    thinking: Literal["auto", "off", "low", "high", "max"] = "auto"
 
     # 验证器,这个方法会自动被调用,验证DEEPSEEK_API_KEY字段的值,如果未设置或者为空,会抛出异常
     @field_validator("deepseek_api_key")

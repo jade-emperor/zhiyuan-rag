@@ -13,6 +13,12 @@ api:
 llm:
   model: deepseek-flash
   base_url: https://api.deepseek.com/v1
+  # 思考模式(开关 + 强度一个变量搞定):
+  #   auto         = 不发参数,沿用服务端默认(开启、high)—— 即加这个开关之前的行为
+  #   off          = 不思考(最快):实测首个内容字 ~0.5s(思考时 2~15s)
+  #   low / high / max = 开启并指定强度(deepseek-flash 支持 low/high/max,默认 high)
+  # 注意:思考时 temperature 会被忽略(不报错也不生效);思考还会计入输出 token。
+  thinking: "off"
   temperature: 0.7
   max_tokens: 4096
   timeout_s: 60.0
@@ -76,7 +82,7 @@ rag:
   rerank: true
 
 conversation:
-  # 会话历史(讲义 ⑥-6.2):表名 + 保留轮数。
+  # 会话历史:表名 + 保留轮数。
   # 读写共用 history_rounds:读最近 N 轮进提示词,写的时候把会话裁到最近 N 轮。
   table: conversations
   history_rounds: 5

@@ -2,11 +2,17 @@
 
 两件事都只在这里做:领域类型 <-> SDK 类型的转换、发请求。
 异常不在这里吞 —— 翻译成人话是 cli 层的事。
+
+**思考模式**:配置里只有「意图」(`llm.thinking`:auto/off/low/high/max),
+翻成 provider 字段是**适配器的事** —— 字段名(`reasoning_effort`)、取值(`none`)
+都是厂商/SDK 知识,漏进 config 或用例就等于把 provider 焊在了上层。
+官方文档:<https://api-docs.deepseek.com/guides/thinking_mode/>
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from typing import TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_deepseek import ChatDeepSeek
@@ -14,6 +20,41 @@ from langchain_deepseek import ChatDeepSeek
 from project_rag.config import LLMConfig
 from project_rag.domain import ChatMessage, LlmDelta
 from project_rag.ports import LLMClient
+
+# 配置里的思考模式 -> provider 的 reasoning_effort。
+# OpenAI 格式下它**同时管开关与强度**:none 关思考,low/high/max 开启并指定强度;
+# 不传 = 服务端默认(开启、high)。实测(2026-09-26,deepseek-flash,同一个问题):
+#   不传     -> 64 token 预算全被思考吃掉,一个内容字都没出
+#   off      -> **0 个思考帧**,首个内容字 504ms
+#   low/high -> 仍然先思考(思考帧 64/64,首个思考帧 645/723ms)
+_EFFORT_BY_THINKING = {"off": "none", "low": "low", "high": "high", "max": "max"}
+
+
+class ThinkingKwargs(TypedDict, total=False):
+    """``thinking_kwargs()`` 的返回形状。
+
+    用 TypedDict 而不是 ``dict[str, str]``:后者一展开(``**kwargs``)就会被类型检查器
+    逐个去对 ``ChatDeepSeek.__init__`` 的几十个参数,报一屏「str 不能赋给 BaseCache」。
+    TypedDict 只声明我们真的会传的那一个键,检查照样生效。
+    """
+
+    reasoning_effort: str
+
+
+def thinking_kwargs(thinking: str) -> ThinkingKwargs:
+    """输入:配置里的思考模式(auto/off/low/high/max)。行为:翻成构造客户端用的参数。输出:关键字参数字典。
+
+    ``auto`` 给**空字典** = 什么都不发,沿用服务端默认(开启、high)——
+    这样「不动配置」的行为与加这个开关之前逐字节一致,不会凭空换掉默认行为。
+
+    **为什么不用文档里那个 ``thinking={"type": "disabled"}``**:官方说明它得走
+    ``extra_body``(langchain 的 ``model_config`` 是 ``extra="ignore"``——字段名写错会被
+    **静默吞掉**,连个警告都没有)。``reasoning_effort`` 是 langchain 的真字段
+    (``str | None``),拼错会立刻构造失败,而且它一个参数就同时管开关与强度。
+    """
+    effort = _EFFORT_BY_THINKING.get(thinking)
+    return {} if effort is None else {"reasoning_effort": effort}
+
 
 # 角色 -> langchain 消息类,字典分派省掉 if/elif 链
 _LANGCHAIN_MESSAGE = {
@@ -51,6 +92,7 @@ class DeepSeekLLM(LLMClient):
             max_tokens=config.max_tokens,
             timeout=config.timeout_s,  # timeout 是 request_timeout 的 alias
             streaming=True,
+            **thinking_kwargs(config.thinking),  # auto 时是空字典 = 不发参数
         )  # 这里获得deepseek的策略类
 
     # 调用大模型,输入
