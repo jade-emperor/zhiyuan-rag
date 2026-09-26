@@ -83,10 +83,10 @@ class FaqConfig(BaseModel):
 
 
 class ConversationConfig(BaseModel):
-    """会话历史(讲义 ⑥-6.2):表名与保留轮数。
+    """会话历史:表名与保留轮数。
 
-    轮数走配置,而不是像讲义那样在三处各硬编码一个 5 —— 读(取几轮喂提示词)与写
-    (把会话裁到几轮)用的是同一个值,改一处两处都变。0 或负数由读侧拒绝(见 Session)。
+    轮数走配置,不在读、写两处各硬编码一个 5 —— 两边用的是同一个值,改一处两处都变。
+    0 或负数由读侧拒绝(见 Session)。
     """
 
     table: str = "conversations"
@@ -97,7 +97,7 @@ class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
     # 启动预热:先把嵌入/重排模型、语料索引、Milvus 连接建好,把「第一个请求的冷启动」
-    # 从**第一个用户**身上挪到启动阶段(M5.6 实测:不预热时首个请求比热请求多付 4.4s)。
+    # 从**第一个用户**身上挪到启动阶段(实测:不预热时首个请求比热请求多付 4.4s)。
     # 预热只走到「检索出引用」为止,**不调大模型**,所以不花 token 钱;
     # 失败只记一条 WARNING,不拦启动。关掉它 = 启动更快、但首个请求自己扛冷启动。
     warmup: bool = True
@@ -153,10 +153,10 @@ class RagConfig(BaseModel):
     # 两路权重:rrf 模式是排名权重,weighted 模式是分数权重。
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
-    # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次(讲义 ④-4 的做法)。
+    # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次。
     #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
     #   CPU 上 ≈1.1 s/条(900 字),一条 query 多花 5~10s;关掉它就退回纯融合排序。
-    #   它是评估用的消融开关,不是永久配置 —— M4 要用它比「开/关重排」的指标
+    #   它是评估用的消融开关,不是永久配置 —— 评估集上用它比「开/关重排」的指标
     rerank: bool = True
 
     @model_validator(mode="after")

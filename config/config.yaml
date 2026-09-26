@@ -6,7 +6,7 @@ log_dir: logs
 
 api:
   # 启动预热:把嵌入/重排模型、语料索引、Milvus 连接先在启动阶段建好,
-  # 免得第一个用户扛冷启动(M5.6 实测:首个请求比热请求多付 4.4s)。
+  # 免得第一个用户扛冷启动(实测:首个请求比热请求多付 4.4s)。
   # 只跑到「检索出引用」为止,不调大模型 → 不花 token 钱;失败不拦启动。
   warmup: true
 
@@ -62,7 +62,7 @@ rag:
   parent_chunk_size: 1200
   child_chunk_size: 300
   chunk_overlap: 50
-  # 2026-09-22 用 M4 评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
+  # 2026-09-22 用评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
   # 10/3 把 recall 从 0.9654 抬到 0.9844,但 precision 0.9732→0.9595、
   # faithfulness 0.9680→0.9491,四项均值 0.9347→0.9313 —— 花更多上下文买到更差的忠实度,
   # 所以**回到 5/2**。证据留档:docs/STATUS.md §0.5 与 data/README.md。
@@ -77,7 +77,7 @@ rag:
   # 两路权重:rrf 模式=排名权重,weighted 模式=分数权重。至少一个 > 0。
   bm25_weight: 0.5
   vector_weight: 0.5
-    # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次(讲义 ④-4 的做法)。
+  # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次。
   #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
   rerank: true
 

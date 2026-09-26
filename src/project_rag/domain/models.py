@@ -27,7 +27,7 @@ class ChatMessage:
 
     只用 dataclass,不用 pydantic:domain 不该依赖校验/序列化框架,
     这样它可以在任何地方被实例化、比较、当字典键,不需要框架参与。
-    将来加 HTTP 接口(FastAPI)返回它时,在 cli 层做 domain -> schema 的转换。
+    HTTP 接口返回它时,domain -> schema 的转换在 api 层做(见 ``api/schemas.py``)。
 
     也不要在这里加 to_langchain() 之类的方法 —— 那会把 langchain 拉进 domain。
     转换是适配器的职责(见 adapters/llm_deepseek.py 的 to_sdk_messages)。
@@ -42,8 +42,8 @@ class ChatMessage:
 class ConversationTurn:
     """一轮问答(对话历史里的一条)。
 
-    刻意不用 dict:讲义那版历史是 ``[{"question": ..., "answer": ...}]``,
-    每个消费点都要自己校验 ``"question" in h``、自己转类型;换成领域类型之后,
+    刻意不用 dict:写成 ``[{"question": ..., "answer": ...}]`` 的话,每个消费点都要自己
+    校验 ``"question" in h``、自己转类型;换成领域类型之后,
     「一轮历史长什么样」由类型担保,用例与提示词层都不用再写一遍防御。
     """
 
@@ -59,10 +59,10 @@ class LlmDelta:
     max_tokens 被砍;"content_filter" 等其它值同理)。适配器会把收尾信息补成
     ``last=True`` 的最后一帧 —— 消费方只看那一帧就够了,不用自己猜哪帧带原因。
 
-    **为什么结束原因必须传出来**:M4 实测到过「半截答案」(「…同时用向量」就没了),
+    **为什么结束原因必须传出来**:实测到过「半截答案」(「…同时用向量」就没了),
     而当时适配器把它丢了 —— 用户拿到半句话却没有任何提示,比明说「答不出来」更误导。
 
-    **思考内容走另一个字段**(``reasoning_text``,M5.8):思考模型(DeepSeek-V4 系列)
+    **思考内容走另一个字段**(``reasoning_text``):思考模型(DeepSeek-V4 系列)
     在正文之前会先吐一串 ``reasoning_content``。它**不许进 ``text``** ——
     理由不是洁癖:``"".join(d.text for d in deltas)`` 是「答案」在全项目里的定义,
     思考要是混在 ``text`` 里,每个消费方都得记得加过滤,漏一处就把模型的草稿印给用户。
@@ -213,9 +213,9 @@ class RagAnswer:
 
 @dataclass(frozen=True, slots=True)
 class QaAnswer:
-    """合流通道的回答:哪条通道答的,以及那条通道的证据链(讲义 ⑥-6.1)。
+    """合流通道的回答:哪条通道答的,以及那条通道的证据链。
 
-    讲义那版 query 只返回一个字符串;这里把「谁答的、凭什么」一起带上 ——
+    只返回一个字符串是不够的;这里把「谁答的、凭什么」一起带上 ——
     引用清单在 RagAnswer 里已经有了,合流没有理由把它丢掉(用户要能核对答案出处)。
 
     不变式(由 answer_question 保证,check_m5_qa.py 逐条盯着):
@@ -262,7 +262,7 @@ class QaEvent:
 
 @dataclass(frozen=True, slots=True)
 class ChunkGroup:
-    """一个父块 + 它切出来的子块(讲义 4.3 的父子分层)。
+    """一个父块 + 它切出来的子块(父子分层)。
 
     切分器只吐出这种分组,不生成 id —— id 怎么编是用例层的事
     (要带来源、文档、位置、内容四样东西,切分器不该知道这些)。

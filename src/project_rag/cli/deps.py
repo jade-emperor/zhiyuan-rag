@@ -43,7 +43,7 @@ class Deps:
     matcher_factory: Callable[[], TextMatcher] | None = None
     cache_factory: Callable[[], Cache | None] | None = None  # 返回 None = 无缓存
     faq_threshold: float = DEFAULT_FAQ_THRESHOLD
-    # 思考档位(M5.8)。**不是工厂**:它是个静态标签,唯一用途是让延迟账里能看出
+    # 思考档位。**不是工厂**:它是个静态标签,唯一用途是让延迟账里能看出
     # 「这一轮按哪一档跑的」。命令层把它转交给 stream_rag / stream_question,用例与账本
     # 都不认识 config。默认 None → 账里是 '-'（注入式调用不该被编一个假档位)。
     thinking: str | None = None
@@ -57,7 +57,7 @@ class Deps:
     # 这样「关掉重排」不会顺带把模型加载也省掉,语义干净:
     # 组合根负责「造得出来」,命令负责「这一次要不要用」。
     reranker_factory: Callable[[], Reranker] | None = None
-    # M5.2 起:会话历史。带了 --session 才用得到,不注入就不造(同其它工厂)。
+    # 会话历史。带了 --session 才用得到,不注入就不造(同其它工厂)。
     conversation_store_factory: Callable[[], ConversationStore] | None = None
 
 
@@ -92,7 +92,7 @@ def build_real_deps() -> Deps:
     # Milvus 连接 / 嵌入模型(2G) / 重排模型(2.2G) / BM25 的全量分词索引。
     # 为什么必须缓存:CLI 一进程一命令时无所谓(那正是惰性工厂的设计初衷),但
     # `project-rag-api` 是**常驻进程** —— 不缓存就是「每个走 RAG 的请求重载一遍模型」。
-    # 实测(M5.6 的延迟账):一次请求 10.4s 里有 **4.4s** 花在构造端口上,
+    # 实测(延迟账):一次请求 10.4s 里有 **4.4s** 花在构造端口上,
     # 单是 BGEM3Embedder 636ms + BGEReranker 394ms(CPU,构造两次耗时一样 → 完全没复用)。
     #
     # 两路共用同一个向量库实例:BM25 那一路要从库里取全量语料,
@@ -120,7 +120,7 @@ def build_real_deps() -> Deps:
         faq_store_factory=lambda: MySQLFaqStore(settings.mysql, settings.faq),
         matcher_factory=lambda: matcher,
         cache_factory=lambda: RedisCache(settings.redis),
-        # M3:知识库通道。BGEM3Embedder 会把 torch 拉起来(秒级 + 上 G 内存),
+        # 知识库通道。BGEM3Embedder 会把 torch 拉起来(秒级 + 上 G 内存),
         # 所以它只在工厂**被调用**时才构造 —— ingest / search 之外用不到就不付这份钱。
         embedder_factory=_embedder,
         vector_store_factory=_vector_store,
@@ -128,7 +128,7 @@ def build_real_deps() -> Deps:
         # 重排模型同样上 G 内存(实测加载 1.6s),所以也是惰性工厂;
         # 而且它跟嵌入共用 embedding 段配置(rerank_model_dir / device / use_f16)
         reranker_factory=_reranker,
-        # M5.2:会话历史。pymysql 很轻,但同样只在 --session 用到时才构造
+        # 会话历史。pymysql 很轻,但同样只在 --session 用到时才构造
         conversation_store_factory=lambda: MySQLConversationStore(
             settings.mysql, settings.conversation
         ),
@@ -160,9 +160,9 @@ def knowledge_callable(
     行为:返回一个闭包;闭包被调用时才去调那几个惰性工厂(向量库/嵌入/BM25/重排)
     输出:(历史轮次) -> 帧序列 —— 历史由用例层读出来再交进来,组合根不碰会话存储
 
-    为什么要有它:合流入口(``qa`` 命令、M5.4 的 FastAPI)都从这里拿「知识库通道」——
-    怎么拼只写一处,省得某条入口漏传了 source 或检索旋钮(讲义 ④-06 就是三条增强
-    检索路径都漏传 source_filter)。放在组合根而不是用例里,是因为「怎么造、什么时候造」
+    为什么要有它:合流入口(``qa`` 命令、FastAPI)都从这里拿「知识库通道」——
+    怎么拼只写一处,省得某条入口漏传了 source 或检索旋钮(三条增强检索路径都漏传过
+    source_filter)。放在组合根而不是用例里,是因为「怎么造、什么时候造」
     正是组合根的职责;用例只该知道「有个函数能给我答案」。**惰性也在这里落地**:
     ``qa`` 命中 FAQ 时这个闭包一次都不会被调用,嵌入/重排模型也就不会被加载。
     """

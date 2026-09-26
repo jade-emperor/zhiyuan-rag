@@ -12,7 +12,7 @@
 恒等式:``"".join(t.text for t in token 帧).strip() == done.answer``。
 
 **为什么把协议单独放一处**:两个生产方(``stream_rag`` / ``stream_question``)与两个消费方
-(CLI、M5.4 的 WebSocket)必须对同一套帧达成一致;而 ``done_of`` 是非流式入口复用的桥 ——
+(CLI、WebSocket)必须对同一套帧达成一致;而 ``done_of`` 是非流式入口复用的桥 ——
 ``answer_rag`` / ``answer_question`` 就是「把流收拢成一句答案」,所以**流式与非流式
 逐字一致这件事是结构上成立的**,不是靠两边小心地写两遍。
 

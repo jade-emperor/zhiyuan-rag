@@ -5,8 +5,8 @@ HTTP / WebSocket 的请求与响应模型(pydantic)。
 就是这么写的);而这一层的职责恰好是「把外面的 JSON 变成合法的调用参数」—— 那是 pydantic 的活。
 转换只发生在这一层,和 cli 只做 domain -> 文本是同一个分工。
 
-``answer`` 不给默认值、也不允许 None:讲义 6.3 的 ``POST /api/query`` 在答不出来时返回
-``null``,前端要为此写一支分支;这里拒答也是**一句人话**(拒答话术),前端永远拿到字符串。
+``answer`` 不给默认值、也不允许 None:答不出来时返回 ``null`` 会让前端多写一支分支;
+这里拒答也是**一句人话**(拒答话术),前端永远拿到字符串。
 """
 
 from __future__ import annotations

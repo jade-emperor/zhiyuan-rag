@@ -17,10 +17,10 @@
 pymilvus 的 async 客户端),把 ``_call`` 里的 ``run_in_threadpool`` 换成直接 ``await``
 即可,端点的形状一行都不用改 —— 这就是「现在就写成异步」的意义。
 
-其余四处与讲义刻意不同:
+接口层的三个决定:
 
-1. **``POST /api/query`` 直接给完整答案**,不像讲义那样回一句「请使用 WebSocket 接口」。
-   我们有同步用例,强制前端换协议是更差的契约;要逐字出字才走 WS。
+1. **``POST /api/query`` 直接给完整答案**,不要求前端换 WebSocket 才拿得到结果 ——
+   我们有同步用例,强制换协议是更差的契约;要逐字出字才走 WS。
 2. **过滤走 ``RetrievalOptions.source``,不引 ``VALID_SOURCES`` 白名单**:白名单该从哪来
    还没定论(见 ``deferred.md`` §1.3 第 22 条);而 ``/api/sources`` 直接从向量库读**真实**
    来源,比在配置里写死一份更可信。
@@ -91,7 +91,7 @@ async def _in_thread(events: Iterator[QaEvent]) -> AsyncIterator[QaEvent]:
     """输入:同步帧流。行为:在**线程池**里逐帧取,取完结束。输出:异步帧流。
 
     第二道缝:``stream_question`` 内部是同步的 LLM 流 + 同步 MySQL,直接在事件循环里
-    迭代它,一个用户的流会把所有人的请求都卡住(讲义 6.3 的坑)。WebSocket 那条没有
+    迭代它,一个用户的流会把所有人的请求都卡住。WebSocket 那条没有
     FastAPI 的自动线程池,所以逐帧搬。
     """
     iterator = iter(events)
@@ -142,7 +142,7 @@ def _session(deps: Deps, session_id: str | None) -> Session | None:
 def _options(deps: Deps, request: QueryRequest) -> RetrievalOptions:
     """输入:依赖 + 请求。行为:把配置里的旋钮与请求里的覆盖拼成一次检索的参数。输出:RetrievalOptions。
 
-    旋钮口径与 ``cli/commands/rag.py`` 保持一致(M4 契约里有一条 AST 比对盯着 builder 与 rag.py)。
+    旋钮口径与 ``cli/commands/rag.py`` 保持一致(验收里有一条 AST 比对盯着这两处)。
     """
     settings = get_settings()
     return RetrievalOptions(
@@ -224,7 +224,7 @@ def _answer(deps: Deps, request: QueryRequest) -> QueryResponse:
         ),
         faq_threshold=deps.faq_threshold,
         session=_session(deps, request.session_id),
-        thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
+        thinking=deps.thinking,  # 只进延迟账,不影响答案
     )
     return _to_response(result, request.session_id)
 
@@ -245,7 +245,7 @@ def _stream_events(deps: Deps, request: QueryRequest) -> Iterator[QaEvent]:
         ),
         faq_threshold=deps.faq_threshold,
         session=_session(deps, request.session_id),
-        thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
+        thinking=deps.thinking,  # 只进延迟账,不影响答案
     )
 
 
@@ -276,7 +276,7 @@ def _delete_history(deps: Deps, session_id: str) -> DeletedOut:
 def _greeting_response(reply: str, session_id: str | None) -> QueryResponse:
     """输入:问候话术 + 会话 ID。行为:包成出参。输出:QueryResponse。
 
-    寒暄**不查库、不走向量检索、也不写历史**(讲义 6.3 的前置拦截):它没有任何需要
+    寒暄**不查库、不走向量检索、也不写历史**:它没有任何需要
     检索的内容,写进历史只会给下一轮的提示词添噪声。
     """
     return QueryResponse(answer=reply, channel="greeting", session_id=session_id)
@@ -354,8 +354,8 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     async def stream(websocket: WebSocket) -> None:
         """流式问答:客户端发一条 JSON(同 QueryRequest),服务端逐帧推 ``sources``/``token``/``done``。
 
-        三条与讲义不同(都是它的坑):
-        1. 问候命中**不关连接** —— 发完话术继续等下一句(讲义那样直接 ``break`` 掉了整条连接);
+        三条容易踩的:
+        1. 问候命中**不关连接** —— 发完话术继续等下一句(直接 ``break`` 会把整条连接关掉);
         2. 同步的帧流在**线程池**里取(见 ``_in_thread``),不卡事件循环;
         3. 请求体畸形时回一帧 ``type="error"``,连接留着 —— 前端能看到「你发的不是 JSON」。
         """
@@ -423,7 +423,7 @@ def _warmup_once(deps: Deps) -> None:
 
     1. **FAQ 侧**:读一次真表 + 用真匹配器匹配一次 —— 冷建 FAQ 的 BM25 索引(实测 ~300ms);
     2. **知识库侧**:取到第一帧就收工。这一步会构造嵌入/重排/向量库/关键字索引四个单例
-       (M5.6 之前那是**每个请求** 4.4s 的开销),并让 BM25 的语料索引与 Milvus 连接就位。
+       (不预热的话,那是**每个请求** 4.4s 的开销),并让 BM25 的语料索引与 Milvus 连接就位。
 
     **为什么只取第一帧**:第一帧一定出现在调大模型**之前** —— 有引用是 ``sources`` 帧,
     没引用是拒答话术帧。所以预热把重活全干了,却一分 token 钱都不花。

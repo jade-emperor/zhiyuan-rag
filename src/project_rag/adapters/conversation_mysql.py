@@ -1,9 +1,9 @@
 """
-MySQL 适配器:对话历史的存取(讲义 ⑥-6.2 的 conversations 表)。
+MySQL 适配器:对话历史的存取(``conversations`` 表)。
 
-三处与讲义的刻意偏离,每条都有理由:
+三处刻意的设计,每条都有理由:
 
-1. **排序用 ``id`` 而不是 ``timestamp``**:讲义的 DATETIME 只精确到秒,同一秒里的两轮
+1. **排序用 ``id`` 而不是 ``timestamp``**:DATETIME 只精确到秒,同一秒里的两轮
    谁先谁后由 MySQL 自己定 —— 「最近 5 轮」会随排序抖动,而且这种抖动**查不出来**
    (它只在同一秒内连续提问时出现)。自增主键才是唯一的稳定顺序。时间戳仍然留着
    (``created_at``),但只用来给人看。
@@ -73,7 +73,7 @@ class MySQLConversationStore(ConversationStore):
         """输入:无。行为:建表(``IF NOT EXISTS``,幂等)。输出:无。
 
         刻意**不放在 ``__init__`` 里**:构造适配器不该有副作用(``--help`` 也可能构造它)。
-        生产上由 ``scripts/tools/init_conversation.py`` 跑一次,M5.4 的服务启动时也调它。
+        生产上由 ``scripts/tools/init_conversation.py`` 跑一次,服务启动时也调它。
         """
         target = f"{self._config.host}:{self._config.port}"
         conn = self._connect(autocommit=True)
@@ -151,7 +151,7 @@ class MySQLConversationStore(ConversationStore):
             conn.close()
 
     def _connect(self, *, autocommit: bool):
-        """输入:是否自动提交。行为:连库,连不上抛错点名 host:port(同 M2 的 FAQ 适配器)。输出:连接。"""
+        """输入:是否自动提交。行为:连库,连不上抛错点名 host:port(同 FAQ 适配器)。输出:连接。"""
         target = f"{self._config.host}:{self._config.port}"
         try:
             return pymysql.connect(

@@ -99,10 +99,10 @@ class DeepSeekLLM(LLMClient):
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[LlmDelta]:
         """输入:领域消息序列。行为:转换格式后调模型,逐帧取 content / reasoning_content / finish_reason。输出:帧迭代器。
 
-        **不再丢 finish_reason**(M4 实测到过半截答案,而它就是这么丢的):
+        **不丢 finish_reason**(丢过,结果用户拿到半截答案却没有任何提示 —— 比明说答不出来更误导):
         收尾时补一帧 ``last=True``,把「这次是怎么结束的」明确交出去。
 
-        **也不再丢 reasoning_content**(M5.8):思考模型在正文之前先吐一串思考,langchain 把它
+        **也不丢 reasoning_content**:思考模型在正文之前先吐一串思考,langchain 把它
         放在 ``chunk.additional_kwargs["reasoning_content"]``(**不在** ``chunk.content`` 里 ——
         实测 2026-09-26)。它作为 ``reasoning_text`` 交出去,与 ``text`` 分开:上层要靠它数
         「这一轮想没想、想了多久」,但答案里一个字都不能有它(见 ``domain.LlmDelta``)。

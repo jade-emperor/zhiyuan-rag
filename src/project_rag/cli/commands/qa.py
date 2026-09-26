@@ -1,11 +1,11 @@
-"""qa 子命令:合流问答 —— FAQ 通道优先,未命中转知识库通道(讲义 ⑥-6.1)。
+"""qa 子命令:合流问答 —— FAQ 通道优先,未命中转知识库通道。
 
 跟 faq / rag 的关系(三条通道各司其职):
 
 - ``faq`` = 只走 FAQ 通道:命中直返人工维护的标准答案,未命中让模型自由回答;
 - ``rag`` = 只走知识库通道:检索 + 生成,答案带可核对的 [n] 引用;
 - ``qa``  = **合流**:FAQ 命中就用标准答案,否则转知识库通道。生产入口是它
-  (M5.4 的 FastAPI 调同一个用例),faq / rag 退化成两条通道各自的诊断入口。
+  (FastAPI 调同一个用例),faq / rag 退化成两条通道各自的诊断入口。
 
 ``--stream`` 逐帧打印(答案边生成边出):走的是 ``stream_question`` 那条流;
 不加就是收拢后的 ``answer_question``。**两条路打印出来的答案逐字相同** ——
@@ -91,7 +91,7 @@ def _stream(query: str, deps, knowledge, session) -> int:
             knowledge=knowledge,
             faq_threshold=deps.faq_threshold,
             session=session,
-            thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
+            thinking=deps.thinking,  # 只进延迟账,不影响答案
         ):
             if event.kind == "token":
                 # flush=True:否则攒在缓冲区,看着像卡死(而且用户要的就是「边生成边出」)
@@ -180,7 +180,7 @@ def run(args) -> int:
             knowledge=knowledge,
             faq_threshold=deps.faq_threshold,
             session=session,
-            thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
+            thinking=deps.thinking,  # 只进延迟账,不影响答案
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("合流问答失败:%s", exc)
