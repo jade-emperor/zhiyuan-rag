@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from project_rag.domain import ConversationTurn, QaAnswer, QaEvent, RagAnswer
 
 # 创建日志的方法
-from project_rag.observability import get_logger
+from project_rag.observability import StreamTiming, get_logger
 
 # 端口中的各种抽象类(接口)
 from project_rag.ports import ConversationStore, FaqStore, TextMatcher
@@ -48,7 +48,7 @@ from project_rag.ports import ConversationStore, FaqStore, TextMatcher
 # 同包用相对导入:项目的分层扫描规则把「绝对导入 project_rag.application.*」
 # 当成跨层依赖拦下来(它只看模块前缀),相对导入才表达得出「同一个包内」
 from .answer_faq import match_faq
-from .streaming import done_of
+from .streaming import done_of, timed
 
 _logger = get_logger("application.answer_question")
 
@@ -107,7 +107,37 @@ def stream_question(
     faq_threshold: float = 0.85,
     session: Session | None = None,
 ) -> Iterator[QaEvent]:
-    """输入:问题 + FAQ 侧的端口与阈值 + **知识库通道的一次调用**(收历史、吐帧)+ 可选会话。
+    """输入/输出同 ``_question_frames``,额外做一件事:**计时并记一条 latency 日志**。
+
+    **账本在路由之前就开**,所以 ``ttft_ms`` 里含 FAQ 匹配那一段 —— 那正是用户在等的时间。
+    FAQ 命中时 ``knowledge`` 一次都不会被调,这条账照样有:它证明「便宜通道有多便宜」。
+    """
+    timing = StreamTiming(label="qa")
+    yield from timed(
+        _question_frames(
+            query,
+            faq_store=faq_store,
+            matcher=matcher,
+            knowledge=knowledge,
+            faq_threshold=faq_threshold,
+            session=session,
+            timing=timing,
+        ),
+        timing,
+    )
+
+
+def _question_frames(
+    query: str,
+    *,
+    faq_store: FaqStore,
+    matcher: TextMatcher,
+    knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
+    faq_threshold: float = 0.85,
+    session: Session | None = None,
+    timing: StreamTiming,
+) -> Iterator[QaEvent]:
+    """输入:问题 + FAQ 侧的端口与阈值 + **知识库通道的一次调用**(收历史、吐帧)+ 可选会话 + 计时账本。
 
     行为:先问 FAQ 命中没有(不碰缓存、不调 LLM);
           命中 → 把标准答案当一帧 token 发出去(**不是流出来的,但以同样的方式交付**),
@@ -119,8 +149,12 @@ def stream_question(
 
     **历史落在 done 之后才写**:客户端中途断开时生成器被关闭,这一轮就不入库 ——
     半截答案进历史比没有更糟(下一轮会拿它当「上文」)。
+
+    **这是内部的帧生产者**:公开入口是 ``stream_question``(它包了一层计时/日志);
+    这里只多一件事 —— 路由一有结论就给 ``timing`` 打 ``faq`` 点。
     """
     match = match_faq(query, store=faq_store, matcher=matcher, threshold=faq_threshold)
+    timing.mark("faq")
     if match is not None:
         # 命中就不做检索:标准答案不需要模型参与,也不该为它付一次嵌入 + 检索的钱
         _logger.info("FAQ 通道命中(score=%.4f),不做检索: %s", match.score, query)

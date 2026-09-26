@@ -28,7 +28,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 
 from project_rag.domain import (
     ChatMessage,
@@ -40,13 +40,13 @@ from project_rag.domain import (
     RetrievalOptions,
     RetrievedChunk,
 )
-from project_rag.observability import get_logger
+from project_rag.observability import StreamTiming, get_logger
 from project_rag.ports import Embedder, KeywordIndex, LLMClient, Reranker, VectorStore
 
 # 同包用相对导入:项目的分层扫描规则把「绝对导入 project_rag.application.*」
 # 当成跨层依赖拦下来(它只看模块前缀),相对导入才表达得出「同一个包内」
 from .fusion import KEYWORD_ROUTE, VECTOR_ROUTE, fuse_rankings
-from .streaming import done_of
+from .streaming import done_of, timed
 from .prompts import rag_answer_prompt
 
 _logger = get_logger("application.answer_rag")
@@ -136,6 +136,15 @@ def rerank_citations(
     )
 
 
+def _noop(name: str) -> None:
+    """输入:打点名。行为:什么都不做。输出:无。
+
+    ``retrieve()`` 也可能被不带账本的调用方用(验收脚本、一次性工具),
+    所以打点必须能空转 —— 不然每个调用点都要写一遍 ``if timing is not None``。
+    """
+    return None
+
+
 def retrieve(
     query: str,
     *,
@@ -144,8 +153,9 @@ def retrieve(
     keyword_index: KeywordIndex | None = None,
     reranker: Reranker | None = None,
     options: RetrievalOptions | None = None,
+    timing: StreamTiming | None = None,
 ) -> tuple[Citation, ...]:
-    """输入:问题 + 向量库 + 可选的关键字索引 + 可选的重排器 + 检索旋钮。
+    """输入:问题 + 向量库 + 可选的关键字索引 + 可选的重排器 + 检索旋钮 + 可选计时账本。
 
     行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重排(给了重排器才做)
           → 截断到 max_context。
@@ -154,17 +164,26 @@ def retrieve(
     **重排开不开由「有没有传重排器」表达**,不另设开关 —— 和 ``keyword_index=None``
     表示「没有 BM25 那一路」是同一个道理。两处都能表达就有两个真值来源:
     options 说不要重排、却又传了重排器时,谁赢?
+
+    ``timing`` 给了就在六处打点(嵌入 / 向量检索 / 关键字 / 融合 / 折叠 / 重排):
+    「检索一共 1.8 秒」是一回事,「这 1.8 秒花在哪」是另一回事 —— 没有分段就只能猜。
+    不给就空转(验收与脚本常常不需要账本)。
     """
     options = options or RetrievalOptions()
+    mark = timing.mark if timing is not None else _noop
 
-    vector_hits = store.search(
-        embedder.embed([query])[0], k=options.k, source=options.source
-    )
+    # 查询嵌入与向量检索拆成两句:写成一句的话,「嵌入多久」与「Milvus 多久」就永远
+    # 分不开了 —— 而这两件事的优化手段完全不同(换 device / 换索引 / 加缓存)
+    query_vector = embedder.embed([query])[0]
+    mark("embed")
+    vector_hits = store.search(query_vector, k=options.k, source=options.source)
+    mark("vector")
     rankings: dict[str, Sequence[RetrievedChunk]] = {VECTOR_ROUTE: vector_hits}
     if keyword_index is not None:
         rankings[KEYWORD_ROUTE] = keyword_index.search(
             query, k=options.k, source=options.source
         )
+    mark("bm25")
 
     if len(rankings) == 1:
         fused: tuple[FusedChunk, ...] = tuple(
@@ -181,14 +200,19 @@ def retrieve(
             },
             rrf_k=options.rrf_k,
         )
+    mark("fuse")
 
     citations = _renumber(
         Citation(index=0, chunk=item.chunk, score=item.score, routes=item.routes)
         for item in fused
     )
     collapsed = collapse_parents(citations)
+    mark("collapse")
     if reranker is not None:
         collapsed = rerank_citations(query, collapsed, reranker=reranker)
+        # 只在真装了重排器时打点:没装的时候这一格留 '-' 而不是 0.0 ——
+        # 「没做」和「很快」在排查时是两件事
+        mark("rerank")
     if options.max_context is not None and len(collapsed) > options.max_context:
         collapsed = _renumber(collapsed[: options.max_context])
     return collapsed
@@ -205,7 +229,42 @@ def stream_rag(
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
 ) -> Iterator[QaEvent]:
-    """输入:问题 + 四个端口 + 可选的关键字索引/重排器 + 检索旋钮 + 可选的历史轮次。
+    """输入/输出同 ``_rag_frames``,额外做一件事:**计时并记一条 latency 日志**。
+
+    TTFT / 吐字速率只有在「边界」上才看得到 —— 管道自己不知道「什么时候交出去」。
+    这一层只观察:帧的内容、顺序、条数一个字节都不改(验收拿未包装的流逐帧比对过)。
+    账本字段与三个口径见 ``observability/latency.py``。
+    """
+    timing = StreamTiming(label="rag", channel="rag")
+    yield from timed(
+        _rag_frames(
+            query,
+            embedder=embedder,
+            store=store,
+            llm=llm,
+            keyword_index=keyword_index,
+            reranker=reranker,
+            options=options,
+            history=history,
+            timing=timing,
+        ),
+        timing,
+    )
+
+
+def _rag_frames(
+    query: str,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    llm: LLMClient,
+    keyword_index: KeywordIndex | None = None,
+    reranker: Reranker | None = None,
+    options: RetrievalOptions | None = None,
+    history: Sequence[ConversationTurn] = (),
+    timing: StreamTiming,
+) -> Iterator[QaEvent]:
+    """输入:问题 + 四个端口 + 可选的关键字索引/重排器 + 检索旋钮 + 可选的历史轮次 + 计时账本。
 
     行为:检索并还原父块 → 有资料就先发一帧 sources(前端可以先渲染来源),再逐帧发 token;
           没资料就直接把拒答话术当一帧 token 发出去(答案一律走 token 帧,见下)。
@@ -217,6 +276,10 @@ def stream_rag(
     - ``"".join(token.text).strip() == done.answer`` 恒成立 —— 非流式入口就是靠这条收拢的。
 
     历史只进提示词、不参与检索:它不该改变召回什么,只该改变「怎么读这个问题」。
+
+    **这是内部的帧生产者**:公开入口是 ``stream_rag``(它多包了一层计时与日志)。
+    这里只多做一件事 —— 把账本往 ``retrieve()`` 里带(那里面有六段子打点),
+    并在检索返回、准备调 provider 两处收口(TTFT 的两个分解项)。
     """
     citations = retrieve(
         query,
@@ -225,7 +288,9 @@ def stream_rag(
         keyword_index=keyword_index,
         reranker=reranker,
         options=options,
+        timing=timing,
     )
+    timing.mark("retrieve")
     if not citations:
         _logger.info("检索为空,直接拒答(不调 LLM):%s", query)
         yield QaEvent(kind="token", text=REFUSAL_TEXT)
@@ -235,6 +300,7 @@ def stream_rag(
     yield QaEvent(kind="sources", citations=citations)
 
     prompt = rag_answer_prompt(citations, query, history)
+    timing.mark("llm_start")
     parts: list[str] = []
     reason: str | None = None
     for delta in llm.stream([ChatMessage(role="user", content=prompt)]):

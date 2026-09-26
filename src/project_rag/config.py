@@ -85,6 +85,16 @@ class ConversationConfig(BaseModel):
     history_rounds: int = 5
 
 
+class ApiConfig(BaseModel):
+    """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
+
+    # 启动预热:先把嵌入/重排模型、语料索引、Milvus 连接建好,把「第一个请求的冷启动」
+    # 从**第一个用户**身上挪到启动阶段(M5.6 实测:不预热时首个请求比热请求多付 4.4s)。
+    # 预热只走到「检索出引用」为止,**不调大模型**,所以不花 token 钱;
+    # 失败只记一条 WARNING,不拦启动。关掉它 = 启动更快、但首个请求自己扛冷启动。
+    warmup: bool = True
+
+
 class MilvusConfig(BaseModel):
     host: str = "127.0.0.1"
     # 宿主端口:服务端在容器里,compose 把 gRPC 19530 映射到 10086
@@ -198,6 +208,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingConfig = EmbeddingConfig()
     rag: RagConfig = RagConfig()
     conversation: ConversationConfig = ConversationConfig()
+    api: ApiConfig = ApiConfig()
 
     # 这个类方法,是用来定义配置的来源和优先级顺序的
     @classmethod
@@ -235,6 +246,7 @@ __all__ = [
     "CONFIG_FILE",
     "ENV_FILE",
     "PROJECT_ROOT",
+    "ApiConfig",
     "ConversationConfig",
     "EmbeddingConfig",
     "FaqConfig",

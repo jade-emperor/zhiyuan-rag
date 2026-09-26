@@ -84,11 +84,30 @@ def build_real_deps() -> Deps:
     # 匹配器只造一个:工厂每次调用都返回同一个实例,它按语料指纹缓存的索引才有意义
     matcher = BM25TextMatcher()
 
+    # 下面四个工厂都是**进程级单例**(lru_cache),因为它们各自抱着一份重资源:
+    # Milvus 连接 / 嵌入模型(2G) / 重排模型(2.2G) / BM25 的全量分词索引。
+    # 为什么必须缓存:CLI 一进程一命令时无所谓(那正是惰性工厂的设计初衷),但
+    # `project-rag-api` 是**常驻进程** —— 不缓存就是「每个走 RAG 的请求重载一遍模型」。
+    # 实测(M5.6 的延迟账):一次请求 10.4s 里有 **4.4s** 花在构造端口上,
+    # 单是 BGEM3Embedder 636ms + BGEReranker 394ms(CPU,构造两次耗时一样 → 完全没复用)。
+    #
     # 两路共用同一个向量库实例:BM25 那一路要从库里取全量语料,
     # 各造一个就会开两个 Milvus 客户端(连接与内存都翻倍)
     @lru_cache(maxsize=1)
     def _vector_store() -> MilvusVectorStore:
         return MilvusVectorStore(settings.milvus)
+
+    @lru_cache(maxsize=1)
+    def _embedder() -> BGEM3Embedder:
+        return BGEM3Embedder(settings.embedding)
+
+    @lru_cache(maxsize=1)
+    def _reranker() -> BGEReranker:
+        return BGEReranker(settings.embedding)
+
+    @lru_cache(maxsize=1)
+    def _keyword_index() -> BM25KeywordIndex:
+        return BM25KeywordIndex(_vector_store())
 
     # lambda是为了构建闭包形式,让函数记住参数,后面调用不用传参,也可以在前面def定义,但是不够优雅
     # 这些变量都指向函数和类而不是直接实现,Deps.属性()才真正执行的,惰性加载策略类(懒汉模式)
@@ -98,13 +117,13 @@ def build_real_deps() -> Deps:
         matcher_factory=lambda: matcher,
         cache_factory=lambda: RedisCache(settings.redis),
         # M3:知识库通道。BGEM3Embedder 会把 torch 拉起来(秒级 + 上 G 内存),
-        # 所以它只在这两个工厂**被调用**时才构造 —— ingest / search 之外用不到就不付这份钱。
-        embedder_factory=lambda: BGEM3Embedder(settings.embedding),
+        # 所以它只在工厂**被调用**时才构造 —— ingest / search 之外用不到就不付这份钱。
+        embedder_factory=_embedder,
         vector_store_factory=_vector_store,
-        keyword_index_factory=lambda: BM25KeywordIndex(_vector_store()),
+        keyword_index_factory=_keyword_index,
         # 重排模型同样上 G 内存(实测加载 1.6s),所以也是惰性工厂;
         # 而且它跟嵌入共用 embedding 段配置(rerank_model_dir / device / use_f16)
-        reranker_factory=lambda: BGEReranker(settings.embedding),
+        reranker_factory=_reranker,
         # M5.2:会话历史。pymysql 很轻,但同样只在 --session 用到时才构造
         conversation_store_factory=lambda: MySQLConversationStore(
             settings.mysql, settings.conversation

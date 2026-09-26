@@ -33,6 +33,7 @@ pymilvus 的 async 客户端),把 ``_call`` 里的 ``run_in_threadpool`` 换成�
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from pathlib import Path
@@ -408,15 +409,83 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     return app
 
 
+# 预热用的问题:挑一个**已知能从真语料里召回**的(实测「装饰器有什么用」召回 2 条),
+# 这样关键字那一路、融合、重排都走得到。它不会调大模型(见 _warmup_once)。
+_WARMUP_QUERY = "装饰器有什么用"
+
+
+def _warmup_once(deps: Deps) -> None:
+    """输入:依赖集合。行为:把冷启动那几笔账先付掉。输出:无(失败往上抛,由 ``_warmup`` 兜)。
+
+    两件事:
+
+    1. **FAQ 侧**:读一次真表 + 用真匹配器匹配一次 —— 冷建 FAQ 的 BM25 索引(实测 ~300ms);
+    2. **知识库侧**:取到第一帧就收工。这一步会构造嵌入/重排/向量库/关键字索引四个单例
+       (M5.6 之前那是**每个请求** 4.4s 的开销),并让 BM25 的语料索引与 Milvus 连接就位。
+
+    **为什么只取第一帧**:第一帧一定出现在调大模型**之前** —— 有引用是 ``sources`` 帧,
+    没引用是拒答话术帧。所以预热把重活全干了,却一分 token 钱都不花。
+    """
+    settings = get_settings()
+    entries = _factory(deps, "faq_store_factory").load_all()
+    if entries:
+        _factory(deps, "matcher_factory").best_match(_WARMUP_QUERY, entries)
+
+    knowledge = knowledge_callable(
+        deps,
+        _WARMUP_QUERY,
+        _options(deps, QueryRequest(query=_WARMUP_QUERY)),
+        rerank=settings.rag.rerank,
+    )
+    events = knowledge(())
+    next(events, None)  # 第一帧:有引用是 sources,没引用是拒答话术 —— 都在调 LLM 之前
+    close = getattr(events, "close", None)
+    if callable(close):  # 收工:再迭代下去就该去调 provider 了
+        close()
+
+
+def _warmup(deps: Deps) -> None:
+    """输入:依赖集合。行为:预热一次,失败只记日志。输出:无。
+
+    **失败绝不拦启动**:预热是优化,不是正确性 —— 模型没下全 / Milvus 没起来 / 配置写错,
+    都该让服务照常起来(真请求里照样会报错,而且那时有请求上下文,更好查)。
+    """
+    started = time.perf_counter()
+    try:
+        _warmup_once(deps)
+    except Exception as exc:  # noqa: BLE001 - 预热失败不许拖垮启动
+        _logger.warning("启动预热失败(不影响启动,首个请求会自己补做):%s", exc)
+        _logger.debug("启动预热失败详情:", exc_info=True)
+        return
+    _logger.info(
+        "启动预热完成(%.0f ms):模型 / 语料索引 / 连接都已就位",
+        (time.perf_counter() - started) * 1000,
+    )
+
+
 def run() -> None:
-    """控制台入口(``project-rag-api``)。输入:无。行为:装配应用并起 uvicorn。输出:无(进程常驻)。
+    """控制台入口(``project-rag-api``)。输入:无。行为:装日志 →(可选)预热 → 起 uvicorn。输出:无(进程常驻)。
 
     **刻意不在模块级建 ``app``**:那样「import 这个模块」就会读 .env、建配置 —— 测试要的是
     一个能注入假依赖的工厂(``create_app``),不是一份 import 期副作用。
 
-    uvicorn 只起一个 worker:嵌入/重排模型是进程内单例,多 worker 会各加载一份、
-    内存翻倍。要提并发先把 ``_call`` 那道缝拆成真异步(见模块 docstring)。
+    **日志与预热都装在这里,不装进 ``create_app()``**:起服务是进程入口,这些是入口的职责;
+    工厂要保持纯粹(测试注入假依赖时,不该顺手改全局日志、更不该去加载真模型)。
+    漏掉日志那一步的后果实测过:``project-rag-api`` 起的进程里除了 uvicorn 的访问日志,
+    **业务日志一条都留不下**。预热见 ``_warmup``(``RAG_API__WARMUP=false`` 可关)。
+
+    **绑 ``0.0.0.0`` 而不是回环**:WSL 里绑 127.0.0.1 时 Windows 浏览器连不上(Windows 侧的
+    localhost 转发没给这个端口建入口 —— 实测),进容器后绑回环也映射不出去。
+
+    uvicorn 只起一个 worker:嵌入/重排模型是进程内单例,多 worker 会各加载一份、内存翻倍。
     """
     import uvicorn
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=8080)
+    from project_rag.observability import configure_logging
+
+    configure_logging()
+    # 依赖只装配一次:预热与 create_app 用同一份,免得建出两套单例缓存
+    deps = build_real_deps()
+    if get_settings().api.warmup:
+        _warmup(deps)
+    uvicorn.run(create_app(deps), host="0.0.0.0", port=8080)

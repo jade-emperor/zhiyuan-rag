@@ -76,6 +76,16 @@ class InMemoryVectorStore(VectorStore):
             for chunk, _ in sorted(self._rows.values(), key=lambda row: row[0].chunk_id)
         ]
 
+    def fingerprint(self) -> Sequence[str]:
+        """输入:无。行为:主键 + 父块号的指纹(与 Milvus 实现同构,排序后返回)。输出:指纹序列。
+
+        ``\x1f`` 是项目里惯用的字段分隔符(缓存 value 契约也用它):
+        主键与父块号都是十六进制串,不含这个字符,拼起来不会歧义。
+        """
+        return sorted(
+            f"{chunk.chunk_id}\x1f{chunk.parent_id}" for chunk, _ in self._rows.values()
+        )
+
     def delete_by_doc_id(self, doc_id: str) -> int:
         """输入:文档标识。行为:删掉这份文档的全部块(ingest 写之前调)。输出:删除条数。"""
         doomed = [

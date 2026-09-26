@@ -4,6 +4,12 @@ console_log_level: INFO # 控制台日志等级
 file_log_level: DEBUG # 文件日志等级,先通过root过滤,如果root设置为INFO,这里设置为DEBUG也不会写入DEBUG的日志
 log_dir: logs
 
+api:
+  # 启动预热:把嵌入/重排模型、语料索引、Milvus 连接先在启动阶段建好,
+  # 免得第一个用户扛冷启动(M5.6 实测:首个请求比热请求多付 4.4s)。
+  # 只跑到「检索出引用」为止,不调大模型 → 不花 token 钱;失败不拦启动。
+  warmup: true
+
 llm:
   model: deepseek-flash
   base_url: https://api.deepseek.com/v1

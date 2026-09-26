@@ -42,6 +42,10 @@ _READ_CONSISTENCY = "Strong"
 # query(不是 search)要把主键也取回来 —— search 的主键在 hit["id"] 里,两者形状不同
 _QUERY_FIELDS = ["chunk_id", *_OUTPUT_FIELDS]
 
+# 指纹只取「主键 + 父块号」:主键里含内容哈希,内容一变它就变;父块号覆盖父子结构的变化。
+# 两者都是短字符串 —— 实测 1283 块的指纹约 80KB,而 load_all() 要把 ~6MB 正文拉回来。
+_FINGERPRINT_FIELDS = ["chunk_id", "parent_id"]
+
 # Milvus 单次 query 的条数上限。到顶就报错,**不静默截断** ——
 # 少喂一半语料给 BM25 是一种没有报错的质量损失,最难查。
 _MAX_QUERY_ROWS = 16384
@@ -127,6 +131,31 @@ class MilvusVectorStore(VectorStore):
                 f"库内子块数达到单次查询上限 {_MAX_QUERY_ROWS} —— 该给 load_all 加分页了"
             )
         return [self._row_to_chunk(row) for row in rows]
+
+    def fingerprint(self) -> Sequence[str]:
+        """输入:无。行为:取全部块的主键 + 父块号,拼成排序后的指纹。输出:指纹序列。
+
+        比 ``load_all()`` 便宜一个量级(只取两个短字段,不取正文与父块正文):
+        给关键字那一路做「索引还作不作数」的判断用。
+        """
+        if not self._client.has_collection(self._collection):
+            return []
+        rows = self._client.query(
+            collection_name=self._collection,
+            filter="",
+            output_fields=_FINGERPRINT_FIELDS,
+            limit=_MAX_QUERY_ROWS,
+            consistency_level=_READ_CONSISTENCY,
+        )
+        if len(rows) == _MAX_QUERY_ROWS:
+            raise RuntimeError(
+                f"库内子块数达到单次查询上限 {_MAX_QUERY_ROWS} —— 该给 fingerprint 加分页了"
+            )
+        # \x1f 是项目里惯用的字段分隔符(缓存 value 契约也用它):两个字段都是十六进制串,
+        # 不含这个字符,拼起来不会有歧义
+        return sorted(
+            f"{row['chunk_id']}\x1f{row.get('parent_id') or ''}" for row in rows
+        )
 
     def delete_by_source(self, source: str) -> int:
         """输入:来源标签。行为:按标量过滤删除该来源的全部子块(整份语料下架时用)。输出:删除条数。"""

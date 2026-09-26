@@ -36,17 +36,28 @@ uv run project-rag-api                                    # 起 HTTP/WebSocket �
 
 ```bash
 uv run pyright                                             # 0 errors（整个工作区，含 scripts/）
-uv run python scripts/acceptance/check_m1_1_config.py      # 11 通过 / 0 失败
+uv run python scripts/acceptance/check_m1_1_config.py      # 12 通过 / 0 失败
 uv run python scripts/acceptance/check_m1_2_logging.py     #  8 通过 / 0 失败
 uv run python scripts/acceptance/check_m1_3_cli.py         # 11 通过 / 0 失败
-uv run python scripts/acceptance/check_m2_faq.py           # 27 通过 / 0 失败 / 0 跳过（容器运行时）
-uv run python scripts/acceptance/check_m3_rag.py           # 46 通过 / 0 失败 / 5 跳过（容器运行时）
+uv run python scripts/acceptance/check_m2_faq.py           # 28 通过 / 0 失败 / 0 跳过（容器运行时）
+uv run python scripts/acceptance/check_m3_rag.py           # 49 通过 / 0 失败 / 4 跳过（容器运行时）
 uv run python scripts/acceptance/check_m4_eval.py          # 30 通过 / 0 失败 / 1 跳过
 uv run python scripts/acceptance/check_m5_qa.py            # 32 通过 / 0 失败 / 1 跳过（M5.1 合流路由）
 uv run python scripts/acceptance/check_m5_history.py       # 33 通过 / 0 失败（M5.2 对话历史；容器不在时真库那几条 SKIP）
 uv run python scripts/acceptance/check_m5_stream.py        # 34 通过 / 0 失败（M5.3 截断检测 + 流式入口；**会真调一次 DeepSeek**，见下）
-uv run python scripts/acceptance/check_m5_api.py           # 24 通过 / 0 失败（M5.4 九个端点 + 事件循环不被占住；不起服务器、不需要容器）
+uv run python scripts/acceptance/check_m5_api.py           # 25 通过 / 0 失败（M5.4 九个端点 + 事件循环不被占住 + 起服务姿势；不起服务器、不需要容器）
+uv run python scripts/acceptance/check_m5_5_latency.py     # 19 通过 / 0 失败（M5.5 延迟观测：TTFT/tps/检索六段 + timed 的三条纪律；不联网）
 uv run python scripts/acceptance/check_env_services.py     #  5 通过 / 0 失败（需先起容器）
+```
+
+**慢在哪？看这一行账**（M5.5 加的，M5.6 靠它定位到「每请求重载模型」那 4.4s）：
+
+```bash
+grep -h " | latency " logs/app.log | tail -20      # 一次回答一行（qa 外层 + rag 内层）
+# label=rag ... retrieve_ms=2021.1 embed_ms=124.1 vector_ms=294.1 bm25_ms=203.6 \
+#   fuse_ms=0.0 collapse_ms=0.0 rerank_ms=1399.2 llm_ttft_ms=2803.3 ttft_ms=4824.4 tokens=186 tps=349.7
+# label=qa  ... faq_ms=13.0 sources_ms=2035.4 ttft_ms=4838.8 total_ms=5374.5
+grep -o "rerank_ms=[0-9.-]*\|tps=[0-9.-]*" logs/app.log | tail -20
 ```
 
 > **M4 的评估链路**（三条命令，顺序不能颠倒）：

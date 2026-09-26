@@ -1,3 +1,4 @@
+from .latency import StreamTiming
 from .logging_setup import (
     build_logging_config,
     configure_logging,
@@ -6,6 +7,7 @@ from .logging_setup import (
 )
 
 __all__ = [
+    "StreamTiming",
     "build_logging_config",
     "configure_logging",
     "get_logger",
