@@ -77,6 +77,7 @@ def run(args) -> int:
             keyword_index=deps.keyword_index_factory(),
             reranker=deps.reranker_factory() if settings.rag.rerank else None,
             options=options,
+            thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("知识库问答失败:%s", exc)

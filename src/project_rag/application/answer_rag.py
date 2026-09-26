@@ -228,14 +228,19 @@ def stream_rag(
     reranker: Reranker | None = None,
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
+    thinking: str | None = None,
 ) -> Iterator[QaEvent]:
     """输入/输出同 ``_rag_frames``,额外做一件事:**计时并记一条 latency 日志**。
 
     TTFT / 吐字速率只有在「边界」上才看得到 —— 管道自己不知道「什么时候交出去」。
     这一层只观察:帧的内容、顺序、条数一个字节都不改(验收拿未包装的流逐帧比对过)。
-    账本字段与三个口径见 ``observability/latency.py``。
+    账本字段与口径见 ``observability/latency.py``。
+
+    ``thinking`` 是**给日志用的静态标签**(配置里的档位,组合根从 config 读出来交进来):
+    用例层不认识 config,账本更不认识 —— 账本只负责渲染。默认 None → 账里是 ``-``,
+    于是注入式调用(验收、直调)不会被编一个假档位出来。
     """
-    timing = StreamTiming(label="rag", channel="rag")
+    timing = StreamTiming(label="rag", channel="rag", thinking=thinking)
     yield from timed(
         _rag_frames(
             query,
@@ -306,6 +311,10 @@ def _rag_frames(
     for delta in llm.stream([ChatMessage(role="user", content=prompt)]):
         if delta.last:
             reason = delta.finish_reason
+        if delta.reasoning:
+            # 思考只记账、**不外发**:这一轮想没想、想了多久要看得见,但草稿不该进答案
+            # (也不进 token 帧 —— 前端此刻只该等正文)。阈值/口径见 observability/latency.py
+            timing.think(delta.reasoning_text)
         if delta.text:
             parts.append(delta.text)
             yield QaEvent(kind="token", text=delta.text)
@@ -343,6 +352,7 @@ def answer_rag(
     reranker: Reranker | None = None,
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
+    thinking: str | None = None,
 ) -> RagAnswer:
     """输入/输出同 ``stream_rag``,只是把流**收拢**成一句答案。
 
@@ -359,6 +369,7 @@ def answer_rag(
             reranker=reranker,
             options=options,
             history=history,
+            thinking=thinking,
         )
     )
     return RagAnswer(

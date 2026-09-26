@@ -43,6 +43,10 @@ class Deps:
     matcher_factory: Callable[[], TextMatcher] | None = None
     cache_factory: Callable[[], Cache | None] | None = None  # 返回 None = 无缓存
     faq_threshold: float = DEFAULT_FAQ_THRESHOLD
+    # 思考档位(M5.8)。**不是工厂**:它是个静态标签,唯一用途是让延迟账里能看出
+    # 「这一轮按哪一档跑的」。命令层把它转交给 stream_rag / stream_question,用例与账本
+    # 都不认识 config。默认 None → 账里是 '-'（注入式调用不该被编一个假档位)。
+    thinking: str | None = None
     embedder_factory: Callable[[], Embedder] | None = None
     vector_store_factory: Callable[[], VectorStore] | None = None
     # 关键字那一路。它的语料也是从向量库取的(全量文本只有那一份),
@@ -129,6 +133,7 @@ def build_real_deps() -> Deps:
             settings.mysql, settings.conversation
         ),
         faq_threshold=settings.faq.threshold,
+        thinking=settings.llm.thinking,
     )
 
 
@@ -178,6 +183,7 @@ def knowledge_callable(
             else None,
             options=options,
             history=history,
+            thinking=deps.thinking,
         )
 
     return call

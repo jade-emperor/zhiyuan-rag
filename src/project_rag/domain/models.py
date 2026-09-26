@@ -61,11 +61,23 @@ class LlmDelta:
 
     **为什么结束原因必须传出来**:M4 实测到过「半截答案」(「…同时用向量」就没了),
     而当时适配器把它丢了 —— 用户拿到半句话却没有任何提示,比明说「答不出来」更误导。
+
+    **思考内容走另一个字段**(``reasoning_text``,M5.8):思考模型(DeepSeek-V4 系列)
+    在正文之前会先吐一串 ``reasoning_content``。它**不许进 ``text``** ——
+    理由不是洁癖:``"".join(d.text for d in deltas)`` 是「答案」在全项目里的定义,
+    思考要是混在 ``text`` 里,每个消费方都得记得加过滤,漏一处就把模型的草稿印给用户。
+    分成两个字段后,「答案 = 所有 text 帧」这条恒等式不需要任何附加条件。
     """
 
     text: str = ""
+    reasoning_text: str = ""
     finish_reason: str | None = None
     last: bool = False
+
+    @property
+    def reasoning(self) -> bool:
+        """输入:无。行为:判断这一帧是不是思考内容。输出:True = 思考(不是答案)。"""
+        return bool(self.reasoning_text)
 
     @property
     def truncated(self) -> bool:

@@ -106,13 +106,17 @@ def stream_question(
     knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
     faq_threshold: float = 0.85,
     session: Session | None = None,
+    thinking: str | None = None,
 ) -> Iterator[QaEvent]:
     """输入/输出同 ``_question_frames``,额外做一件事:**计时并记一条 latency 日志**。
 
     **账本在路由之前就开**,所以 ``ttft_ms`` 里含 FAQ 匹配那一段 —— 那正是用户在等的时间。
     FAQ 命中时 ``knowledge`` 一次都不会被调,这条账照样有:它证明「便宜通道有多便宜」。
+
+    ``thinking`` 同 ``stream_rag``:给日志用的静态标签,由组合根从 config 读出来交进来。
+    外层账也要带 —— **FAQ 命中时账里只有这一条**,不带的话「这一轮按哪一档跑的」就查不到了。
     """
-    timing = StreamTiming(label="qa")
+    timing = StreamTiming(label="qa", thinking=thinking)
     yield from timed(
         _question_frames(
             query,
@@ -196,6 +200,7 @@ def answer_question(
     knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
     faq_threshold: float = 0.85,
     session: Session | None = None,
+    thinking: str | None = None,
 ) -> QaAnswer:
     """输入/输出同 ``stream_question``,只是把流**收拢**成一句答案。
 
@@ -209,6 +214,7 @@ def answer_question(
             knowledge=knowledge,
             faq_threshold=faq_threshold,
             session=session,
+            thinking=thinking,
         )
     )
     if done.channel is None:

@@ -97,24 +97,35 @@ class DeepSeekLLM(LLMClient):
 
     # 调用大模型,输入
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[LlmDelta]:
-        """输入:领域消息序列。行为:转换格式后调模型,逐帧取 content 与 finish_reason。输出:帧迭代器。
+        """输入:领域消息序列。行为:转换格式后调模型,逐帧取 content / reasoning_content / finish_reason。输出:帧迭代器。
 
         **不再丢 finish_reason**(M4 实测到过半截答案,而它就是这么丢的):
         收尾时补一帧 ``last=True``,把「这次是怎么结束的」明确交出去。
 
-        三个实测细节(2026-09-23,deepseek-flash):
+        **也不再丢 reasoning_content**(M5.8):思考模型在正文之前先吐一串思考,langchain 把它
+        放在 ``chunk.additional_kwargs["reasoning_content"]``(**不在** ``chunk.content`` 里 ——
+        实测 2026-09-26)。它作为 ``reasoning_text`` 交出去,与 ``text`` 分开:上层要靠它数
+        「这一轮想没想、想了多久」,但答案里一个字都不能有它(见 ``domain.LlmDelta``)。
+        一帧同时带思考和正文时按「先思考后正文」发两帧 —— provider 真这么做时顺序也是对的。
+
+        四个实测细节(2026-09-23 / 2026-09-26,deepseek-flash):
         ① finish_reason 在 ``chunk.response_metadata`` 里,不在 ``chunk.finish_reason``
            (langchain 的 AIMessageChunk 根本没那个属性);
         ② provider 在带 finish_reason 的那帧**之后**还会再发一个空帧(无内容、无元数据)——
            那种帧没有信息,直接丢掉;否则消费方会以为「最后一帧没有结束原因」;
-        ③ ``chunk.content`` 可能是 None(收尾帧),``str(None)`` 会把字符串 "None" 混进答案。
+        ③ ``chunk.content`` 可能是 None(收尾帧),``str(None)`` 会把字符串 "None" 混进答案;
+        ④ 思考帧的 ``content`` 是空串,正文帧的 ``additional_kwargs`` 里没有 reasoning ——
+           两个字段不会同时有值,但也不该假设它一定不会(见上)。
         """
         reason: str | None = None
         for chunk in self._client.stream(to_sdk_messages(messages)):
             text = str(chunk.content or "")
+            thought = str((chunk.additional_kwargs or {}).get("reasoning_content") or "")
             got = (chunk.response_metadata or {}).get("finish_reason")
             if got is not None:
                 reason = str(got)
+            if thought:
+                yield LlmDelta(reasoning_text=thought)
             if text:
                 yield LlmDelta(text=text)
         # 恰好一帧 last:只说「流结束了、原因是这个」(provider 没说就给 None)

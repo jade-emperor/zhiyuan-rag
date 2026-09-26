@@ -224,6 +224,7 @@ def _answer(deps: Deps, request: QueryRequest) -> QueryResponse:
         ),
         faq_threshold=deps.faq_threshold,
         session=_session(deps, request.session_id),
+        thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
     )
     return _to_response(result, request.session_id)
 
@@ -244,6 +245,7 @@ def _stream_events(deps: Deps, request: QueryRequest) -> Iterator[QaEvent]:
         ),
         faq_threshold=deps.faq_threshold,
         session=_session(deps, request.session_id),
+        thinking=deps.thinking,  # 只进延迟账(M5.8),不影响答案
     )
 
 

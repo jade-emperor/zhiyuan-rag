@@ -42,22 +42,32 @@ uv run python scripts/acceptance/check_m1_3_cli.py         # 11 通过 / 0 失�
 uv run python scripts/acceptance/check_m2_faq.py           # 28 通过 / 0 失败 / 0 跳过（容器运行时）
 uv run python scripts/acceptance/check_m3_rag.py           # 49 通过 / 0 失败 / 4 跳过（容器运行时）
 uv run python scripts/acceptance/check_m4_eval.py          # 30 通过 / 0 失败 / 1 跳过
-uv run python scripts/acceptance/check_m5_qa.py            # 32 通过 / 0 失败 / 1 跳过（M5.1 合流路由）
+uv run python scripts/acceptance/check_m5_qa.py            # 33 通过 / 0 失败（M5.1 合流路由）
 uv run python scripts/acceptance/check_m5_history.py       # 33 通过 / 0 失败（M5.2 对话历史；容器不在时真库那几条 SKIP）
-uv run python scripts/acceptance/check_m5_stream.py        # 36 通过 / 0 失败（M5.3 截断检测 + 流式入口 + 思考开关；**会真调 3 次极小 DeepSeek**，见下）
+uv run python scripts/acceptance/check_m5_stream.py        # 37 通过 / 0 失败（M5.3 截断检测 + 流式入口 + 思考开关/思考与正文分家；**会真调 3 次极小 DeepSeek**，见下）
 uv run python scripts/acceptance/check_m5_api.py           # 25 通过 / 0 失败（M5.4 九个端点 + 事件循环不被占住 + 起服务姿势；不起服务器、不需要容器）
-uv run python scripts/acceptance/check_m5_5_latency.py     # 19 通过 / 0 失败（M5.5 延迟观测：TTFT/tps/检索六段 + timed 的三条纪律；不联网）
+uv run python scripts/acceptance/check_m5_5_latency.py     # 26 通过 / 0 失败（M5.5 延迟观测：TTFT/tps/检索六段/思考三字段 + timed 的三条纪律；不联网）
 uv run python scripts/acceptance/check_env_services.py     #  5 通过 / 0 失败（需先起容器）
+uv run python scripts/acceptance/reverse_m5_8.py           # 7 条反向测试全红（会临时改 src/ 并在 finally 里还原）
 ```
 
-**慢在哪？看这一行账**（M5.5 加的，M5.6 靠它定位到「每请求重载模型」那 4.4s）：
+**慢在哪？看这一行账**（M5.5 加的，M5.6 靠它定位到「每请求重载模型」那 4.4s；M5.8 又加了三个思考字段）：
 
 ```bash
 grep -h " | latency " logs/app.log | tail -20      # 一次回答一行（qa 外层 + rag 内层）
 # label=rag ... retrieve_ms=2021.1 embed_ms=124.1 vector_ms=294.1 bm25_ms=203.6 \
-#   fuse_ms=0.0 collapse_ms=0.0 rerank_ms=1399.2 llm_ttft_ms=2803.3 ttft_ms=4824.4 tokens=186 tps=349.7
-# label=qa  ... faq_ms=13.0 sources_ms=2035.4 ttft_ms=4838.8 total_ms=5374.5
+#   fuse_ms=0.0 collapse_ms=0.0 rerank_ms=1399.2 llm_think_ms=2852.0 llm_ttft_ms=2852.1 \
+#   think_tokens=459 ttft_ms=9659.1 tokens=133 tps=281.4
+# label=qa  ... thinking=off faq_ms=13.0 sources_ms=2035.4 ttft_ms=4838.8 total_ms=5374.5
 grep -o "rerank_ms=[0-9.-]*\|tps=[0-9.-]*" logs/app.log | tail -20
+```
+
+**「这一轮想没想、想了多久、哪一档」（M5.8，字段口径见 `docs/STATUS.md` §0.10）**：
+
+```text
+thinking=auto llm_think_ms=2852.0 think_tokens=459   # 想了 2.85s，首字也等到 2.85s
+thinking=off  llm_think_ms=-      think_tokens=0     # 调了模型、但没看到思考
+llm_ttft_ms=- think_tokens=0                         # 压根没调模型（FAQ 命中 / 检索为空拒答）
 ```
 
 > **M4 的评估链路**（三条命令，顺序不能颠倒）：
@@ -73,15 +83,14 @@ grep -o "rerank_ms=[0-9.-]*\|tps=[0-9.-]*" logs/app.log | tail -20
 
 > `check_m2_faq.py` 里有 4 项依赖真实容器（MySQL 落库、Redis 降级、2 条中文端到端）：容器在跑时
 > 全部 PASS，MySQL 连不上时报 **SKIP** 并写明连接目标，**不算通过**。
-> `check_m3_rag.py` 的 5 条 SKIP 只是因为跑在沙箱里看不到 GPU（配置 `device=cuda`），
-> 在**自己的终端**里会转 PASS；原先那条点名「融合路由（M5）」的 SKIP 已在 M5.1 转成真断言。
-> `check_m5_qa.py` 的 1 条 SKIP 同理（沙箱看不到 GPU 时「真语料 + 真嵌入」那条）；
-> 临时用 `RAG_EMBEDDING__DEVICE=cpu` 跑这一份可以拿到 **33 通过 / 0 失败 / 0 跳过**（已验证）。
+> `check_m3_rag.py` 的 4 条 SKIP 是「沙箱里看不到 GPU（配置 `device=cuda`）+ `data/corpus/ai_data` 已从工作区移走」；
+> 在自己的终端里前者会转 PASS（`RAG_EMBEDDING__DEVICE=cpu` 也能把模型那几条跑起来）。
 > `check_m5_history.py` 里有 11 条要真 MySQL（建表幂等 / 往返 / 裁剪 / 回滚 / 参数化 / 连不上报错）：
 > 容器在跑时全部 PASS，连不上时报 **SKIP** 并写明连接目标。
-> ⚠️ `check_m5_stream.py` 里有 **1 条会真调一次 DeepSeek**（一个问题、上限 16 token，成本可忽略）：
-> 它钉的是「provider 到底把 `finish_reason` 放在哪个字段」——这件事假件永远证明不了。
-> 没配密钥时它 SKIP；**不想花钱就单跑这一份时把 `.env` 临时挪开**。
+> ⚠️ `check_m5_stream.py` 里有 **3 条会真调 DeepSeek**（各一个问题、上限 16~32 token，成本可忽略）：
+> 它们钉的是假件永远证明不了的两件事 ——「provider 把 `finish_reason` 放在哪个字段」、
+> 「`thinking=off` 真的不思考 / `auto` 仍在思考」以及「SDK 有没有把思考塞进 `chunk.content`」。
+> 没配密钥时它们 SKIP；**不想花钱就单跑这一份时把 `.env` 临时挪开**。
 > `check_m4_eval.py` 的 1 条 SKIP 是「融合方式 / 重排单位 / 阈值 0.85 这三组 A/B 还没跑」，
 > 也点名了 owner（容器没起时 Milvus 那项会再多一条 SKIP）—— 评估链路本身全绿。
 > **看指标别只看总值**：`groups.csv` 里 `paraphrase` 组（加口语噪声问）在 6/6 次比较里
