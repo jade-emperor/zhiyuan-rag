@@ -1,4 +1,8 @@
+from .auth import USER_ROLES, User, UserRole
+from .documents import DOC_STATUSES, DocRecord, DocStatus
 from .models import (
+    FUSION_MODES,
+    RETRIEVAL_MODES,
     Channel,
     ChatMessage,
     Chunk,
@@ -10,17 +14,29 @@ from .models import (
     FaqAnswer,
     FaqEntry,
     FaqMatch,
+    FusionMode,
     FusedChunk,
     LlmDelta,
     QaAnswer,
     QaEvent,
     RagAnswer,
+    RetrievalMode,
     RetrievalOptions,
     RetrievedChunk,
     Role,
 )
+from .pages import PageSpans, page_of
+from .sessions import TITLE_CHARS, SessionSummary, session_title
 
 __all__ = [
+    "DOC_STATUSES",
+    "FUSION_MODES",
+    "TITLE_CHARS",
+    "DocRecord",
+    "DocStatus",
+    "USER_ROLES",
+    "User",
+    "UserRole",
     "Channel",
     "ChatMessage",
     "Chunk",
@@ -32,12 +48,19 @@ __all__ = [
     "FaqAnswer",
     "FaqEntry",
     "FaqMatch",
+    "FusionMode",
     "FusedChunk",
     "LlmDelta",
+    "PageSpans",
     "QaAnswer",
     "QaEvent",
+    "RETRIEVAL_MODES",
     "RagAnswer",
+    "RetrievalMode",
     "RetrievalOptions",
     "RetrievedChunk",
     "Role",
+    "SessionSummary",
+    "page_of",
+    "session_title",
 ]

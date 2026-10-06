@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 
 from .logging_setup import get_logger
@@ -43,8 +44,11 @@ _logger = get_logger("observability.latency")
 # 一行日志里的字段顺序就是这张表。顺序固定,awk/grep 才敢按列取。
 _FIELDS = (
     "label",
+    "request_id",
     "channel",
     "thinking",
+    "cold",
+    "builds",
     "faq_ms",
     "sources_ms",
     "retrieve_ms",
@@ -69,6 +73,35 @@ _FIELDS = (
 _NONE = "-"
 # 吐字窗口的下限:短于它算出来的「速率」是噪声(几帧挤在同一毫秒里到手时的产物)
 _MIN_GEN_MS = 1.0
+
+# ── 冷启动证据 ───────────────────────────────────────────────────────────────
+# 组合根里那四个 `@lru_cache` 重资源工厂(嵌入 / 重排 / 向量库 / BM25 索引)**每次真正构造**
+# 时调一次 `note_build()`。为什么需要它:账本原来分不清「这一轮慢」是慢在服务本身还是慢在
+# 「这一轮顺手把 2G 的模型加载了」。实测过这个形状 —— 28 条样本里 rerank 中位 668ms
+# 而 p95 **5383ms**(8 倍),不分层的话 p95 全是冷启动的噪声,P0-1 省下的 400ms 会被淹掉。
+# 判据用「本次请求期间构造过重资源」而不是「进程启动后第几个请求」:预热(warmup)会把
+# 冷启动挪到启动阶段,那时计数器已经涨过了,所以第一个真实请求就是 warm —— 与我们想要的
+# 语义一致(该请求确实没有为用户付加载时间)。
+_builds: list[str] = []
+
+
+def note_build(name: str) -> None:
+    """输入:资源名(``embedder`` / ``reranker`` / ``vector_store`` / ``keyword_index``)。
+
+    行为:记一次「真的构造了」。输出:无。**只该由组合根的重资源工厂调用。**
+    """
+    _builds.append(name)
+
+
+def build_count() -> int:
+    """输入:无。行为:本进程累计构造过几次重资源。输出:次数。"""
+    return len(_builds)
+
+
+def build_names() -> tuple[str, ...]:
+    """输入:无。行为:构造过的资源名(按发生顺序,可重复)。输出:元组。"""
+    return tuple(_builds)
+
 
 
 def _ms(value: float | None) -> str:
@@ -97,10 +130,16 @@ class StreamTiming:
     """
 
     label: str
+    # 一次请求的追踪号:**默认自己生成**,CLI / API / 任何调用方都不必记得传
+    # (漏传的后果是「日志里有账,但对不上是哪一次请求」—— 而那正是排障时最需要的一条)。
+    # API 会把自己那一份交进来,好让响应头 `X-Request-Id` 与这条账对得上。
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     channel: str | None = None
     # 配置档位。**账本不认识配置**:组合根读 config,把「这一轮按哪一档跑的」交进来,
     # 没交就是 None → 渲染成 '-'。在这里 import config 会把可观测层焊到配置上(分层也不许)。
     thinking: str | None = None
+    # 开账时刻的构造计数:收账时一比就知道这一轮有没有为冷启动买单(见 note_build)。
+    builds0: int = field(default_factory=build_count)
     started: float = field(default_factory=time.perf_counter)
     marks: dict[str, float] = field(default_factory=dict)
     first_token: float | None = None
@@ -164,6 +203,23 @@ class StreamTiming:
     def aborted(self) -> bool:
         """输入:无。行为:判断这一轮是不是没等到收尾帧。输出:中断(客户端断开/上游抛错)为真。"""
         return not self.done
+
+    @property
+    def builds(self) -> int:
+        """输入:无。行为:这一轮期间构造过几次重资源(嵌入/重排/向量库/BM25 索引)。输出:次数。
+
+        ``0`` = 这一轮**没有为用户加载模型** —— 也就是"热"的那一档。
+        """
+        return build_count() - self.builds0
+
+    @property
+    def cold(self) -> bool:
+        """输入:无。行为:判断这一轮冷不冷。输出:这一轮构造过重资源为真。
+
+        **别用「进程启动后第几个请求」当判据**:预热(warmup)会把加载挪到启动阶段,
+        那时计数器已经涨过,所以第一个真实请求就该是热的 —— 这正是我们要的语义。
+        """
+        return self.builds > 0
 
     @property
     def ttft_ms(self) -> float | None:
@@ -232,8 +288,10 @@ class StreamTiming:
             return None
         return (second - first) * 1000.0
 
-    def line(self) -> str:
-        """输入:无。行为:把账本渲染成一行 ``key=value``(字段与顺序固定)。输出:这一行文本。
+    def values(self) -> dict[str, str]:
+        """输入:无。行为:把账本渲染成 ``{字段名: 文本值}``(顺序即 ``_FIELDS``)。输出:字典。
+
+        ``line()`` 与落表**共用这一份**:两处各渲染一次迟早会漂(日志里有、表里没有)。
 
         每个字段的口径:``faq_ms``/``sources_ms``/``retrieve_ms``/``embed_ms`` 是**从本段开始**
         到该打点(``retrieve_ms`` 是检索总时长;``embed_ms`` 是检索的第一件事,所以累计=本段时长);
@@ -245,8 +303,11 @@ class StreamTiming:
         """
         values = {
             "label": self.label,
+            "request_id": self.request_id,
             "channel": self.channel or _NONE,
             "thinking": self.thinking or _NONE,
+            "cold": _flag(self.cold),
+            "builds": str(self.builds),
             "faq_ms": _ms(self._offset("faq")),
             "sources_ms": _ms(self._offset("sources")),
             "retrieve_ms": _ms(self._offset("retrieve")),
@@ -268,16 +329,31 @@ class StreamTiming:
             "truncated": _flag(self.truncated),
             "aborted": _flag(self.aborted),
         }
+        return values
+
+    def line(self) -> str:
+        """输入:无。行为:把 ``values()`` 渲染成一行 ``key=value``(字段与顺序固定)。输出:这一行文本。"""
+        return self._render(self.values())
+
+    @staticmethod
+    def _render(values: dict[str, str]) -> str:
+        """输入:字段字典。行为:按 ``_FIELDS`` 的顺序拼成一行。输出:文本。"""
         return " ".join(f"{name}={values[name]}" for name in _FIELDS)
 
     def emit(self) -> None:
-        """输入:无。行为:记一条 INFO 日志,内容就是 ``line()``(**只记一次**)。输出:无。
+        """输入:无。行为:记一条 INFO 日志(**只记一次**),并把同一份字段交给落表 handler。输出:无。
 
         幂等是刻意的:正常收尾和中断/异常是两条路径,都会调它;重复调用不该刷两条账。
         级别用 INFO:控制台只放行 INFO 及以上(见 ``config.yaml``),否则「跑一遍看延迟」
         还得先去翻文件。
+
+        **日志与落表共用同一份 ``values()``**(只渲染一次):否则 `total_ms` 这种"现算"的字段
+        会在日志里和表里差几毫秒 —— 两边对不上时,查的人不知道该信哪个。
+        落表靠 ``extra={"ledger": …}``:handler 只认这个键,所以**任何**走账本的地方
+        (CLI / HTTP / WS)都自动落表,不需要在每个调用点各接一次。
         """
         if self._logged:
             return
         self._logged = True
-        _logger.info("latency %s", self.line())
+        values = self.values()
+        _logger.info("latency %s", self._render(values), extra={"ledger": values})

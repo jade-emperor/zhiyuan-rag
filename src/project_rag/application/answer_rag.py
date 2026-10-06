@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import Literal
 
 from project_rag.domain import (
     ChatMessage,
@@ -94,11 +95,16 @@ def rerank_citations(
     citations: Sequence[Citation],
     *,
     reranker: Reranker,
+    rerank_input: Literal["parent", "child"] = "parent",
 ) -> tuple[Citation, ...]:
-    """输入:问题 + 当前引用序列 + 重排端口。行为:按重排分重新排序。输出:重新编号的引用。
+    """输入:问题 + 当前引用序列 + 重排端口 + 喂哪段正文。行为:按重排分重新排序。输出:重新编号的引用。
 
-    喂给重排器的是 ``chunk.context_text`` —— **模型会读到的那段正文**,不是子块。
+    默认喂 ``chunk.context_text``(父块正文)—— **模型会读到的那段正文**,不是子块。
     这样引用清单上的重排分才对应得到模型的实际输入。
+
+    ``rerank_input="child"`` 改成喂检索命中的那个**子块**:更短、更聚焦,长文档上通常更准,
+    代价是「重排分」对应的文字与模型读到的不是同一段(那个分数就只能当排序依据看)。
+    这条旋钮是为 P0-4 那组 A/B 加的,**默认不动** —— 换默认要等读数说话。
 
     三条边界,每条都有理由:
 
@@ -111,7 +117,11 @@ def rerank_citations(
     if len(citations) < 2:
         return _renumber(citations)
 
-    scores = reranker.rerank(query, [item.chunk.context_text for item in citations])
+    texts = [
+        item.chunk.text if rerank_input == "child" else item.chunk.context_text
+        for item in citations
+    ]
+    scores = reranker.rerank(query, texts)
     if len(scores) != len(citations):
         raise ValueError(
             f"重排器回了 {len(scores)} 个分数,候选却有 {len(citations)} 条 —— "
@@ -159,6 +169,10 @@ def retrieve(
           → 截断到 max_context。
     输出:引用序列;没检索到给空序列。
 
+    **权重 ≤ 0 的那一路不跑**(连检索都不做,不只是融合时跳过)。两个权重同时 ≤ 0 时
+    结果是空序列 —— 而"什么都没检索"与"检索了但没命中"在这一层看不出区别,
+    所以这种组合要由**边界**拦住(HTTP 出参层直接 422)。
+
     **重排开不开由「有没有传重排器」表达**,不另设开关 —— 和 ``keyword_index=None``
     表示「没有 BM25 那一路」是同一个道理。两处都能表达就有两个真值来源:
     options 说不要重排、却又传了重排器时,谁赢?
@@ -172,21 +186,29 @@ def retrieve(
 
     # 查询嵌入与向量检索拆成两句:写成一句的话,「嵌入多久」与「Milvus 多久」就永远
     # 分不开了 —— 而这两件事的优化手段完全不同(换 device / 换索引 / 加缓存)
-    query_vector = embedder.embed([query])[0]
-    mark("embed")
-    vector_hits = store.search(query_vector, k=options.k, source=options.source)
-    mark("vector")
-    rankings: dict[str, Sequence[RetrievedChunk]] = {VECTOR_ROUTE: vector_hits}
-    if keyword_index is not None:
+    #
+    # **权重 ≤ 0 = 明确关掉这一路**(融合层本来就会跳过它,见 ``fusion.fuse_rankings``),
+    # 所以这里连检索都不做:白跑一趟再丢掉,账本上的 ``embed`` / ``vector`` / ``bm25``
+    # 三段就都在骗人。前端「只用向量 / 只用关键字」这两个档就是靠它表达的(M7.1)。
+    rankings: dict[str, Sequence[RetrievedChunk]] = {}
+    if options.vector_weight > 0:
+        query_vector = embedder.embed([query])[0]
+        mark("embed")
+        rankings[VECTOR_ROUTE] = store.search(query_vector, k=options.k, source=options.source)
+        mark("vector")
+    if keyword_index is not None and options.bm25_weight > 0:
         rankings[KEYWORD_ROUTE] = keyword_index.search(
             query, k=options.k, source=options.source
         )
     mark("bm25")
 
     if len(rankings) == 1:
+        # 单路:不做融合(也没有第二路可比)。**路名从剩下的那一路取** ——
+        # 写死 VECTOR_ROUTE 的话,「只用关键字」会把引用标成 vector 那一路(静默错标)。
+        only_route, only_hits = next(iter(rankings.items()))
         fused: tuple[FusedChunk, ...] = tuple(
-            FusedChunk(chunk=hit.chunk, score=hit.score, routes=(VECTOR_ROUTE,))
-            for hit in vector_hits
+            FusedChunk(chunk=hit.chunk, score=hit.score, routes=(only_route,))
+            for hit in only_hits
         )
     else:
         fused = fuse_rankings(
@@ -207,7 +229,9 @@ def retrieve(
     collapsed = collapse_parents(citations)
     mark("collapse")
     if reranker is not None:
-        collapsed = rerank_citations(query, collapsed, reranker=reranker)
+        collapsed = rerank_citations(
+            query, collapsed, reranker=reranker, rerank_input=options.rerank_input
+        )
         # 只在真装了重排器时打点:没装的时候这一格留 '-' 而不是 0.0 ——
         # 「没做」和「很快」在排查时是两件事
         mark("rerank")

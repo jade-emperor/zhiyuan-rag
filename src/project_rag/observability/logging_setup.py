@@ -40,15 +40,14 @@ NOISY_LOGGERS: tuple[str, ...] = (
     "matplotlib",
     "numexpr",
     "asyncio",
+    "jieba",
 )
 # 设置命名空间,统一前缀
 LOGGER_NAMESPACE = "project_rag"
 # 日志文件名
 LOG_FILE_NAME = "app.log"
-# 日志文件单个最大10M,写满了将当前文件命名为app.log.1,再写入新的日志文件app.log.再写满就app.log.1变app.log.2依此类推.
-# 最多5个旧日志,超过了旧删除最老的,只留5个.
-_MAX_BYTES = 10 * 1024 * 1024
-_BACKUP_COUNT = 5
+# 日志轮转的两个参数原先硬编码在这里(_MAX_BYTES / _BACKUP_COUNT),现在走配置:
+# log_max_bytes / log_backup_count —— log_dir 早就是配置了,它们却没有,属不一致。
 
 # 定义日志文件的格式长什么样子
 _FILE_FORMAT = (
@@ -117,8 +116,8 @@ def build_logging_config(settings: Settings, log_file: Path | None = None) -> di
                 "filename": str(log_file),  # log_file是Path对象,这里要求输入的是字符串
                 # 必须追加:切成 WARNING 重建配置时,不能把前面的日志清掉,且不存在时构建
                 "mode": "a",
-                "maxBytes": _MAX_BYTES,
-                "backupCount": _BACKUP_COUNT,
+                "maxBytes": settings.log_max_bytes,
+                "backupCount": settings.log_backup_count,
                 "encoding": "utf-8",
                 "delay": True,  # 真正写第一条日志时才建文件
                 "level": settings.file_log_level.upper(),

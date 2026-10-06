@@ -11,6 +11,11 @@
 位置编号在文档一改就会整体错位,而哈希既稳定又能反映内容变化。
 
 约定:``split`` 只负责「切」;空块由适配器丢掉 —— 用例层不该关心会不会切出空串。
+
+**偏移(P0-5)**:``ChunkGroup.child_starts`` 是每个子块在传进来的那段正文里的起始偏移
+(与 ``children`` 同序等长;空元组 = 这个切分器不报偏移)。要它是因为页码:
+``page_of(document.pages, child_starts[i])``。**偏移只能由切分器给** —— 用例层拿子块文本
+回正文里 ``find`` 会在重复句子上给出看着合法的错位置(见 ``domain/models.py`` 的 ChunkGroup)。
 """
 
 from __future__ import annotations
@@ -20,9 +25,13 @@ from typing import Protocol
 
 from project_rag.domain import ChunkGroup
 
+
 class TextChunker(Protocol):
     """把长文本切成「父块 + 子块」。"""
 
     def split(self, text: str) -> Sequence[ChunkGroup]:
-        """输入:一段文本。行为:先切父块,再把每个父块切成子块。输出:父块分组序列(可为空)。"""
+        """输入:一段文本。行为:先切父块,再把每个父块切成子块。
+
+        输出:父块分组序列(可为空);报偏移时 ``child_starts`` 必须与 ``children`` 同序等长。
+        """
         ...

@@ -1,48 +1,30 @@
 """
-把目录下的纯文本文件读成 ``Document``。
+纯文本来源:``.md`` / ``.txt``。
 
-现在只认 ``.md`` / ``.txt``。PDF / Word / PPT / OCR 的工具其实都装好了,缺的是抽
-``DocumentSource`` 端口把它们接进来 —— 见 ``docs/deferred.md`` §1.4。
+**为什么不走 unstructured 的 markdown 分区器**:markdown 的标题**本来就在正文里**(``#`` 开头的行),
+直接读原文就是最完整的结构;过一遍解析器只会把 ``#`` 变成元素属性、再由我们拼回 ``#``,
+白白多一轮「拆开再装回去」的风险。这条路径同时是既有的:换语料重灌时 ``chunk_id``
+必须逐字不变,读原文是唯一能担保这一点的做法。
 
-``source`` 取父目录名去掉 ``_data`` 后缀:``ai_data`` → ``ai``,
-可以直接当 Milvus 的 source 过滤字段用。``doc_id`` 用相对路径 —— 日志里能一眼看出是哪份文件。
+``read`` 只做一件事:读文本。命名(``doc_id`` / ``source``)、排序、格式分派都在
+``adapters/document_loader.py`` —— 那些规则对所有格式一样,只该有一处。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
-
-from project_rag.domain import Document
-
-_SUFFIXES = (".md", ".txt")
+from typing import ClassVar
 
 
-def load_text_files(path: Path) -> Sequence[Document]:
-    """输入:文件或目录路径。行为:递归收集 .md/.txt,按路径排序后逐个读入。输出:文档序列。
+class TextFilesSource:
+    """``.md`` / ``.txt`` → 原文。"""
 
-    按路径排序是为了**确定性**:同一目录跑两次必须给出同样的顺序,
-    否则「同一份输入 → 同一批 chunk_id」这件事无从谈起(幂等就建立在它上面)。
+    suffixes: ClassVar[frozenset[str]] = frozenset({".md", ".txt"})
 
-    编码用 utf-8-sig:有 BOM 就吃掉,没 BOM 也无害 —— 课程资料里 BOM 很常见
-    (FAQ CSV 就带 BOM,读成 utf-8 时列名会多出 \\ufeff)。
-    """
-    if path.is_file():
-        root = path.parent
-        candidates = [path]
-    else:
-        root = path
-        candidates = [p for p in path.rglob("*") if p.is_file()]
+    def read(self, path: Path) -> str:
+        """输入:一份 .md/.txt 的路径。行为:按 utf-8-sig 读。输出:原文。
 
-    files = sorted(p for p in candidates if p.suffix.lower() in _SUFFIXES)
-
-    documents: list[Document] = []
-    for file in files:
-        documents.append(
-            Document(
-                doc_id=file.relative_to(root).as_posix(),
-                text=file.read_text(encoding="utf-8-sig"),
-                source=root.name.removesuffix("_data") or root.name,
-            )
-        )
-    return documents
+        编码用 utf-8-sig:有 BOM 就吃掉,没 BOM 也无害 —— 课程资料里 BOM 很常见
+        (FAQ CSV 就带 BOM,读成 utf-8 时列名会多出 \\ufeff)。
+        """
+        return path.read_text(encoding="utf-8-sig")

@@ -127,6 +127,10 @@ class Document:
     doc_id: str
     text: str
     source: str
+    # P0-5:``(起始, 结束, 页码)`` 区间表,**按字符偏移与 text 逐字符对齐**;
+    # 空元组 = 这份格式没有页码概念(md/txt 就是空,不是"第 0 页")。
+    # 默认值让现有构造不受影响(加字段不许改调用点)。
+    pages: tuple[tuple[int, int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +151,10 @@ class Chunk:
     doc_id: str  # 必填:漏了它就等于关掉「重灌时清旧块」
     parent_id: str = ""
     parent_content: str = ""
+    # P0-5:这一块落在源文件的第几页(**从 1 开始**)。
+    # None = 不知道 —— 两种来源都归到这里:这种格式没有页码概念(md/txt),或者块是
+    # P0-5 之前入库的老数据。**不许拿 0 或 -1 当"没有页码"**:那会被读成一个真实页号。
+    page: int | None = None
 
     @property
     def context_text(self) -> str:
@@ -192,6 +200,10 @@ class Citation:
     所以谁也不能拿去和阈值比。
 
     routes 记着命中它的路名("vector" / "bm25"),两路都中通常更可信。
+
+    ``page`` 做成 **property 而不是字段**:引用本来就带着整个 ``Chunk``,再存一份页码就有了
+    两个真值来源 —— 而折叠 / 重排 / 截断都会**重建 Citation**(见 answer_rag 的 ``_renumber``),
+    谁少抄一次,页面上就少一个页码,而且看不出来。所以只留一条路:问那条子块。
     """
 
     index: int
@@ -199,6 +211,11 @@ class Citation:
     score: float
     routes: tuple[str, ...] = ()  # 命中它的路名("vector" / "bm25")
     rerank_score: float | None = None  # None = 没重排过(不是重排了得 0 分)
+
+    @property
+    def page(self) -> int | None:
+        """输入:无。行为:取这条引用所在子块的页码。输出:页码(1 起);None = 不知道。"""
+        return self.chunk.page
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,10 +283,19 @@ class ChunkGroup:
 
     切分器只吐出这种分组,不生成 id —— id 怎么编是用例层的事
     (要带来源、文档、位置、内容四样东西,切分器不该知道这些)。
+
+    ``child_starts`` 是**每个子块在传给 split() 的那段正文里的起始偏移**(字符,左闭),
+    与 ``children`` **同序等长**;空元组 = 这个切分器不报偏移(旧实现、验收夹具)。
+    页码就是靠它查出来的:``page_of(document.pages, child_starts[i])``。
+
+    **为什么偏移由切分器给,而不是用例层拿子块文本去正文里 find**:重复的句子在语料里
+    到处都是,find 会给出**看着合法**的错位置 —— 那比没有页码糟得多。切分器才知道每个块
+    究竟是从哪里切下来的(它是从原文一步步切的,不是事后猜的)。
     """
 
     parent_text: str
     children: tuple[str, ...]
+    child_starts: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,18 +311,39 @@ class FusedChunk:
     routes: tuple[str, ...] = ()
 
 
+# 检索方式的闭集(接口层用语,翻译成权重见 api/app.py 的 ``_options``)。
+# 与 ``USER_ROLES`` 同一个写法:元组给运行时(capabilities 要报给前端),
+# Literal 给类型检查器(写错一个字母当场报,而不是运行时行为诡异)。
+RetrievalMode = Literal["vector", "keyword", "hybrid"]
+RETRIEVAL_MODES: tuple[RetrievalMode, ...] = ("vector", "keyword", "hybrid")
+
+# 融合方式的闭集。之前只在 ``RetrievalOptions.fusion`` 的 Literal 里;现在 capabilities
+# 要把它报给前端 —— 两处各写一份的话,将来加了第三种融合方式,前端下拉框会少一项(静默)。
+FusionMode = Literal["rrf", "weighted"]
+FUSION_MODES: tuple[FusionMode, ...] = ("rrf", "weighted")
+
+
 @dataclass(frozen=True, slots=True)
 class RetrievalOptions:
     """一次检索的全部旋钮。
 
     攒成一个对象而不是排一长串关键字参数:旋钮只会越加越多(重排就是后来加的),
     每加一个就改一遍所有调用点的签名,不划算。默认值与 config.RagConfig 对齐(有验收盯着)。
+
+    **跑哪几路不在这里**:它由两个权重表达(≤ 0 的那一路不跑,见 ``answer_rag.retrieve``),
+    多一个 ``mode`` 字段就有两个真值来源 —— 而"权重说关、模式说开"时谁赢没人猜得出来。
+    ``mode`` 只是**接口层**的说法(``RETRIEVAL_MODES``),到了这一层就翻译成权重。
     """
 
     k: int = 5  # 每一路各召回多少条
     max_context: int | None = None  # 折叠父块后给模型几条
     source: str | None = None  # 来源过滤
-    fusion: Literal["rrf", "weighted"] = "rrf"
+    fusion: FusionMode = "rrf"
     rrf_k: int = 60  # RRF 的平滑常数:越大越弱化「头部优势」
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
+    # 喂给重排器的是**父块正文**(``"parent"``,默认)还是**子块正文**(``"child"``):
+    # 前者是「模型会读到的那段文字」,所以引用清单上的重排分核对得上;后者是「检索命中的那个单元」,
+    # 更短更聚焦,但那个对应关系就断了。**默认保持 parent** —— 换默认要等 `ab_retrieval.py`
+    # 的读数(见 STATUS §7 P0-4);这个旋钮现在只给 A/B 用,还没进 YAML。
+    rerank_input: Literal["parent", "child"] = "parent"

@@ -28,7 +28,6 @@ from project_rag.config import ConversationConfig, MySQLConfig
 from project_rag.domain import ConversationTurn
 from project_rag.ports import ConversationStore
 
-_CONNECT_TIMEOUT_S = 5
 _SAFE_TABLE = re.compile(r"^[A-Za-z0-9_]+$")
 
 # 表结构。``check_m5_history.py`` 的 docstring 里是同一份契约(改这里就要同步那里)。
@@ -160,7 +159,7 @@ class MySQLConversationStore(ConversationStore):
                 user=self._config.user,
                 password=self._config.password.get_secret_value(),
                 database=self._config.database,
-                connect_timeout=_CONNECT_TIMEOUT_S,
+                connect_timeout=self._config.connect_timeout_s,
                 charset="utf8mb4",
                 autocommit=autocommit,
             )

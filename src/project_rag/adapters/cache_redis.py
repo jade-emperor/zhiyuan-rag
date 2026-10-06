@@ -14,8 +14,6 @@ import redis
 from project_rag.config import RedisConfig
 from project_rag.ports import Cache
 
-_SOCKET_TIMEOUT = 1.0
-
 
 class RedisCache(Cache):
     """
@@ -29,10 +27,11 @@ class RedisCache(Cache):
             host=config.host,
             port=config.port,
             password=config.password.get_secret_value(),  # 获取密码的明文
-            socket_timeout=_SOCKET_TIMEOUT,
+            # 超时走配置:它决定 Redis 故障时每个请求要等多久才降级(见 deferred.md §1.1)
+            socket_timeout=config.socket_timeout_s,
             db=config.db,
             decode_responses=True,  # 为了让get()返回字符串,而不是字节
-            socket_connect_timeout=_SOCKET_TIMEOUT,
+            socket_connect_timeout=config.socket_timeout_s,
         )
 
     def get(self, key: str) -> str | None:

@@ -64,6 +64,7 @@ def run(args) -> int:
             llm=deps.llm_factory(),
             cache=_build_cache(deps),
             threshold=deps.faq_threshold,
+            cache_ttl=deps.cache_ttl,
         )
     except Exception as e:
         _logger.error("查询失败:%s", e)

@@ -13,8 +13,6 @@ from project_rag.config import FaqConfig, MySQLConfig
 from project_rag.domain import FaqEntry
 from project_rag.ports import FaqStore
 
-_CONNECT_TIMEOUT_S = 5
-
 
 class MySQLFaqStore(FaqStore):
     def __init__(self, mysql_config: MySQLConfig, faq_config: FaqConfig) -> None:
@@ -35,7 +33,7 @@ class MySQLFaqStore(FaqStore):
                 user=self._config.user,
                 password=self._config.password.get_secret_value(),  # 取明文
                 database=self._config.database,
-                connect_timeout=_CONNECT_TIMEOUT_S,
+                connect_timeout=self._config.connect_timeout_s,
                 charset="utf8mb4",
                 autocommit=True,  # 自动提交事务
             )

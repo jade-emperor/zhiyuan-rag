@@ -141,6 +141,54 @@ services:
     depends_on:
       - standalone
 
+  # ---------------------------------------------------------------------------
+  # 7) app —— 服务本体(镜像由本仓库根目录的 Dockerfile 构建)
+  #
+  # 为什么放这里而不是让它在宿主上跑:中间件都在同一个 compose 网络里,地址直接写
+  # 服务名(standalone / mysql / redis)、端口用**容器内部端口**(19530 / 3306 / 6379),
+  # 不再是 `host.docker.internal` + 1008x/1009x 那一串宿主映射。
+  #
+  # 三条纪律(与 Dockerfile 里的说明互为表里):
+  #   1) 模型与语料**挂卷**,不进镜像 —— ./models(4.4G)与 ./data;
+  #      配置里的相对路径按「项目根」解析,所以容器里路径与宿主一致(/app/models、/app/data)。
+  #   2) 密钥不进镜像 —— env_file 读仓库根的 .env(它同时是 compose 的插值文件,所以
+  #      mysql 那段 ${MYSQL_PASSWORD:-1234} 与容器的 RAG_MYSQL__PASSWORD 同源)。
+  #   3) 默认 CPU —— 容器里看不见宿主 GPU。
+  #
+  # 只想起中间件(在宿主上 `uv run` 开发)时,指名道姓即可:
+  #   docker compose up -d standalone mysql redis
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: project-rag:0.1.0            # 固定 tag:README 与 API.md 里的命令都按它写
+    restart: "no"                       # 与其它服务一致:不随 Docker Desktop 自启
+    env_file:
+      - .env                            # LLM key / MySQL / Redis 密码
+    environment:
+      # 覆盖 .env 里给「宿主上的服务」准备的那套地址 —— 容器里 127.0.0.1 是容器自己
+      RAG_MILVUS__HOST: standalone
+      RAG_MILVUS__PORT: "19530"
+      RAG_MYSQL__HOST: mysql
+      RAG_MYSQL__PORT: "3306"
+      RAG_REDIS__HOST: redis
+      RAG_REDIS__PORT: "6379"
+      RAG_EMBEDDING__DEVICE: cpu
+    ports:
+      - "8080:8080"                     # 宿主 8080 被占就改左边;右边是容器内端口,不能改
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs                # 唯一需要写的挂载点(镜像里 /app/logs 属于 uid 1000)
+    depends_on:
+      standalone:
+        condition: service_started      # standalone 没写 healthcheck,只能 service_started
+      mysql:
+        condition: service_healthy      # 首次启动要初始化数据目录(~30s),不等它会连不上
+      redis:
+        condition: service_started
+
 volumes:
   etcd_data:
   minio_data:

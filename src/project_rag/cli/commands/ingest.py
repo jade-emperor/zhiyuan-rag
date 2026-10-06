@@ -15,8 +15,8 @@ _logger = get_logger("cli.ingest")
 
 NAME = "ingest"
 
-# 默认语料:先跑通再谈多格式
-_DEFAULT_PATH = "data/corpus/bagu_ai_data"
+# 默认语料路径
+_DEFAULT_PATH = "data/corpus/pdf_data"
 
 # 真实写入需要的两个工厂
 _REQUIRED_FACTORIES = ("embedder_factory", "vector_store_factory")
@@ -43,8 +43,8 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=64,
-        help="每次嵌入的块数(CPU 上批量越大越划算,默认 64)",
+        default=None,
+        help="每次嵌入的块数;不给就用 rag.ingest_batch_size(默认 64)",
     )
     return parser
 
@@ -78,7 +78,7 @@ def run(args) -> int:
     """输入:解析好的参数(含 deps)。行为:加载 → 切分;dry-run 到此为止,否则走嵌入与入库。输出:退出码 0/1。"""
     # 延迟 import:把 langchain 切分器挡在 --help 之外
     from project_rag.adapters.chunker_recursive import ChineseRecursiveChunker
-    from project_rag.adapters.text_files import load_text_files
+    from project_rag.adapters.document_loader import load_documents, supported_suffixes
     from project_rag.application import chunk_documents, ingest_documents
     from project_rag.config import get_settings
 
@@ -88,10 +88,17 @@ def run(args) -> int:
     if not path.exists():
         print(f"路径不存在:{path}", file=sys.stderr)
         return 1
-    documents = load_text_files(path)
-    if not documents:
-        print(f"{path} 下没有 .md / .txt 文件", file=sys.stderr)
+    loaded = load_documents(path)
+    # 两份「没进来」的清单都要报:少入库一份文档,不打印的话没人会发现
+    for label, names in (("不认识的文件", loaded.skipped), ("没抽出文字", loaded.empty)):
+        if names:
+            preview = "、".join(names[:3]) + ("…" if len(names) > 3 else "")
+            print(f"{label} {len(names)} 份:{preview}", file=sys.stderr)
+    if not loaded.documents:
+        supported = "、".join(supported_suffixes())
+        print(f"{path} 下没有可入库的文档(认识的后缀:{supported})", file=sys.stderr)
         return 1
+    documents = loaded.documents
 
     total_chars = sum(len(document.text) for document in documents)
     print(f"加载 {len(documents)} 份文档,共 {total_chars} 字 ← {path}")
@@ -128,12 +135,19 @@ def run(args) -> int:
             purged = sum(store.delete_by_source(source) for source in sources)
             print(f"--purge-source:清掉 {sources} 的旧块 {purged} 条")
 
+        # None 才回落到配置:显式传 0 应当让 ingest_documents 抛 ValueError,
+        # 而不是被 `or` 悄悄换成默认值(那是静默纠正用户的输入)
+        batch_size = (
+            settings.rag.ingest_batch_size
+            if args.batch_size is None
+            else args.batch_size
+        )
         report = ingest_documents(
             documents,
             chunker=chunker,
             embedder=deps.embedder_factory(),
             store=store,
-            batch_size=args.batch_size,
+            batch_size=batch_size,
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("ingest 失败:%s", exc)

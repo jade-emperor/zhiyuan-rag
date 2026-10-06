@@ -3,12 +3,26 @@ root_log_level: NOTSET # 根日志等级,这是第一道阀门,开发环境可�
 console_log_level: INFO # 控制台日志等级
 file_log_level: DEBUG # 文件日志等级,先通过root过滤,如果root设置为INFO,这里设置为DEBUG也不会写入DEBUG的日志
 log_dir: logs
+# 日志轮转:单个文件上限 + 保留几份旧日志(app.log.1 / .2 …)。
+log_max_bytes: 10485760 # 10MB
+log_backup_count: 5
 
 api:
   # 启动预热:把嵌入/重排模型、语料索引、Milvus 连接先在启动阶段建好,
   # 免得第一个用户扛冷启动(实测:首个请求比热请求多付 4.4s)。
   # 只跑到「检索出引用」为止,不调大模型 → 不花 token 钱;失败不拦启动。
   warmup: true
+  # 上传的原文件落盘目录(相对项目根)。删文档时会连它一起删,所以别指到语料目录外的地方。
+  uploads_dir: data/uploads
+  # 单个上传文件大小上限(MB):礼貌的闸,不是安全边界(防滥用靠反代/限流)。
+  max_upload_mb: 50
+  # 绑定地址:绑回环时 WSL 里 Windows 浏览器连不上(实测);进容器也映射不出去。
+  host: 0.0.0.0
+  port: 8080
+  # 预热查询。**换语料领域时记得换这一句** —— 检索不到东西的预热等于没预热。
+  warmup_query: "装饰器有什么用"
+  # CORS 允许的来源。本机全开;对外必须收紧成具体域名。
+  cors_origins: ["*"]
 
 llm:
   model: deepseek-flash
@@ -28,11 +42,14 @@ mysql:
   port: 10093
   user: rag
   database: rag
+  connect_timeout_s: 5 # 连不上时多久报错(本机 Docker 与跨网部署合理值不同)
 
 redis:
   host: 127.0.0.1
   port: 10087
   db: 0
+  # Redis 故障时每个请求要等多久才降级(见 deferred.md §1.1「降级放大」)
+  socket_timeout_s: 1.0
 
 faq:
   # 口径 = top1 原始分 / 该条问自己的分
@@ -40,7 +57,18 @@ faq:
   threshold: 0.85
   table: faq
 
-  
+cache:
+  # FAQ 答案缓存的过期秒数(旁路缓存)。
+  # 300 = 5 分钟:够挡住重复提问那笔 LLM 兜底的钱,又不至于让过期答案停留太久。
+  # 注意作用域:该缓存当前只服务 `faq` 单通道命令 —— 合流(qa / FastAPI)不读写缓存,
+  # 见 docs/deferred.md #21。
+  ttl_s: 300
+  # BM25 索引「语料指纹」的缓存秒数:指纹查询实测 397.6ms/次(3938 块)且**每次检索都调**,
+  # 而真正的 BM25 打分只要 ~1ms —— 缓存后每查询变成一次 Redis GET(~0.1ms)。
+  # 代价只是「语料变了最多晚这么久被发现」;入库本身要几分钟,20 秒体感上不存在。
+  # 要"上传完立刻可搜"就得让写入方 bump 缓存键(见 docs/deferred.md 第 56 条)。
+  corpus_fp_ttl_s: 20
+
 milvus:
   host: 127.0.0.1
   # 宿主端口,19530 映射到 10086
@@ -62,6 +90,8 @@ rag:
   parent_chunk_size: 1200
   child_chunk_size: 300
   chunk_overlap: 50
+  # ingest 的嵌入批大小:CPU 上批量越大越划算,显存小的机器反而要调小。
+  ingest_batch_size: 64
   # 2026-09-22 用评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
   # 10/3 把 recall 从 0.9654 抬到 0.9844,但 precision 0.9732→0.9595、
   # faithfulness 0.9680→0.9491,四项均值 0.9347→0.9313 —— 花更多上下文买到更差的忠实度,

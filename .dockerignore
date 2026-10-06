@@ -1,0 +1,29 @@
+# 构建上下文 = 项目根。下面是**绝不能进镜像/不该拖慢构建**的东西。
+#
+# 为什么必须写:没有它,`docker build .` 会把 .venv(7.1G)、models(4.4G)、data、
+# .git 全打包发给 daemon —— 构建慢十倍,而且 .env 里的密钥会被送出去并可能落进镜像层。
+
+# 密钥:绝不进镜像(用 -e / env_file 注入)
+.env
+
+# 依赖与虚拟环境:镜像里由 uv 重新装一份(宿主的是 Linux/WSL 与镜像不一致也别复用)
+.venv/
+__pycache__/
+*.py[cod]
+
+# 体积大且按「挂卷」提供:模型权重、语料与评估数据
+models/
+data/
+logs/
+.cache/
+
+# 本地工作材料:验收脚本、文档、编辑器与工具目录
+docs/
+scripts/
+.vscode/
+.git/
+.gitignore
+
+# 其他
+*.ses
+*.log

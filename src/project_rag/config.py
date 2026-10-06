@@ -4,7 +4,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
@@ -48,6 +47,9 @@ class MySQLConfig(BaseModel):
     user: str = "rag"
     password: SecretStr = SecretStr("")
     database: str = "rag"
+    # 连接超时(秒)。原先在 faq_mysql / conversation_mysql 里各写一个 5。
+    # 它决定「MySQL 挂了之后要等多久才报错」,本机 Docker 与跨网部署的合理值不同。
+    connect_timeout_s: int = 5
 
     @field_validator("password")
     @classmethod
@@ -63,6 +65,10 @@ class RedisConfig(BaseModel):
     port: int = 10087
     password: SecretStr = SecretStr("")
     db: int = 0
+    # 读/连超时(秒)。原先在 cache_redis 里写死 1.0。
+    # **它就是「降级放大」的时长**:Redis 一挂,_safe_get 要等这么久才按未命中返回,
+    # 期间请求转去调大模型(见 docs/deferred.md §1.1)。调大 = 故障时每个请求多等一会儿。
+    socket_timeout_s: float = 1.0
 
     @field_validator("password")
     @classmethod
@@ -80,6 +86,35 @@ class FaqConfig(BaseModel):
     # 改写问法交给知识库通道。
     threshold: float = 0.85
     table: str = "faq"
+
+
+class CacheConfig(BaseModel):
+    """FAQ 答案缓存的旁路参数(``answer_faq`` 的 cache-aside)。
+
+    **为什么 TTL 走配置**:它和 ``faq.threshold`` 是同一类东西 —— 业务旋钮,不是机制。
+    留在代码里意味着「把 5 分钟改成 15 分钟要重新部署」。
+
+    **为什么不把缓存键前缀也搬进来**:``answer_faq.CACHE_KEY_PREFIX = "faq:v1:"`` 里的
+    版本号跟着**缓存 value 的格式**(``_encode`` 的 ``<source>\\x1f<answer>``)走。让它可配
+    = 允许两个格式不同的部署共用一份 Redis,读到对方的值会**静默解错**。
+    版本号是机制,留在代码里,改 ``_encode`` 时手工 bump。
+
+    **作用域提醒**:该缓存当前只服务 ``faq`` 单通道命令 —— 合流(``qa`` / FastAPI)
+    不读也不写缓存,见 ``docs/deferred.md`` #21。
+    """
+
+    # 过期秒数。落配置之前的字面量就是 300,所以这里必须也是 300 ——
+    # 加配置项不许悄悄改变默认语义(有验收脚本钉住类默认值)。
+    ttl_s: int = 300
+
+    # BM25 索引「语料指纹」的缓存秒数(2026-10-06 加)。
+    # 为什么值得一个旋钮:指纹查询在 3938 块时实测 **397.6ms**,而它**每次检索都要调**;
+    # 真正的 BM25 打分只要 ~1ms。缓存后每查询变成一次 Redis GET(~0.1ms),
+    # 代价是「语料变了」最多晚这么多秒被发现。
+    # 为什么默认 20 而不是跟 ttl_s 一样 300:这个窗口决定"新入库的文档多久能被检索到",
+    # 5 分钟太久(入库本身才几分钟);而 20 秒对体感无影响。
+    # 要立刻生效得让写入方 bump 缓存键,见 docs/deferred.md 第 56 条。
+    corpus_fp_ttl_s: int = 20
 
 
 class ConversationConfig(BaseModel):
@@ -101,6 +136,23 @@ class ApiConfig(BaseModel):
     # 预热只走到「检索出引用」为止,**不调大模型**,所以不花 token 钱;
     # 失败只记一条 WARNING,不拦启动。关掉它 = 启动更快、但首个请求自己扛冷启动。
     warmup: bool = True
+    # 上传的原文件落盘目录(相对**项目根**,与 models/data 同一套解析方式)。
+    # 落盘而不是只进向量库:解析要读原文件、前端要能"预览",而且删文档时三处痕迹要一起清。
+    uploads_dir: str = "data/uploads"
+    # 单个上传文件的大小上限(MB)。**不是安全边界,是一道礼貌的闸**:
+    # 真正防滥用要靠反代/限流。定 50 是因为语料里最大的 PDF 也就几 MB。
+    max_upload_mb: int = 50
+    # 绑定地址。类默认**必须**留着 0.0.0.0:WSL 里绑回环时 Windows 浏览器连不上(实测),
+    # 进容器后绑回环也映射不出去。改成可配是为了「本机调试只监听自己」这类场景。
+    host: str = "0.0.0.0"
+    port: int = 8080
+    # 预热用的那条查询。**它是隐藏耦合**:预热要真的检索到东西,才能把
+    # 「构造嵌入/重排/向量库/BM25」那 4.4s 付掉;语料换成别的领域后,
+    # 这条查询可能检索不到任何块 —— 换成该领域里必然存在的一句即可。
+    warmup_query: str = "装饰器有什么用"
+    # CORS 允许的来源。默认全开是**本机开发**的选择;对外必须收紧,
+    # 否则任何站点都能拿用户的浏览器打这个服务。
+    cors_origins: list[str] = ["*"]
 
 
 class MilvusConfig(BaseModel):
@@ -141,6 +193,10 @@ class RagConfig(BaseModel):
     parent_chunk_size: int = 1200
     child_chunk_size: int = 300
     chunk_overlap: int = 50
+    # ingest 的嵌入批大小。**不是切分参数**,是「一次喂几条给嵌入模型」——
+    # 旋钮而非机制:CPU 上批量越大越划算(padding 摊销 + 矩阵乘吃满),
+    # 显存小的机器反而要调小。原先在 ingest_documents 与 ingest --batch-size 各写一个 64。
+    ingest_batch_size: int = 64
     retrieval_k: int = 5
     candidate_m: int = 2
     # 融合方式。两路 = 进程内 BM25 关键字 + Milvus 稠密向量(不用嵌入模型的稀疏向量:
@@ -181,6 +237,10 @@ class RagConfig(BaseModel):
                 "bm25_weight 与 vector_weight 不能同时为 0 —— 两路都不给权重,"
                 "融合结果全是 0,排序退化成随机"
             )
+        if self.ingest_batch_size <= 0:
+            raise ValueError(
+                f"ingest_batch_size 必须为正,收到 {self.ingest_batch_size}"
+            )
         if self.rrf_k < 0:
             raise ValueError(f"rrf_k 不能为负,收到 {self.rrf_k}")
         return self
@@ -206,12 +266,17 @@ class Settings(BaseSettings):
     console_log_level: str = "INFO"
     file_log_level: str = "INFO"
     log_dir: str = "logs"  # 日志保存目录,这里指项目根目录下的logs目录
+    # 日志轮转。原先在 observability/logging_setup.py 里写死 10MB × 5 份 ——
+    # 而 log_dir 早就是配置了,同一件事的另外两个参数却没有,属于不一致。
+    log_max_bytes: int = 10 * 1024 * 1024  # 单个日志文件上限(写满就滚成 .1)
+    log_backup_count: int = 5  # 保留几份旧日志(0 = 不保留)
 
     # 嵌套配置,通过类型注解声明要把yaml中的层级,转化为LLMConfig类型的对象,自动将字典解包传入这个类中,若没有传入则使用默认值
     llm: LLMConfig = LLMConfig()
     mysql: MySQLConfig = MySQLConfig()
     redis: RedisConfig = RedisConfig()
     faq: FaqConfig = FaqConfig()
+    cache: CacheConfig = CacheConfig()
     milvus: MilvusConfig = MilvusConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     rag: RagConfig = RagConfig()
@@ -255,6 +320,7 @@ __all__ = [
     "ENV_FILE",
     "PROJECT_ROOT",
     "ApiConfig",
+    "CacheConfig",
     "ConversationConfig",
     "EmbeddingConfig",
     "FaqConfig",

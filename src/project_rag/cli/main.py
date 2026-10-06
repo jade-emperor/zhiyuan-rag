@@ -10,7 +10,7 @@ import argparse
 import sys
 
 from project_rag.cli import commands
-from project_rag.cli.deps import Deps, build_real_deps
+from project_rag.cli.deps import Deps, attach_ledger, build_real_deps
 from project_rag.observability import configure_logging, get_logger
 
 # 创建日志子节点project_rag.cli
@@ -54,6 +54,7 @@ def cli(argv: list[str] | None = None, *, deps: Deps | None = None) -> int:
         try:
             configure_logging()  # 加载全局日志配置
             deps = build_real_deps()  # 获取依赖工厂
+            attach_ledger(deps)  # 账本落表(幂等;连不上 MySQL 只警告,不拦命令)
         except Exception as exc:  # 配置坏了就 fail-fast,别带着半个配置往下跑
             print(f"读取配置失败：{exc}", file=sys.stderr)
             return 1

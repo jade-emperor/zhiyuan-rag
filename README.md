@@ -12,7 +12,9 @@
 ## 一、跑起来：仓库里只有代码
 
 **版本库里只有代码**：`src/`（产品代码）、`config/config.yaml`、`docker-compose.yaml`、
-`pyproject.toml` + `uv.lock`。下面这几样**不在**仓库里，得自己准备 —— 缺哪一样，
+`Dockerfile`、`pyproject.toml` + `uv.lock`、`.env.example`，加上两份文档
+（`README.md` 与本仓的 [`API.md`](API.md)，后者是 HTTP / WebSocket / CLI 接口文档）。
+下面这几样**不在**仓库里，得自己准备 —— 缺哪一样，
 对应的功能就跑不起来：
 
 | 缺什么 | 症状 |
@@ -39,6 +41,12 @@
 git clone <repo-url> && cd project_rag
 uv sync                       # 建 .venv + 装依赖（含 torch，首次下载较久）
 ```
+
+依赖分两组：上面这条装的是**运行时**；另有一档可选的 `unstructured`（预留给 HTML / Excel / 扫描件
+OCR 那条路，见文末「已知边界」）。要它得显式点名：`uv sync --extra unstructured`。
+**它不进默认环境、也不进镜像** —— 那个包链上的 `en-core-web-sm` 只有 GitHub 一个下载源，
+留在运行时依赖里会让 `uv sync` / `docker build` 每次去 github.com 取一个产品路径根本不用的模型
+（`src/` 里 0 处 import）。理由与实测数字写在 `pyproject.toml` 的注释里。
 
 ### 2. 写 `.env`（密钥只在这里，不在仓库）
 
@@ -86,14 +94,20 @@ uv run python -c "from modelscope import snapshot_download as d; \
 
 ```text
 data/
-├── faq/<任意名>.csv              # 两列：问题,答案（UTF-8，带 BOM 也认）
-└── corpus/<名字>_data/*.md       # 知识库语料
+├── faq/<任意名>.csv                    # 两列：问题,答案（UTF-8，带 BOM 也认）
+└── corpus/<名字>_data/                 # 知识库语料（可放子目录，source 只看顶层目录名）
+    ├── *.md  *.txt                     # 直接读原文
+    ├── *.docx  *.pptx                  # Word 的 Heading 样式 / 每页标题
+    └── *.pdf                           # 书签目录（没有书签就没有标题层级）
 ```
 
 - **`source` 就是目录名去掉 `_data`**：`bagu_ai_data/` → `--source bagu_ai` 用它过滤。
-- 目前只认 `.md` / `.txt`（PDF / Word / PPT 的工具已装好，缺的是接进加载器，见
-  [`docs/deferred.md`](docs/deferred.md) §1.4）。
-- 语料按**标题层级**切父块、父块再切子块；标题层级丢了父块就会碎，所以 Markdown 的结构别省。
+- 认识五种后缀：`.md` / `.txt`（直接读原文）、`.docx`（Word 的 Heading 样式）、
+  `.pptx`（每页标题）、`.pdf`（书签目录）。不认识的格式、以及认了但抽不出文字的
+  （扫描件）会**在 stderr 里各报一行** —— 少入库一份文档必须让人当场看见。
+- 还没接 HTML / Excel / 扫描件 OCR，见 [`docs/deferred.md`](docs/deferred.md) §1.4。
+- 语料按**标题层级**切父块、父块再切子块；标题层级丢了父块就会碎，所以 Markdown 的结构别省
+  （Word 与 PDF 那边，标题来自文档自己的样式 / 书签，不用另做）。
 
 ### 6. 三处一次性初始化（都幂等，可重跑）
 
@@ -151,6 +165,39 @@ uv run project-rag ingest --path "$CORPUS"             # 真写 Milvus（幂等�
 
 集合不存在会自动建；`--batch-size` 控制每次嵌入的块数（CPU 上大一点更划算）。
 
+**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
+
+```bash
+uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
+uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
+uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
+```
+
+切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
+**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
+
+**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
+
+```bash
+uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
+uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
+uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
+```
+
+切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
+**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
+
+**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
+
+```bash
+uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
+uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
+uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
+```
+
+切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
+**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
+
 ### 7. 跑起来
 
 ```bash
@@ -171,27 +218,53 @@ uv run project-rag <子命令> --help                           # 每个子命�
 > 的分」）：把库里的原句照抄会命中并打印 `FAQ 直答(标准答案):1.0000`；换个说法通常落到知识库通道
 > —— 这是刻意的分流，改写问法交给 RAG，标准答案只留给原句。
 
-### 8. 自检
+### 8. 把服务装进容器（compose 里已经编好了）
+
+`docker-compose.yaml` 的 `app` 服务就是它：镜像由仓库根的 `Dockerfile` 构建（两阶段 —— builder 用 uv
+按 `uv.lock` 装依赖，runtime 只带 `.venv` + 代码；非 root 跑，带 `/health` 探活）。**中间件不进这个镜像。**
 
 ```bash
-uv run pyright                                              # 类型检查：整个工作区 0 errors
-uv run python scripts/acceptance/check_m1_1_config.py       # 13 通过（配置）
-uv run python scripts/acceptance/check_m1_2_logging.py      #  8 通过（日志）
-uv run python scripts/acceptance/check_m1_3_cli.py          # 11 通过（CLI 入口/退出码/分层）
-uv run python scripts/acceptance/check_m2_faq.py            # 28 通过（FAQ 通道；MySQL/Redis 不在时那几条 SKIP）
-uv run python scripts/acceptance/check_m3_rag.py            # 49 通过 / 4 跳过（跳过的是 GPU 与已移走的语料）
-uv run python scripts/acceptance/check_m4_eval.py           # 30 通过 / 1 跳过（评估链路）
-uv run python scripts/acceptance/check_m5_qa.py             # 33 通过（合流路由）
-uv run python scripts/acceptance/check_m5_history.py        # 33 通过（会话历史；11 条要真 MySQL）
-uv run python scripts/acceptance/check_m5_stream.py         # 37 通过（截断 + 流式帧协议；会真调 3 次极小 DeepSeek）
-uv run python scripts/acceptance/check_m5_api.py            # 25 通过（接口层，不需要容器）
-uv run python scripts/acceptance/check_m5_5_latency.py      # 26 通过（延迟观测，不联网、不需要容器）
-uv run python scripts/acceptance/check_env_services.py      #  5 通过（先起容器）
+docker compose up -d --build        # 一次起全套：中间件 + app（首次要构建镜像，最久）
+docker compose ps                   # app 那行要是 healthy（首次最多等 3 分钟：启动预热要加载 BGE-M3）
+curl http://localhost:8080/health
+# 浏览器打开 http://localhost:8080/ —— 就是个能问话的页面（api/static/index.html）
 ```
 
-> `scripts/`、`docs/` 是**本地工作材料**（不进版本库）：验收脚本、一次性工具、
-> 状态与决策记录。换机器时按各自的 README 重建。
-> 容器没起时 `check_env_services.py` 会报 **0 通过 / 5 失败** —— 那是环境没就绪，不是代码回归。
+- **地址用服务名**：`standalone:19530` / `mysql:3306` / `redis:6379`。同一个 compose 网络里，
+  既不需要 `host.docker.internal`，也不经过 1008x/1009x 那些宿主映射。
+- **只想起中间件**（在宿主上 `uv run` 开发）：`docker compose up -d standalone mysql redis`。
+- **模型与语料挂卷、不进镜像**：`./models` 与 `./data`。配置里的相对路径是按**项目根**解析的，
+  所以容器里的路径与宿主一致（`/app/models/bge-m3`、`/app/data/corpus/...`）。
+- 容器里默认 `RAG_EMBEDDING__DEVICE=cpu`（看不见宿主 GPU）。要用 GPU 得换基础镜像、
+  再把该变量改回 `cuda`，见 `Dockerfile` 顶部第 2 条。
+- 一次性任务用 `run`，不必手写一长串挂载：
+  `docker compose run --rm app project-rag ingest --path data/corpus/doc_data`
+- 镜像偏大：`uv.lock` 里的 torch 是 CUDA 版，会拖进 `nvidia-*`（本地 `.venv` 实测 6.7G，
+  其中 nvidia 3.2G + triton 0.9G）。CPU-only 的瘦身办法写在 `Dockerfile` 末尾注释里，
+  **没在真机验证过**，验过再改默认。
+- **构建期不需要 GitHub**：`unstructured` 那一档（37 个包）已经挪到可选依赖，运行时用不到，
+  `uv sync --locked --no-dev` 也就不会去拉那个只有 GitHub 一个源的 `en-core-web-sm`（见 §1）。
+- **国内网络两道坎**（2026-09-30 真机踩过，报错原文在 `Dockerfile` 头部）：
+  ① **别给 `Dockerfile` 加 `# syntax=`** —— 那会让 BuildKit 先去 registry 拉一个 frontend 镜像，
+  它是整个构建的第一个网络请求；② Docker Desktop 的**手工代理**（Settings → Resources → Proxies）
+  如果指着本机的 Clash/V2Ray，代理没开时连 registry mirror 都连不上
+  （报 `dial tcp 127.0.0.1:7897: connectex: … refused`，**代理对 mirror 一样生效**）——
+  要么把代理开起来，要么关掉手工代理、只留 registry mirror。
+  现在构建期只需要 **docker 镜像源 + pip 源（清华）**，不碰 `github.com` / `ghcr.io`。
+
+**等价的手工 `docker run`**（不想用 compose 时；注意这时中间件在宿主上，要走 `host.docker.internal`）：
+
+```bash
+docker build -t project-rag:0.1.0 .
+docker run --rm -p 8080:8080 \
+  -e RAG_LLM__DEEPSEEK_API_KEY=sk-xxxx \
+  -e RAG_MYSQL__HOST=host.docker.internal -e RAG_MYSQL__PORT=10093 \
+  -e RAG_REDIS__HOST=host.docker.internal -e RAG_REDIS__PORT=10087 \
+  -e RAG_MILVUS__HOST=host.docker.internal -e RAG_MILVUS__PORT=10086 \
+  -v "$PWD/models:/app/models:ro" -v "$PWD/data:/app/data:ro" -v "$PWD/logs:/app/logs" \
+  project-rag:0.1.0
+```
+
 
 **可选：评估链路**（三份 CSV 落盘，从不覆盖历史）
 
@@ -248,6 +321,7 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 | 思考模式开关 | 一个配置变量同时管**开关**与**强度**（`auto/off/low/high/max`） | `adapters/llm_deepseek.py` + `config.yaml` |
 | 中文两级切分 | 父块 1200 字 / 子块 300 字 / 重叠 50；分隔符按语义强度递归降级 | `adapters/chunker_recursive.py` |
 | 幂等入库 | 主键含内容哈希，同份输入跑两次得到同一批 id；按 `doc_id` 清旧块重灌 | `application/ingest_documents.py` |
+| 多格式入库 | 五种后缀（md/txt/docx/pptx/pdf）各一个来源适配器；命名、排序、分派只在装载层一处；没读进来的文件逐个报出 | `ports/document_source.py` / `adapters/document_loader.py` |
 | 两路召回 + 融合 | 进程内 BM25 + Milvus 稠密向量；RRF 或加权（min-max 归一化） | `application/fusion.py` / `adapters/bm25_index.py` |
 | 重排 | BGE-Reranker-v2-m3 对**父块正文**精排；可关（消融开关） | `adapters/reranker_bge.py` |
 | 引用与可核对 | 每条引用带来源、文档、分数、命中路径（单路/两路） | `domain/models.py` |
@@ -268,6 +342,11 @@ grep -h " | latency " logs/app.log | tail -20
 #   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 ttft_ms=6731.2 tokens=54 gen_ms=345.4 \
 #   tps=156.4 total_ms=7077.9 refused=false truncated=false aborted=false
 ```
+
+> **这一行里的 `bm25_ms` 已经是"旧数字"了**（P0-1，2026-10-06）：BM25 那一路原本**每查询**都向
+> Milvus 要一次语料指纹（3938 块实测 **397.6ms**，而真正的 BM25 打分只要 ~1ms），现在指纹先进
+> Redis、未命中才回源。真环境同一进程连查 4 次的对照：**2016 / 3.5 / 2.2 / 1.9 ms**（旧实现
+> 1517 / 397.2 / 398.2 / 200.8）→ 稳态 **~400ms → ~2ms**。上面这条日志是加缓存之前留下的。
 
 字段口径（拿不到的一律 `-`，「没量到」与「量到 0」分得开）：
 
@@ -302,22 +381,27 @@ llm_ttft_ms=- think_tokens=0                         # 压根没调模型（FAQ 
 src/project_rag/
 ├── domain/          纯数据模型（只用标准库）
 ├── ports/           能力声明：llm / embedder / vector_store / keyword_index / reranker /
-│                    chunker / faq / matcher / cache / conversation
+│                    chunker / faq / matcher / cache / conversation / document_source
 ├── adapters/        唯一碰第三方 SDK 的地方：DeepSeek / BGE-M3 / BGE-Reranker /
-│                    Milvus / BM25 / MySQL / Redis / jieba 分词 / 文本加载与切分
+│                    Milvus / BM25 / MySQL / Redis / jieba 分词 / 文档解析与装载
 ├── application/     用例：合流路由、RAG 检索与生成、FAQ、缓存、帧协议、切分入库、问候
 ├── observability/   日志装配 + 延迟账本
 ├── cli/             命令行入口与组合根（Deps：全是惰性工厂）
 └── api/             FastAPI 接口层 + 静态页面
 config/config.yaml   全部可调项（检索旋钮、模型路径、设备、思考档位、阈值、表名）
-docker-compose.yaml  中间件：Milvus(etcd+minio) / MySQL / Redis / Attu
+docker-compose.yaml  中间件：Milvus(etcd+minio) / MySQL / Redis / Attu ＋ `app`(服务本体)
+Dockerfile           服务本体的镜像（中间件不进它）
+API.md               HTTP / WebSocket / CLI 接口文档
 ```
 
 ### 已知边界
 
-- **入库只吃 `.md` / `.txt`**（PDF / Word / PPT / OCR 的库已装好，缺的是抽
-  `DocumentSource` 端口接进来）；解析、清洗、页码定位的优先级见 [`docs/deferred.md`](docs/deferred.md) §1.4。
-- **应用本身还没有容器化**：`docker-compose.yaml` 只起中间件，服务用 `uv run` 起。
+- **还没接的格式**：HTML / Excel / 扫描件 OCR，以及页码、工作表这类元数据到引用清单的透传；
+  优先级与代价见 [`docs/deferred.md`](docs/deferred.md) §1.4。真要做时先
+  `uv sync --extra unstructured`（那一档默认不装，见 §1）。
+- **应用已编进 compose，但镜像还没在真机构建过**（开发环境里没有 `docker` 命令）：
+  `docker compose up -d --build` 起得来、`/health` 会变 healthy 是**纸面验收**；第一次真机构建
+  仍可能暴露构建期问题（体积 ~9G、CUDA torch 怎么换成 CPU 轮子），见 §8 与 `Dockerfile` 末尾注释。
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
   「暂不做」的条目与**触发条件**都写在 [`docs/deferred.md`](docs/deferred.md)。
 - 当前状态、验收基线、每条踩过的坑记在 [`docs/STATUS.md`](docs/STATUS.md)。

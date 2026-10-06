@@ -13,7 +13,7 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from project_rag.domain import Chunk, Document
+from project_rag.domain import Chunk, ChunkGroup, Document, page_of
 from project_rag.observability import get_logger
 from project_rag.ports import Embedder, TextChunker, VectorStore
 
@@ -23,7 +23,6 @@ _logger = get_logger("application.ingest_documents")
 DEFAULT_BATCH_SIZE = 64
 
 # 主键摘要算法。**只在这一处定义**:换算法只改这一个字符串,
-# 不会出现「有的地方 sha256、有的地方 md5」那种半吊子状态。
 # 十六进制长度必须 ≤ Milvus schema 里 chunk_id / parent_id 的 max_length(64)。
 _DIGEST = "sha256"
 
@@ -59,26 +58,51 @@ class IngestReport:
     in_store: int  # 最后一次 upsert 后集合里的子块总数(0 = 什么都没写)
 
 
+def _page_of_child(
+    document: Document, group: ChunkGroup, child_index: int
+) -> int | None:
+    """输入:文档 + 父块分组 + 子块序号。行为:拿这个子块的起始偏移查页码区间表。输出:页码;不知道给 None。
+
+    **跨页的块取"起始页"**:一个 300 字的子块压在页边界上时,它确实横跨两页;
+    引用只能给一个页号,给的是它**开始**的那一页(和"翻到这一页就能看到这段"一致)。
+    另一半在下一页这种事不写进页码 —— 页码不是区间,写成区间前端也没法显示。
+
+    三种「不知道」都归到 None,一个都不许猜:格式没有页码概念(``pages`` 为空)、
+    切分器不报偏移(``child_starts`` 为空)、偏移落进拼页用的 ``\\n\\n`` 里(``page_of`` 给 None)。
+    """
+    if not document.pages or child_index >= len(group.child_starts):
+        return None
+    return page_of(document.pages, group.child_starts[child_index])
+
+
 def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list[Chunk]:
     """输入:文档序列 + 切分器。行为:按父子分层切块并生成稳定 id。输出:子块列表。
 
     ``chunk_id`` 与 ``parent_id`` 都是 ``sha256(来源 / 文档 / 位置 / 内容)``,成分各有理由:
 
     - **带内容** → 同一位置换了内容就是新块,不会被旧块"覆盖成没更新";
-    - **带位置** → 不同位置出现相同文本不会互相顶掉(只按**内容**哈希的话,
-      两条相同的块会合并成一条,父块归属就乱了);
+    - **带位置** → 不同位置出现相同文本不会互相顶掉(只按**内容**哈希的话,两条相同的块会合并成一条,父块归属就乱了);
     - **带文档路径** → 两份文件里恰好有同样的句子也不会撞;
     - **不带时间戳** → 同一份输入跑两次得到同一批 id,这就是 upsert 幂等的来源。
 
     子块 id 里**含父块序号**:同一段文本落在两个父块下时它们是两个块,
     各自记着自己的父块 —— 否则父块归属会张冠李戴。
 
-    ⚠️ **改这里的配方 = 所有旧块都变成「新块」**:``upsert`` 按 id 覆盖,覆盖不到上一套 id,
-    结果就是新旧两套并存(库里真的出现过这种残留)。所以改了配方**必须重新 ingest**。
+    **页码(P0-5)也在这一步定下来,但它不进任何 id**:身份是「内容 + 结构位置」,
+    页码是源文件的排版属性 —— 混进 id 就意味着"PDF 重新导出一次,整库 id 全变、
+    历史引用全部失效"(决策见 STATUS §7 P0-5)。所以 ``Chunk.page`` 只当载荷,重灌即可修正。
     """
     chunks: list[Chunk] = []
     for document in documents:
         for parent_index, group in enumerate(chunker.split(document.text)):
+            starts = group.child_starts
+            # 偏移与子块必须一一对应:少一个就会让后面所有子块的页码**整体错位**(静默),
+            # 多一个说明切分器数错了块。这是端口契约(见 ports/chunker.py),当场驳回。
+            if starts and len(starts) != len(group.children):
+                raise ValueError(
+                    f"{document.doc_id} 第 {parent_index} 个父块:切分器报了 {len(starts)} 个偏移,"
+                    f"却有 {len(group.children)} 个子块 —— 页码会张冠李戴,先修切分器"
+                )
             # 位置部分先在前面拼好,父块和子块共用同一份
             where = (document.source, document.doc_id, f"p{parent_index}")
             parent_id = _digest(*where, group.parent_text)
@@ -92,6 +116,7 @@ def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list
                         doc_id=document.doc_id,
                         parent_id=parent_id,
                         parent_content=group.parent_text,
+                        page=_page_of_child(document, group, child_index),
                     )
                 )
     return chunks
@@ -110,6 +135,7 @@ def ingest_documents(
     行为:切块 → **清掉这批文档的旧块** → 分批嵌入 → upsert(按 chunk_id 幂等)。
     那一步清理不是可有可无:chunk_id 里含内容哈希,改了内容就是新 id,
     upsert 覆盖不到旧块,不清就会新旧并存,而过期内容往往还排在前面。
+
     输出:统计报告。往库里写之前先校验「向量条数 == 本批块数」——
     顺序对不上就宁可报错,也不要让向量和文本错位落库(那种错查起来极贵)。
     """

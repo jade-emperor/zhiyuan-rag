@@ -1,0 +1,37 @@
+/**
+ * 设计变量。取值对齐作者给的两张参考图(浅色、留白多、圆角卡片、绿色主按钮)。
+ *
+ * 为什么不引组件库:目标界面只有三栏 + 一列卡片,而组件库会带一整套主题
+ * (还要再覆写一遍才能变成这个样子)。这条决定与触发条件写在 docs/frontend.md §1/§5。
+ */
+
+:root {
+  --bg: #ffffff;
+  --bg-muted: #f6f8fa;
+  --bg-sunken: #f0f3f6;
+  --border: #e2e6ea;
+  --border-strong: #cfd6dd;
+
+  --text: #1f2328;
+  --text-muted: #667079;
+  --text-faint: #8b949e;
+
+  --accent: #1f883d;
+  --accent-hover: #1a7f37;
+  --accent-soft: #eaf6ec;
+  --danger: #cf222e;
+  --danger-soft: #fdeced;
+  --warn: #9a6700;
+  --warn-soft: #fff8c5;
+  --info: #0969da;
+  --info-soft: #ddf4ff;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+  --shadow-lg: 0 8px 24px rgba(31, 35, 40, 0.12);
+
+  --sidebar: 264px;
+  --panel: 320px;
+  --header-h: 56px;
+}

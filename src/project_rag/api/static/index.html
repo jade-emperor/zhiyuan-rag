@@ -18,7 +18,8 @@
 </head>
 <body>
   <h1>知识库问答问答</h1>
-  <p class="hint">FAQ 命中直答；否则走知识库（答案带引用）。依据一到就先列出来，答案再逐字出。</p>
+  <p class="hint">FAQ 命中直答；否则走知识库（答案带引用）。依据一到就先列出来，答案再逐字出。<br>
+     开了认证时用 <code>/static/index.html?token=&lt;登录拿到的令牌&gt;</code> 打开本页。</p>
   <div>
     <input id="q" placeholder="问点什么…（回车发送）" autofocus>
     <button id="send">发送</button>
@@ -46,7 +47,11 @@
 
     function connect() {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-      socket = new WebSocket(`${scheme}://${location.host}/api/stream`);
+      // 令牌从**页面自己的 query** 上取(`/static/index.html?token=…`):浏览器不能给 WS 设自定义头,
+      // 所以 P0-3a 的 WS 认证只认 `?token=`。没带就照常连 —— 服务端会回一帧说明原因的 error 帧。
+      const token = new URLSearchParams(location.search).get('token');
+      const suffix = token ? `?token=${encodeURIComponent(token)}` : '';
+      socket = new WebSocket(`${scheme}://${location.host}/api/v1/stream${suffix}`);
       socket.onmessage = (event) => {
         const frame = JSON.parse(event.data);
         if (frame.type === 'sources') {
