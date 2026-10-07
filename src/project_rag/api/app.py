@@ -1004,7 +1004,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         # 登录成功 → 清掉这个 IP 的计数:否则"输错几次、随后输对"的用户会在接下来
         # 一分钟里被自己刚才的失败次数牵连(而那正是 forget 存在的理由)。
         if limiter is not None:
-            pass  # 反向测试:不清失败计数
+            limiter.forget(f"login:ip:{caller}")
         return LoginOut(
             token=token,
             username=user.username,
