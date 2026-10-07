@@ -27,6 +27,7 @@ from project_rag.ports import (
     FaqStore,
     LedgerStore,
     LLMClient,
+    RateLimiter,
     Reranker,
     SessionCatalog,
     TextMatcher,
@@ -113,6 +114,10 @@ class Deps:
     # 会话目录(前端左侧「我有哪些会话」)。与 conversation_store_factory 是**两张不同的表**
     # (归属表 + 对话表),所以是两个工厂:只问答的入口不必认识它。
     session_catalog_factory: Callable[[], SessionCatalog] | None = None
+    # 限流计数器(M7.4)。默认 None = **不限流** —— 与其它工厂同一条口径:
+    # "不注入就不造"。`build_real_deps` 永远接上(Redis 那一份),
+    # 只有显式注入的验收/本机才可能是 None;契约里有一条盯着这件事。
+    rate_limiter_factory: Callable[[], RateLimiter] | None = None
 
 
 def build_real_deps() -> Deps:
@@ -225,10 +230,41 @@ def build_real_deps() -> Deps:
         session_catalog_factory=lambda: MySQLSessionCatalog(
             settings.mysql, settings.conversation
         ),
+        # 限流:默认 Redis(跨进程共享 / 重启不清零 / 时钟以 Redis 为准);
+        # `enabled: false` 或 `backend: memory` 时退到单进程内存那一份,或干脆不接(不限流)。
+        rate_limiter_factory=_rate_limiter(settings),
         faq_threshold=settings.faq.threshold,
         cache_ttl=settings.cache.ttl_s,
         thinking=settings.llm.thinking,
     )
+
+
+def _rate_limiter(settings) -> Callable[[], RateLimiter] | None:
+    """输入:配置。行为:按 `api.rate_limit` 选一个限流实现(或 None = 不限流)。输出:工厂或 None。
+
+    三档配置对应三种部署:`redis`(默认,共享计数)/ `memory`(单进程)/ `enabled: false`(不要这道闸)。
+    **`enabled` 在这里落地** —— 配置里写了它就得真的生效,否则那是一行骗人的注释。
+    """
+    limit_config = settings.api.rate_limit
+    if not limit_config.enabled:
+        _logger.warning("限流已关闭(api.rate_limit.enabled=false):问答/上传/登录都不设闸")
+        return None
+    if limit_config.backend == "memory":
+        from project_rag.adapters.ratelimit_memory import MemoryRateLimiter
+
+        _logger.warning(
+            "限流用进程内存计数(api.rate_limit.backend=memory):"
+            "重启即清零、多 worker 各算各的 —— 只适合单进程部署"
+        )
+        return lambda: MemoryRateLimiter()
+    if limit_config.backend != "redis":
+        raise ValueError(
+            f"不认识的限流后端 {limit_config.backend!r};只支持 redis / memory"
+        )
+
+    from project_rag.adapters.ratelimit_redis import RedisRateLimiter
+
+    return lambda: RedisRateLimiter(settings.redis, key_prefix=limit_config.key_prefix)
 
 
 _T = TypeVar("_T")

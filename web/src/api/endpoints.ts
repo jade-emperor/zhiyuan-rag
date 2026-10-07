@@ -8,10 +8,15 @@
 import { request } from './client'
 import type {
   Capabilities,
+  DeletedDocument,
   DeletedOut,
+  DocumentPreview,
+  DocumentRecord,
+  DocumentsOut,
   HistoryOut,
   LoginOut,
   Me,
+  MetricsOut,
   QueryRequest,
   QueryResponse,
   SessionsOut,
@@ -34,6 +39,17 @@ export function login(username: string, password: string): Promise<LoginOut> {
     auth: false,
     body: { username, password },
   })
+}
+
+/**
+ * 退出登录:**让服务端那枚令牌立刻失效**。
+ *
+ * 只删本地副本是不够的 —— 服务端那枚令牌照样有效到 TTL 结束(默认 12 小时),
+ * 谁之前把它拷走了,"退出"对他没有任何作用。前端这一路是**尽力而为**:
+ * 请求失败也照样清本地(不然用户就被卡在一个退不出去的界面里)。
+ */
+export function logout(): Promise<{ revoked: boolean }> {
+  return request<{ revoked: boolean }>(`${API_PREFIX}/auth/logout`, { method: 'POST' })
 }
 
 export function me(): Promise<Me> {
@@ -60,6 +76,61 @@ export function clearSession(sessionId: string): Promise<DeletedOut> {
   return request<DeletedOut>(`${API_PREFIX}/history/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   })
+}
+
+// ── 文档治理(M7.2 的知识库管理页)────────────────────────────────────────
+export function documents(): Promise<DocumentsOut> {
+  return request<DocumentsOut>(`${API_PREFIX}/documents`)
+}
+
+/**
+ * 上传一份文档并**异步入库**。
+ *
+ * 两个刻意的形状:
+ * 1. **文件走原始 body、名字走 query**(`?filename=`)—— 不用 `multipart/form-data`,
+ *    那要后端多一个依赖;而浏览器的 `fetch(url, {body: file})` 原生就发原始字节;
+ * 2. 返回的是 `202 + pending`,入库在后台跑(539 页 PDF 在 CPU 上要 8 分钟)。
+ *    **拿到 202 不等于入库完成** —— 界面靠轮询清单看状态。
+ */
+export function uploadDocument(file: File): Promise<DocumentRecord> {
+  return request<DocumentRecord>(
+    `${API_PREFIX}/documents?filename=${encodeURIComponent(file.name)}`,
+    {
+      method: 'POST',
+      raw: file,
+      headers: { 'Content-Type': 'application/octet-stream' },
+    },
+  )
+}
+
+/** 删除一份文档:登记行 + 向量库里的块 + 磁盘原文件三处一起清(仅管理员,幂等)。 */
+export function deleteDocument(documentId: string): Promise<DeletedDocument> {
+  return request<DeletedDocument>(
+    `${API_PREFIX}/documents/${encodeURIComponent(documentId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** 预览:这份文档入库后是什么样(按**父块**折叠,带页码)。 */
+export function documentPreview(
+  documentId: string,
+  limit = 20,
+  chars = 400,
+): Promise<DocumentPreview> {
+  return request<DocumentPreview>(
+    `${API_PREFIX}/documents/${encodeURIComponent(documentId)}/chunks?limit=${limit}&chars=${chars}`,
+  )
+}
+
+// ── 报表(M7.3 的可观测看板)─────────────────────────────────────────────
+/**
+ * 延迟报表(仅管理员)。``window`` 的白名单与 ``top`` 的上限都来自 `capabilities.metrics` ——
+ * 前端不写死,否则后端改了窗口这里会拿着一个 400 的窗口名去打。
+ */
+export function metrics(window: string, top = 5): Promise<MetricsOut> {
+  return request<MetricsOut>(
+    `${API_PREFIX}/admin/metrics?window=${encodeURIComponent(window)}&top=${top}`,
+  )
 }
 
 /** 非流式问答。**M7.1 的界面走 WebSocket**;这条留给"不要流式"的调用方与排障。 */

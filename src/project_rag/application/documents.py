@@ -156,3 +156,106 @@ def ingest_uploaded(
     store.set_status(record.document_id, "processed", chunks=report.chunks)
     _logger.info("已入库 %s:%d 块", record.filename, report.chunks)
     return report.chunks
+
+
+PREVIEW_CHARS = 400
+"""预览里每段正文最多显示几个字。**口径只在这一处** —— 接口不另给默认值。"""
+
+PREVIEW_LIMIT = 20
+"""预览最多返回几段(接口的 limit 上界也用它)。"""
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewBlock:
+    """预览里的一段 —— **父块**(模型真正读到的那段),不是检索命中的子块。"""
+
+    index: int  # 从 1 开始,给前端显示
+    page: int | None  # 这一段里**第一个有页码的子块**的页
+    last_page: int | None  # 最后一个有页码的子块的页(与 page 相同时前端只显示一个)
+    chars: int  # 这一段正文的完整字数(不是截断后的)
+    text: str  # 截断后的正文
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentPreview:
+    """一份文档在向量库里的样子(前端那个「预览」按钮要看的东西)。
+
+    **``parent_blocks`` 与 ``child_chunks`` 是两个数,不能混**:入库写进去的是**子块**
+    (``registry.chunks`` 与 ``child_chunks`` 同口径),而预览显示的是折叠后的**父块** ——
+    两者差着切分比例(实测约 1 父 : 5 子)。前端把"入库 42 块"和"预览 15 段"并排显示时,
+    用户才不会以为丢数据了。
+    """
+
+    document_id: str
+    parent_blocks: int
+    child_chunks: int
+    truncated: bool
+    blocks: tuple[PreviewBlock, ...]
+
+
+def preview_document(
+    vector_store: VectorStore,
+    document_id: str,
+    *,
+    limit: int = PREVIEW_LIMIT,
+    chars: int = PREVIEW_CHARS,
+) -> DocumentPreview:
+    """输入:向量库、文档 ID、最多几段、每段最多几个字。行为:取该文档的块 → 折叠成父块。输出:预览。
+
+    **为什么在这里折叠**:向量库里存的是**子块**,父块正文挂在每个子块的 ``parent_content``
+    上(见 ``ingest_documents``)。预览要给人看的是"模型会读到的那段",所以按 ``parent_id``
+    把子块折叠回去;老数据没有父块(``parent_id`` 为空串)时那一段就是它自己 ——
+    与检索时「有父块用父块,没有就用自己」是**同一条口径**(``Chunk.context_text``)。
+
+    **顺序只保证稳定,不保证与原文一致**:块里没有偏移列(``chunk_id`` 是摘要),
+    所以只能按「先有页码的、页码升序、再按块 ID」排。对 PDF 来说这基本就是原文顺序;
+    对 md/txt 只能保证两次预览看到的是一样的。要做到严格原文顺序,得给向量库加一列偏移
+    (schema 变更 + 整库重灌,见 ``docs/deferred.md``)。
+
+    **为什么用 ``load_all`` 再过滤**:与 ``GET /api/v1/sources`` 同一个取舍 —— 语料几千块时
+    一次全读约 250KB,可接受;上万块时给端口加 ``chunks_of(doc_id, limit)``(已记 deferred)。
+    """
+    if limit <= 0:
+        raise ValueError(f"limit 必须为正,收到 {limit}")
+    if chars <= 0:
+        raise ValueError(f"chars 必须为正,收到 {chars}")
+
+    mine = [chunk for chunk in vector_store.load_all() if chunk.doc_id == document_id]
+
+    # 按父块折叠。键取 ``parent_id or chunk_id``:老数据没有父块,那它自己就是一段。
+    grouped: dict[str, list] = {}
+    for chunk in mine:
+        grouped.setdefault(chunk.parent_id or chunk.chunk_id, []).append(chunk)
+
+    blocks: list[PreviewBlock] = []
+    for children in grouped.values():
+        pages = [child.page for child in children if child.page is not None]
+        body = max((child.context_text for child in children), key=len)
+        blocks.append(
+            PreviewBlock(
+                index=0,  # 排完序再编号
+                page=min(pages) if pages else None,
+                last_page=max(pages) if pages else None,
+                chars=len(body),
+                text=body if len(body) <= chars else body[:chars] + "…",
+            )
+        )
+
+    blocks.sort(key=lambda block: (block.page is None, block.page or 0))
+    ordered = tuple(
+        PreviewBlock(
+            index=position,
+            page=block.page,
+            last_page=block.last_page,
+            chars=block.chars,
+            text=block.text,
+        )
+        for position, block in enumerate(blocks[:limit], start=1)
+    )
+    return DocumentPreview(
+        document_id=document_id,
+        parent_blocks=len(blocks),
+        child_chunks=len(mine),
+        truncated=len(blocks) > limit,
+        blocks=ordered,
+    )

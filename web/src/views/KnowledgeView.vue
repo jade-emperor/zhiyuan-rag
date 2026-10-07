@@ -1,80 +1,137 @@
 <script setup lang="ts">
 /**
- * 知识库管理(M7.2 交付)。**这是路线图页,不是"做了一半的页面"** ——
- * 它明确写出下一步做什么、后端已经有哪些接口可以用,免得管理员以为功能坏了。
+ * 知识库管理页(M7.2)。**只对管理员可见**(路由守卫 + 后端各自 `require_admin`)。
  *
- * 为什么不先放一个只读清单:那会让人以为"上传/删除就是没做",而真正缺的是
- * 「上传 → 轮询状态 → 删除连带删向量 → 预览」这条**完整链路**;一个只读清单
- * 既不能上传也不能删,反而更像坏的。M7.2 一次把它做完。
+ * 数据来源一眼看清:清单 `GET /api/v1/documents`、上传 `POST /api/v1/documents?filename=…`、
+ * 删除 `DELETE /api/v1/documents/{id}`、预览 `GET /api/v1/documents/{id}/chunks`;
+ * 上传框的 `accept` 与大小上限来自 `GET /api/v1/capabilities`。
+ *
+ * 三条口径:
+ * - **只要还有 pending/processing 就自动轮询**(3 秒),全落定就停 —— 见 `stores/documents.ts`;
+ * - **删除两步确认**,删完如实转述后端结果(删了几块 / 文件在不在 / 登记行在不在);
+ * - **预览显示的是父块**,与"入库 N 块(子块)"并排显示,免得被读成丢数据。
  */
-import { capabilitiesState } from '../stores/capabilities'
+import { computed, onMounted, onUnmounted } from 'vue'
 
-const caps = capabilitiesState()
+import DocumentCard from '../components/DocumentCard.vue'
+import PreviewDialog from '../components/PreviewDialog.vue'
+import UploadPanel from '../components/UploadPanel.vue'
+import {
+  documentsState,
+  openPreview,
+  refreshDocuments,
+  removeDocument,
+  stopPolling,
+} from '../stores/documents'
+
+const docs = documentsState()
+
+const active = computed(
+  () => docs.docs.filter((doc) => doc.status === 'pending' || doc.status === 'processing').length,
+)
+
+const lastDeleted = computed(() => docs.lastDeleted)
+
+onMounted(() => {
+  void refreshDocuments()
+})
+
+onUnmounted(() => {
+  // 离开页面就停轮询:不然切到聊天页还在每 3 秒打一次清单
+  stopPolling()
+})
 </script>
 
 <template>
   <div class="page">
-    <div class="card block">
-      <h1>知识库管理</h1>
-      <p class="muted">
-        这一步(M7.2)交付:上传文档、轮询入库状态、删除(连带删除向量库里的块与磁盘文件)、预览块。
+    <UploadPanel />
+
+    <main class="main">
+      <header class="head">
+        <h1>知识库文件</h1>
+        <div class="head-right">
+          <span v-if="docs.polling" class="faint">
+            <span class="spin"></span> 有 {{ active }} 份在入库,每 3 秒自动刷新
+          </span>
+          <button class="ghost" type="button" :disabled="docs.loading" @click="refreshDocuments">
+            {{ docs.loading ? '刷新中…' : '刷新清单' }}
+          </button>
+        </div>
+      </header>
+
+      <p v-if="docs.error" class="alert error">{{ docs.error }}</p>
+
+      <p v-if="lastDeleted" class="alert info">
+        已删除 <code>{{ lastDeleted.document_id }}</code>:向量
+        {{ lastDeleted.deleted_chunks }} 块 · 原文件
+        {{ lastDeleted.removed_file ? '已删' : '本来就不在' }} · 登记行
+        {{ lastDeleted.removed_record ? '已删' : '本来就不在' }}。
       </p>
 
-      <h3>后端已经就绪的接口</h3>
-      <ul>
-        <li><code>GET /api/v1/capabilities</code> —— 支持的后缀与大小上限(上传框的 accept 从这里来)</li>
-        <li><code>POST /api/v1/documents?filename=…</code> —— 上传并异步入库(202 + pending,后台跑)</li>
-        <li><code>GET /api/v1/documents</code> —— 清单:文件名 / 块数 / 状态 / 时间 / 是否可检索</li>
-        <li><code>DELETE /api/v1/documents/{id}</code> —— 登记行 + 向量 + 文件三处一起清(仅管理员)</li>
-      </ul>
+      <div v-if="docs.docs.length === 0 && !docs.loading" class="empty card">
+        <p class="muted">知识库里还没有文档。左边上传一份试试。</p>
+      </div>
 
-      <h3>当前后端支持的类型</h3>
-      <p>
-        <span v-for="suffix in caps.data?.suffixes ?? []" :key="suffix" class="tag soft">{{ suffix }}</span>
-        <span v-if="(caps.data?.suffixes ?? []).length === 0" class="faint">还没读到 capabilities,请检查后端连接。</span>
-      </p>
-      <p class="faint">单个文件上限 {{ caps.data?.max_upload_mb ?? '—' }} MB。</p>
+      <div class="grid">
+        <DocumentCard
+          v-for="doc in docs.docs"
+          :key="doc.document_id"
+          :doc="doc"
+          :deleting="docs.deleting === doc.document_id"
+          @preview="openPreview(doc.document_id)"
+          @remove="removeDocument(doc.document_id)"
+        />
+      </div>
+    </main>
 
-      <p class="alert info">
-        为什么不做"每个文档一个向量集合":删除一整份文档要能一次删干净,靠的是块里的
-        <code>doc_id</code>(登记 ID == 装载器 doc_id == 块里的 doc_id,有契约钉着)。
-      </p>
-    </div>
+    <PreviewDialog v-if="docs.previewFor" />
   </div>
 </template>
 
 <style scoped>
 .page {
   flex: 1;
+  display: flex;
+  gap: 20px;
+  padding: 20px;
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px;
 }
 
-.block {
-  max-width: 46rem;
-  margin: 0 auto;
-  padding: 24px;
+.main {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 h1 {
   font-size: 18px;
 }
 
-h3 {
-  font-size: 14px;
-  margin-top: 6px;
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  align-content: start;
 }
 
-ul {
-  margin: 0;
-  padding-left: 20px;
-  color: var(--text-muted);
-}
-
-li {
-  margin: 2px 0;
+.empty {
+  padding: 24px;
+  text-align: center;
 }
 </style>

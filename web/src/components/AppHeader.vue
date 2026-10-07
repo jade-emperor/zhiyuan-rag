@@ -41,7 +41,7 @@ async function saveBackend(): Promise<void> {
   setBackendBase(next)
   // 换了后端 = 换了另一套账号体系:本地令牌一定不属于它,先清干净再重新拉能力。
   // 不清的话,下一步会拿着 A 的令牌去问 B,而用户看到的只是"登录过期"。
-  logout()
+  await logout()
   resetChat()
   backendError.value = ''
   editingBackend.value = false
@@ -54,10 +54,10 @@ async function saveBackend(): Promise<void> {
   await router.replace({ name: 'login' })
 }
 
-function signOut(): void {
-  logout()
+async function signOut(): Promise<void> {
+  await logout()
   resetChat()
-  void router.replace({ name: 'login' })
+  await router.replace({ name: 'login' })
 }
 </script>
 
@@ -96,7 +96,7 @@ function signOut(): void {
         {{ auth.user?.username ?? auth.username }}
         <span class="tag" :class="isAdmin ? 'info' : 'soft'">{{ isAdmin ? '管理员' : '员工' }}</span>
       </span>
-      <button class="ghost" type="button" @click="signOut">退出</button>
+      <button class="ghost" type="button" @click="signOut()">退出</button>
     </div>
   </header>
 </template>

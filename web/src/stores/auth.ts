@@ -75,6 +75,12 @@ export function clearAuth(): void {
   state.username = ''
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  try {
+    // 先让服务端撤销这枚令牌,再清本地。失败也继续清 —— 退不出去比"撤销没成功"更糟。
+    await api.logout()
+  } catch {
+    /* 尽力而为:网络不通 / 令牌已过期都不该挡住退出 */
+  }
   clearAuth()
 }

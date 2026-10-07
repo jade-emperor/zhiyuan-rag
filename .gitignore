@@ -30,3 +30,8 @@ scripts/
 # 不进版本库：体积大 + 可以从课程包本地拷贝或 modelscope 下载
 # 取模型：.venv/bin/python scripts/tools/fetch_models.py [--with-reranker]
 models/
+
+# 前端：源码与 package-lock 进版本库,**依赖目录与构建中间产物不进**
+#   （构建产物落在 src/project_rag/api/static/app/ 下,那是入库的 —— 见 docs/frontend.md §1）
+web/node_modules/
+web/dist/

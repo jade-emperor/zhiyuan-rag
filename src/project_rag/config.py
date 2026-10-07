@@ -128,6 +128,31 @@ class ConversationConfig(BaseModel):
     history_rounds: int = 5
 
 
+class RateLimitConfig(BaseModel):
+    """限流(滑动窗口,默认计数在 Redis;见 ``adapters/ratelimit_redis.py``)。
+
+    **为什么默认开着**:关着的时候,一个循环脚本就能把模型与 token 额度吃光,
+    而这件事在日志里长得跟"今天大家都很活跃"一模一样。默认值按"同事几人到几十人"定:
+    一分钟 60 次问答够任何人用,但挡住脚本。
+
+    每一档 ``<= 0`` = 关掉这一档(不是"限 0 次")。
+    """
+
+    enabled: bool = True
+    # 计数存在哪:`redis`(跨进程共享、重启不清零、时钟以 Redis 为准)/ `memory`(单进程)。
+    # 默认 Redis —— 限流的前提是"换个进程/重启一下也绕不过去"。
+    backend: str = "redis"
+    # 键的命名空间 + 版本号(同一个 Redis 被别的应用或别的版本共用时不互相踩)。
+    key_prefix: str = "ratelimit:v1:"
+    window_s: int = 60
+    # 问答:HTTP 的 /query 与 WS 的**每条消息**共用这一档(两条入口,一份额度)
+    query: int = 60
+    # 上传:一次上传背后是几分钟的 CPU 嵌入,闸门要更紧
+    upload: int = 10
+    # 登录:防口令爆破
+    login: int = 10
+
+
 class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
@@ -152,7 +177,11 @@ class ApiConfig(BaseModel):
     warmup_query: str = "装饰器有什么用"
     # CORS 允许的来源。默认全开是**本机开发**的选择;对外必须收紧,
     # 否则任何站点都能拿用户的浏览器打这个服务。
+    # "全开 + 绑非回环地址"这个组合会在启动时**打一条 WARNING**(见 api/app.py 的
+    # `_warn_wide_cors`):不是拦你,是让这件事在日志里留个痕。
     cors_origins: list[str] = ["*"]
+    # 限流。**它同时是"防滥用"与"防爆破"**:问答烧 token、上传烧 CPU、登录烧口令。
+    rate_limit: RateLimitConfig = RateLimitConfig()
 
 
 class MilvusConfig(BaseModel):

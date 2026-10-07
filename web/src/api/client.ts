@@ -84,6 +84,29 @@ export function setStoredUsername(value: string | null): void {
   else localStorage.removeItem(USER_KEY)
 }
 
+/**
+ * 从地址上认一次 `?backend=…`,然后**把它从地址栏抹掉**。
+ *
+ * 给谁用:桌面壳(M7.4)打开的是**本地文件**,`location.origin` 是 `null`,
+ * 没有这一手用户第一次必须手输后端地址;有了它,壳只要把地址拼在 URL 上就行。
+ * 抹掉是因为地址不该留在能被人截屏/顺手复制的地方(令牌同理,所以令牌从不进 URL)。
+ */
+export function seedBackendFromQuery(): void {
+  const params = new URLSearchParams(window.location.search)
+  const value = params.get('backend')
+  if (value === null) return
+  const looksLikeUrl = /^https?:\/\/[^\s]+$/i.test(value.trim())
+  if (looksLikeUrl) setBackendBase(value)
+  else console.warn(`?backend=${value} 不像一个地址(http/https),已忽略`)
+  params.delete('backend')
+  const query = params.toString()
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+  )
+}
+
 /** 401 时要做的事(跳登录页)由 app 注册进来 —— 这一层不认识路由。 */
 let unauthorizedHandler: (() => void) | null = null
 

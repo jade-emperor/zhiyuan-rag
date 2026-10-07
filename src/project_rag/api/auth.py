@@ -106,6 +106,31 @@ class Authenticator:
             )
         return user
 
+    async def logout(self, authorization: str | None) -> bool:
+        """输入:``Authorization`` 头。行为:把这枚令牌从库里撤掉。输出:是否撤掉了。
+
+        **为什么要有这一步**:前端"退出"原来只是把令牌从 localStorage 删掉 ——
+        服务端那枚令牌还**照样有效到 TTL 结束**(默认 12 小时)。谁要是之前把它拷走了,
+        "退出"对他没有任何作用。撤销才是真的退出。
+
+        没带令牌 / 令牌本来就无效时返回 ``False`` 而不是报错:退出是**幂等**的,
+        重复点不该报错(与删文档同一条口径)。
+        """
+        store = self._require_store()
+        token = bearer_token(authorization)
+        if token is None:
+            return False
+        before = await run_in_threadpool(self._store_exists, token)
+        await run_in_threadpool(store.revoke_token, token_fingerprint(token))
+        return before
+
+    def _store_exists(self, token: str) -> bool:
+        """输入:令牌原文。行为:看它现在是否还能换出用户。输出:布尔(给 logout 的返回值用)。"""
+        store = self._store
+        if store is None:
+            return False
+        return store.user_for_token(token_fingerprint(token)) is not None
+
     async def user_for_ws_token(self, token: str | None) -> User | None:
         """输入:WebSocket 的 ``token`` query 参数。行为:换出当前用户。输出:用户;失败给 None。
 

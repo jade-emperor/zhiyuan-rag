@@ -23,6 +23,9 @@ from project_rag.domain import RETRIEVAL_MODES
 K_MAX = 50
 MAX_CONTEXT_MAX = 20
 RRF_K_MAX = 1000
+# 报表的「最慢榜取几条」上限。**必须与 capabilities 报给前端的 top_max 同源** ——
+# 否则前端的滑条能拖到一个后端 422 的值(M7.1 那条 limits 契约的同一条规矩)。
+TOP_MAX = 50
 
 
 class QueryRequest(BaseModel):
@@ -110,12 +113,17 @@ class CitationOut(BaseModel):
 class QueryResponse(BaseModel):
     """非流式回答。
 
-    ``channel`` 比 ``domain.Channel`` 多一个 ``"greeting"``:寒暄是这一层的前置拦截,
-    既不是 FAQ 通道也不是知识库通道 —— 混进那两种会让前端没法区分。
+    ``channel`` 比 ``domain.Channel`` 多两个值,都是**这一层的前置拦截**:
+
+    * ``"greeting"`` —— 寒暄,直接回话术,不查库;
+    * ``"throttled"`` —— 触发限流,回一句"稍后再试"的兜底话术(M7.4)。
+
+    它们既不是 FAQ 通道也不是知识库通道,混进那两种前端就没法区分
+    ("这句话为什么没有引用"与"这句话为什么长得像错误")。
     """
 
     answer: str
-    channel: Literal["faq", "rag", "greeting"]
+    channel: Literal["faq", "rag", "greeting", "throttled"]
     refused: bool = False
     truncated: bool = False
     citations: list[CitationOut] = []
@@ -206,6 +214,12 @@ class LoginOut(BaseModel):
     expires_in: int
 
 
+class LogoutOut(BaseModel):
+    """退出结果。``revoked`` = 服务端**真的**把那枚令牌撤掉了(不只是前端删了本地副本)。"""
+
+    revoked: bool
+
+
 class MeOut(BaseModel):
     """当前账号。用来让前端判断"该不该显示上传/删除/报表"。"""
 
@@ -245,6 +259,58 @@ class DeletedDocumentOut(BaseModel):
     removed_record: bool
 
 
+class ChunkPreviewOut(BaseModel):
+    """预览里的一段 —— **父块**(模型真正读到的那段),不是检索命中的子块。
+
+    ``page`` 是这一段里第一个有页码的子块的页,``last_page`` 是最后一个:
+    两者不同说明这一段**跨页**(真语料里约 22.9% 的块跨页,口径见 P0-5);
+    都是 ``None`` 就是"不知道"(md/txt)。**不许拿 0 顶**。
+    """
+
+    index: int
+    page: int | None = None
+    last_page: int | None = None
+    chars: int
+    text: str
+
+
+class DocumentPreviewOut(BaseModel):
+    """一份文档在向量库里的样子(前端「预览」按钮要的东西)。
+
+    ``parent_blocks`` 与 ``child_chunks`` 是两个数:入库写的是**子块**,
+    预览显示的是折叠后的**父块**,两者差着切分比例。前端两个都显示,
+    用户才不会把"入库 42 块、预览 15 段"读成丢数据。
+    """
+
+    document_id: str
+    parent_blocks: int
+    child_chunks: int
+    returned: int
+    truncated: bool
+    blocks: list[ChunkPreviewOut]
+
+
+class MetricsMinNOut(BaseModel):
+    """分位数的最小样本量(**渲染成「-」的门槛**)。
+
+    前端要拿它解释"为什么这一格是 `-`" —— 说实话比画一个好看的 0 重要:
+    n=12 的时候 p95 根本没有含义(见 `application/metrics.py` 的口径 2)。
+    """
+
+    p50: int
+    p95: int
+    p99: int
+
+
+class MetricsCapabilitiesOut(BaseModel):
+    """报表能力:窗口白名单 / 默认窗口 / 最慢榜上限 / 分位数的样本量门槛。"""
+
+    windows: list[str]
+    default_window: str
+    top_max: int
+    min_n: MetricsMinNOut
+
+
 class CapabilitiesOut(BaseModel):
     """后端能吃什么、吃多大、会什么 —— **前端不许写死这些**。
 
@@ -259,6 +325,7 @@ class CapabilitiesOut(BaseModel):
     models: list[ModelOut]
     model_settings: ModelSettingsOut
     retrieval: RetrievalOut
+    metrics: MetricsCapabilitiesOut
     roles: list[str]
 
 

@@ -107,6 +107,8 @@ dev = [
 # 构建映射,通过project-rag可以找到cli()函数
 project-rag = "project_rag.cli.main:cli"
 project-rag-api = "project_rag.api.app:run"
+# 桌面壳(M7.4)。**壳里没有业务代码**:它只开一个窗口,后端地址由页面自己记。
+project-rag-desktop = "project_rag.desktop:main"
 
 # ---------------------------------------------------------------------------
 # 可选依赖:不进运行时依赖,也就**不进镜像**(`uv sync --no-dev` 不装 optional)。
@@ -124,6 +126,11 @@ project-rag-api = "project_rag.api.app:run"
 # 要用时:`uv sync --extra unstructured`
 # ---------------------------------------------------------------------------
 [project.optional-dependencies]
+# 桌面壳:pywebview 只在**开窗那一步**才 import(见 src/project_rag/desktop.py),
+# 所以 `--help` / `--check` 在没有 GUI 栈的机器上照样能跑(CI 里就是这么验的)。
+desktop = [
+    "pywebview>=5.0",
+]
 unstructured = [
     "unstructured>=0.16,<1.0",
     "langchain-unstructured>=1.0,<2.0",

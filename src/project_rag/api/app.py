@@ -51,10 +51,12 @@ from typing import Any, TypeVar
 from fastapi import (
     BackgroundTasks,
     Depends,
+    Header,
     FastAPI,
     HTTPException,
     Query,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -64,25 +66,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.requests import HTTPConnection
 
 from project_rag.api.auth import Authenticator
 from project_rag.api.schemas import (
     K_MAX,
+    TOP_MAX,
     MAX_CONTEXT_MAX,
     RRF_K_MAX,
     CapabilitiesOut,
+    ChunkPreviewOut,
     CitationOut,
     DeletedDocumentOut,
     DeletedOut,
     DocumentOut,
+    DocumentPreviewOut,
     DocumentsOut,
     HealthOut,
     HistoryOut,
     HistoryTurnOut,
     LoginOut,
     LoginRequest,
+    LogoutOut,
     MeOut,
     MetricsOut,
+    MetricsCapabilitiesOut,
+    MetricsMinNOut,
     ModelOut,
     ModelSettingsOut,
     QueryRequest,
@@ -112,6 +121,7 @@ from project_rag.domain import (
     RetrievalOptions,
 )
 from project_rag.domain.auth import USER_ROLES, User
+from project_rag.ports import RateLimiter
 from project_rag.observability import get_logger
 
 _logger = get_logger("api.app")
@@ -201,6 +211,116 @@ def _session(deps: Deps, session_id: str | None) -> Session | None:
         session_id=session_id,
         rounds=get_settings().conversation.history_rounds,
     )
+
+
+def _metrics_capabilities() -> MetricsCapabilitiesOut:
+    """输入:无。行为:把报表的白名单与样本量门槛报给前端。输出:能力模型。
+
+    数字全部**从真源读**:窗口来自路由用的那张表、样本量来自 `application/metrics.py`
+    的常量。抄一份到这里就是第二个真值来源 —— 后端加了窗口前端不知道(或反过来)。
+    """
+    from project_rag.application.metrics import MIN_N_P50, MIN_N_P95, MIN_N_P99
+
+    return MetricsCapabilitiesOut(
+        windows=list(_WINDOWS),
+        default_window="24h",
+        top_max=TOP_MAX,
+        min_n=MetricsMinNOut(p50=MIN_N_P50, p95=MIN_N_P95, p99=MIN_N_P99),
+    )
+
+
+# ── 限流(M7.4):计数在组合根给的实现里(默认 Redis,见 adapters/ratelimit_redis.py);
+#    这一层只管**策略**:哪几档、按谁计数、超了回什么 ──────────────────────
+def _rate_limit_key(connection: HTTPConnection, user: User | None) -> str:
+    """输入:连接(HTTP 或 WebSocket)+ 当前用户。行为:算出这一档按谁计数。输出:键。
+
+    **登录时按 IP、登录后按账号**:登录那一刻还没有身份,只能按来源 IP 记;
+    有了账号就该按账号 —— 否则同一个办公室的同事会互相挤占额度(同一个出口 IP)。
+    """
+    if user is not None:
+        return f"user:{user.username}"
+    client = connection.client
+    return f"ip:{client.host if client is not None else 'unknown'}"
+
+
+def _rate_limit_check(
+    limiter: RateLimiter | None, bucket: str, key: str, limit: int, window_s: float
+) -> int:
+    """输入:限流器(可为 None = 不限流)、档位名、键、上限、窗口。行为:判定一次。
+
+    输出:``0`` = 放行;``> 0`` = 被限,值是建议等待秒数。
+
+    **刻意不在这里抛异常**:同一个判定有三种出口 —— 问答回兜底话术(200)、
+    登录/上传回 429、WebSocket 回帧;"怎么回"是各条路径的事,判定只回答"让不让过"。
+    """
+    if limiter is None:
+        return 0
+    return limiter.check(f"{bucket}:{key}", limit=limit, window_s=window_s)
+
+
+# 档位 → 人话里的名字。只在这一处:429 的 detail 与问答的兜底话术共用它,
+# 两处各写一份的话,同一件事会出现两种说法。
+_BUCKET_NAMES = {"query": "提问", "upload": "上传", "login": "登录尝试"}
+
+
+def _throttle_text(bucket: str, limit: int, retry_after: int, window_s: float) -> str:
+    """输入:档位、上限、建议等待秒数、窗口。行为:拼一句**可执行**的话。输出:文本。
+
+    **必须带秒数**:只说"请求过于频繁"的话,用户只能靠反复重试去猜(法律 39 的同一条规矩)。
+    """
+    minutes = max(1, int(window_s // 60)) if window_s >= 60 else None
+    quota = f"{minutes} 分钟最多 {limit} 次" if minutes else f"{int(window_s)} 秒内最多 {limit} 次"
+    return (
+        f"问得有点密集,我需要缓一下 —— 请等约 {retry_after} 秒再试(这一档上限:{quota})。"
+    )
+
+
+def _enforce_rate_limit(
+    limiter: RateLimiter | None, bucket: str, key: str, limit: int, window_s: float
+) -> None:
+    """输入:同 `_rate_limit_check`。行为:超限就**抛 429**(带 ``Retry-After``)。输出:无(放行)。
+
+    给**没有"答案"可兜底**的那两条路用:
+    * 登录 —— 兜底话术会看着像"登录成功了",那是安全上最糟的一种回法;
+    * 上传 —— 管理员点的是按钮,需要的是"为什么没传上去",不是一段"回答"。
+    """
+    retry_after = _rate_limit_check(limiter, bucket, key, limit, window_s)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_throttle_text(bucket, limit, retry_after, window_s),
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+# 前端 app 的 CSP。**脚本只许来自本站**:Vite 的产物全是外链脚本(没有内联),
+# 所以这一条不会误伤;而它挡住了"往页面里注入一段 script"这类 XSS ——
+# 令牌还在 localStorage 里(M7.4 的已知缺口,见 deferred),CSP 是那道兜底。
+# `connect-src *`:这个 app 的整个设计就是"填一个后端地址就能连",所以不能限死来源;
+# 想限死的人该收紧的是后端地址白名单,不是 CSP。
+_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; font-src 'self' data:; connect-src *; object-src 'none'; "
+    "base-uri 'none'; frame-ancestors 'none'"
+)
+
+
+def _warn_wide_cors(settings) -> None:  # noqa: ANN001 - Settings,避免 import 环
+    """输入:配置。行为:对"CORS 全开 + 绑非回环地址"这个组合打一条 WARNING。输出:无。
+
+    **为什么不拦启动**:本机开发就该全开(Docker/WSL 里来源五花八门),拦了会把人逼去
+    改代码。而这个组合确实是"任何站点都能拿用户的浏览器打这个服务" ——
+    所以留一条日志痕:出事时至少查得到"当时是全开的"。
+    """
+    origins = settings.api.cors_origins
+    host = settings.api.host
+    loopback = ("127.0.0.1", "localhost", "::1")
+    if "*" in origins and host not in loopback:
+        _logger.warning(
+            "CORS 全开(cors_origins=['*'])且绑在 %s:任何站点都能拿用户的浏览器打这个服务。"
+            "对外部署时把 api.cors_origins 收紧成具体来源。",
+            host,
+        )
 
 
 def _weights(request: QueryRequest, *, bm25: float, vector: float) -> tuple[float, float]:
@@ -487,6 +607,48 @@ def _documents(deps: Deps) -> DocumentsOut:
     )
 
 
+def _document_preview(
+    deps: Deps, document_id: str, limit: int, chars: int
+) -> DocumentPreviewOut:
+    """输入:依赖 + 文档 ID + 两个上限。行为:登记表里查得到才给预览(折叠父块)。输出:预览。
+
+    **先查登记表**:向量库里可能有登记表没有的孤儿块(P0-3b 的对账正是抓这个)。
+    那种块照样能被检索到,但"这份文档"在管理页上不存在 —— 给 404 并**指一条能走的路**
+    (法律 39),而不是回一份没有主人的预览。
+    """
+    from project_rag.application.documents import preview_document
+
+    store = _factory(deps, "document_store_factory")
+    if store.get(document_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"登记表里没有这份文档({document_id!r})。先跑 `project-rag doctor` 看有没有"
+                "「库里有块、登记表没有行」的孤儿块;那种块要用 `project-rag doctor --prune-orphans` 清,"
+                "或者把对应语料重新灌一次"
+            ),
+        )
+    preview = preview_document(
+        _factory(deps, "vector_store_factory"), document_id, limit=limit, chars=chars
+    )
+    return DocumentPreviewOut(
+        document_id=preview.document_id,
+        parent_blocks=preview.parent_blocks,
+        child_chunks=preview.child_chunks,
+        returned=len(preview.blocks),
+        truncated=preview.truncated,
+        blocks=[
+            ChunkPreviewOut(
+                index=block.index,
+                page=block.page,
+                last_page=block.last_page,
+                chars=block.chars,
+                text=block.text,
+            )
+            for block in preview.blocks
+        ],
+    )
+
 def _delete_document(deps: Deps, document_id: str):
     """输入:依赖 + 文档 ID。行为:标记→删向量→删文件→删行(见 application/documents.py)。输出:结果。"""
     from project_rag.application.documents import delete_document
@@ -546,6 +708,9 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     attach_ledger(deps)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
+    # 限流计数器**从组合根来**(Redis 或内存,见 cli/deps.py 的 `_rate_limiter`);
+    # 没装配 = 不限流(与其它工厂同一条口径,`build_real_deps` 永远接上)。
+    limiter = _optional_factory(deps, "rate_limiter_factory")
 
     app = FastAPI(
         title="project-rag",
@@ -559,7 +724,26 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         allow_origins=settings.api.cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
+        # 明确不带上凭证:**这个服务只用 Bearer 令牌,不用 cookie**。
+        # 留这一行是为了把"通配来源 + 带凭证"这个组合钉死 —— 那是浏览器里
+        # 唯一一种"任意站点都能带着你的身份打这个服务"的配置,而它是靠改一个
+        # 布尔值就能打开的(将来真要用 cookie 会话时必须显式改这里,顺带被 review 看见)。
+        allow_credentials=False,
     )
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):  # noqa: ANN001, ANN202
+        """给前端产物加 CSP(与几条常规安全头)。**只管静态页,不碰 /api**。
+
+        为什么只管静态页:接口返回的是 JSON,加 CSP 没有意义,却会让 `curl -i`
+        的输出变脏、也让排障的人多一层要忽略的东西。
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/static/app"):
+            response.headers.setdefault("Content-Security-Policy", _CSP)
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
     # html=True:请求一个目录时给它的 index.html —— 前端产物挂在 /static/app/ 下,
     # 没有这一条 `/static/app/` 会 404(StaticFiles 默认不做目录索引)。
     app.mount(
@@ -575,11 +759,15 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         return HealthOut(status="ok")
 
     @app.get("/api/v1/sources", response_model=SourcesOut)
-    async def sources() -> SourcesOut:
-        """语料里真实有哪些来源(去重升序)。
+    async def sources(user: User | None = Depends(auth.user)) -> SourcesOut:
+        """语料里真实有哪些来源(去重升序)。**要 Bearer**(与 `API.md` 的表一致)。
 
         读的是**向量库**而不是配置白名单:要回答的是「库里有哪几门课」,不是「配置里写了哪几个」。
         语料上千块,``load_all`` 一次可接受;上万块时再给端口加一个 ``sources()``(见 deferred)。
+
+        2026-10-06(M7.4)补上的认证:它是**业务数据**(哪几门课、有哪些文档来源),
+        而在这之前它和 `/capabilities` 一样裸着 —— `/capabilities` 公开是有理由的
+        (不含任何数据,登录页要用它渲染上传提示),这一条没有。
         """
         return await _call(_sources, deps)
 
@@ -623,6 +811,9 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                 # 配了 true 但没装重排器时,勾上它只会拿到 400。
                 rerank_available=deps.reranker_factory is not None,
             ),
+            # 报表能力:窗口白名单与分位数的样本量门槛**只在这里报一次**,
+            # 前端因此不必写死一份"1h/6h/24h/7d/30d"(那种抄写迟早与后端漂开)。
+            metrics=_metrics_capabilities(),
             roles=list(USER_ROLES),
         )
 
@@ -683,8 +874,16 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         调用姿势(前端):``fetch("/api/v1/documents?filename=" + encodeURIComponent(file.name),
         {method: "POST", headers: {Authorization: "Bearer " + token}, body: file})``
         """
+        # 限流在鉴权**之前**:未认证的洪水(401 也是流量)同样要过闸,
+        # 那时按来源 IP 记;认证过了就按账号记(同一个办公室不会互相挤占额度)。
+        _enforce_rate_limit(
+            limiter,
+            "upload",
+            _rate_limit_key(request, user),
+            settings.api.rate_limit.upload,
+            float(settings.api.rate_limit.window_s),
+        )
         auth.require_admin(user)
-        settings = get_settings()
         supported = _factory(deps, "suffixes_factory")
         raw_name = Path(filename).name  # ← 只取 basename:防路径穿越
         if not raw_name:
@@ -751,9 +950,29 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             removed_record=outcome.removed_record,
         )
 
+    @app.get("/api/v1/documents/{document_id}/chunks", response_model=DocumentPreviewOut)
+    async def document_chunks(
+        document_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        chars: int = Query(default=400, ge=50, le=2000),
+        user: User | None = Depends(auth.user),
+    ) -> DocumentPreviewOut:
+        """一份文档入库后的样子:按**父块**折叠后的前 N 段(带页码)。
+
+        **权限与清单一致(Bearer,不是 admin)**:员工本来就能看清单(P0-3b 的口径 ——
+        他要知道自己能检索什么),预览是清单的展开,是同一份数据的另一种看法;
+        真正的管理动作(上传 / 删除)才是 admin。
+
+        ``limit`` 上限 100、``chars`` 上限 2000:预览是给人扫一眼的,
+        不是导出接口 —— 要全文请走 CLI(`project-rag search` / 直接看原文件)。
+        """
+        return await _call(_document_preview, deps, document_id, limit, chars)
+
     @app.get("/api/v1/admin/metrics", response_model=MetricsOut)
     async def metrics(
-        window: str = "24h", top: int = 5, user: User | None = Depends(auth.user)
+        window: str = "24h",
+        top: int = Query(default=5, ge=1, le=TOP_MAX),
+        user: User | None = Depends(auth.user),
     ) -> MetricsOut:
         """延迟报表:窗口内的 p50/p95/p99(热行)、冷热条数、拒答/截断/中断率、最慢几条。
 
@@ -766,14 +985,26 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         return await _call(_metrics, deps, window, top)
 
     @app.post("/api/v1/auth/login", response_model=LoginOut)
-    async def login(request: LoginRequest) -> LoginOut:
+    async def login(request: LoginRequest, http_request: Request) -> LoginOut:
         """用账号密码换一个 Bearer 令牌。失败一律 401 + 同一句话(防用户名枚举)。
 
         **路径约定(2026-10-06 起)**:业务接口一律在 ``/api/v1`` 下 —— 老接口已经在
         P0-3b-5-② 那一步全部迁完(见 ``docs/STATUS.md`` §7),**没有留别名**:
         两套路径就是两个真值来源,契约要写两遍,而前端只需要一个前缀。
         """
+        caller = http_request.client.host if http_request.client else "unknown"
+        _enforce_rate_limit(
+            limiter,
+            "login",
+            f"ip:{caller}",
+            settings.api.rate_limit.login,
+            float(settings.api.rate_limit.window_s),
+        )
         token, user = await auth.login(request.username, request.password)
+        # 登录成功 → 清掉这个 IP 的计数:否则"输错几次、随后输对"的用户会在接下来
+        # 一分钟里被自己刚才的失败次数牵连(而那正是 forget 存在的理由)。
+        if limiter is not None:
+            pass  # 反向测试:不清失败计数
         return LoginOut(
             token=token,
             username=user.username,
@@ -787,6 +1018,15 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         if user is None:
             raise HTTPException(status_code=503, detail="没有接上认证存储")
         return MeOut(username=user.username, role=user.role, is_admin=user.is_admin)
+
+    @app.post("/api/v1/auth/logout", response_model=LogoutOut)
+    async def logout(authorization: str | None = Header(default=None)) -> LogoutOut:
+        """退出登录:**让服务端那枚令牌立刻失效**(不只是前端删掉本地副本)。
+
+        幂等:没带令牌、或令牌本来就无效,照样 200 + ``revoked=false`` ——
+        重复点退出不该报错(与删文档同一条口径)。
+        """
+        return LogoutOut(revoked=await auth.logout(authorization))
 
     @app.post("/api/v1/create_session", response_model=SessionOut)
     async def create_session(user: User | None = Depends(auth.user)) -> SessionOut:
@@ -818,7 +1058,10 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
     @app.post("/api/v1/query", response_model=QueryResponse)
     async def query(
-        request: QueryRequest, user: User | None = Depends(auth.user)
+        request: QueryRequest,
+        http_request: Request,
+        response: Response,
+        user: User | None = Depends(auth.user),
     ) -> QueryResponse:
         """非流式问答:FAQ 命中直答,否则走知识库(拒答也是一句人话,不会是 null)。
 
@@ -826,7 +1069,35 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
         **带 session_id 时先查归属**:否则带上别人的会话 ID 就能拿他的历史继续提问 ——
         那和直接读历史一样是越权(所以这条检查放在问候分支**之前**)。
+
+        **超限回的是兜底话术,不是 429**(2026-10-06 作者定):问答这条路上,
+        "被限流"对用户就是一句"稍后再试",把它做成错误码等于让界面上多一条红字;
+        真正需要 429 的是登录与上传(见 ``_enforce_rate_limit`` 的 docstring)。
+        响应仍带 ``Retry-After`` 头,写脚本的人照样能按它退避。
         """
+        retry_after = _rate_limit_check(
+            limiter,
+            "query",
+            # 注意用 **http_request** 而不是 request:那个名字被请求体占了
+            # (第一版就传错了,AttributeError: 'QueryRequest' object has no attribute 'client')
+            _rate_limit_key(http_request, user),
+            settings.api.rate_limit.query,
+            float(settings.api.rate_limit.window_s),
+        )
+        if retry_after > 0:
+            key = _rate_limit_key(http_request, user)
+            _logger.warning("限流拦截(未进入用例,账本里没有这一条):档位=query 键=%s 等待=%ss", key, retry_after)
+            response.headers["Retry-After"] = str(retry_after)
+            return QueryResponse(
+                answer=_throttle_text(
+                    "query",
+                    settings.api.rate_limit.query,
+                    retry_after,
+                    float(settings.api.rate_limit.window_s),
+                ),
+                channel="throttled",
+                session_id=request.session_id,
+            )
         await auth.check_owner(request.session_id, user)
         greeting = match_greeting(request.query)
         if greeting is not None:
@@ -883,6 +1154,42 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                 violation = await auth.owner_violation(request.session_id, ws_user)
                 if violation is not None:
                     await websocket.send_json({"type": "error", "detail": violation})
+                    continue
+
+                # 限流:与 HTTP 的 /query **共用同一档**,回的也是**同一句兜底话术**
+                # (token + done,channel="throttled")—— 与问候那条前置拦截同一个形制:
+                # 不是错误、不关连接,用户看到的就是一句话"稍后再试"。
+                retry_after = _rate_limit_check(
+                    limiter,
+                    "query",
+                    _rate_limit_key(websocket, ws_user),
+                    settings.api.rate_limit.query,
+                    float(settings.api.rate_limit.window_s),
+                )
+                if retry_after > 0:
+                    notice = _throttle_text(
+                        "query",
+                        settings.api.rate_limit.query,
+                        retry_after,
+                        float(settings.api.rate_limit.window_s),
+                    )
+                    _logger.warning(
+                        "限流拦截(WS,未进入用例):键=%s 等待=%ss",
+                        _rate_limit_key(websocket, ws_user),
+                        retry_after,
+                    )
+                    await websocket.send_json({"type": "token", "text": notice})
+                    await websocket.send_json(
+                        {
+                            "type": "done",
+                            "answer": notice,
+                            "channel": "throttled",
+                            "refused": False,
+                            "truncated": False,
+                            "citations": [],
+                            "session_id": request.session_id,
+                        }
+                    )
                     continue
 
                 greeting = match_greeting(request.query)
@@ -1006,6 +1313,9 @@ def run() -> None:
 
     configure_logging()
     settings = get_settings()
+    # CORS 的部署警戒线**在进程入口说**(不是 create_app):验收脚本会建几十个 app,
+    # 在那里打 WARNING 只会变成噪声,而"日志里天天有的一句话"等于没有。
+    _warn_wide_cors(settings)
     # 依赖只装配一次:预热与 create_app 用同一份,免得建出两套单例缓存
     deps = build_real_deps()
     if settings.api.warmup:

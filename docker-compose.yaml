@@ -174,7 +174,7 @@ services:
       RAG_MYSQL__PORT: "3306"
       RAG_REDIS__HOST: redis
       RAG_REDIS__PORT: "6379"
-      RAG_EMBEDDING__DEVICE: cpu
+      RAG_EMBEDDING__DEVICE: cuda
     ports:
       - "8080:8080"                     # 宿主 8080 被占就改左边;右边是容器内端口,不能改
     volumes:

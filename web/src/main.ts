@@ -1,7 +1,7 @@
 import { createApp } from 'vue'
 
 import App from './App.vue'
-import { onUnauthorized } from './api/client'
+import { onUnauthorized, seedBackendFromQuery } from './api/client'
 import { router } from './router'
 import { clearAuth, loadMe } from './stores/auth'
 import { resetChat } from './stores/chat'
@@ -15,6 +15,9 @@ onUnauthorized(() => {
   resetChat()
   void router.replace({ name: 'login' })
 })
+
+// 先认一次 `?backend=…`(桌面壳/书签),再让任何组件去读后端地址
+seedBackendFromQuery()
 
 const app = createApp(App)
 app.use(router)

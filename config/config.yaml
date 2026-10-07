@@ -18,11 +18,25 @@ api:
   max_upload_mb: 50
   # 绑定地址:绑回环时 WSL 里 Windows 浏览器连不上(实测);进容器也映射不出去。
   host: 0.0.0.0
-  port: 8080
+  port: 18080
   # 预热查询。**换语料领域时记得换这一句** —— 检索不到东西的预热等于没预热。
   warmup_query: "装饰器有什么用"
   # CORS 允许的来源。本机全开;对外必须收紧成具体域名。
+  # "全开 + 绑非回环地址"这个组合启动时会打一条 WARNING(不拦启动)。
   cors_origins: ["*"]
+  # 限流:进程内固定窗口(application/ratelimit.py)。每一档 <= 0 = 关掉这一档。
+  #   一分钟 60 次问答够任何人用,但挡住循环脚本;上传背后是几分钟 CPU 嵌入,所以更紧。
+  #   多 worker / 多副本时它**必须**换成 Redis 计数(见 deferred.md)。
+  rate_limit:
+    enabled: true
+    # redis = 跨进程共享(重启不清零、多 worker 一份计数、时钟以 Redis 为准);
+    # memory = 单进程内存(无 Redis 的部署与离线验收用)。Redis 故障时降级为**放行**并记告警。
+    backend: redis
+    key_prefix: "ratelimit:v1:"
+    window_s: 60
+    query: 60
+    upload: 10
+    login: 10
 
 llm:
   model: deepseek-flash

@@ -17,6 +17,14 @@ const channelLabel: Record<string, string> = {
   faq: 'FAQ 直答',
   rag: '知识库',
   greeting: '寒暄',
+  // 限流:回的是**兜底话术**,不是错误 —— 所以用 warn 语气提示"稍后再试",
+  // 而不是红字(红字会让人以为系统坏了,然后去点重试按钮点得更快)。
+  throttled: '稍后重试',
+}
+
+/** 兜底话术的徽章配色:只有限流那一档是暖色,其余是中性蓝。 */
+function badgeTone(message: ChatMessage): string {
+  return message.channel === 'throttled' ? 'tag warn' : 'tag info'
 }
 
 function badge(message: ChatMessage): string {
@@ -40,7 +48,7 @@ const hasMessages = computed(() => props.messages.length > 0)
       <div class="avatar">{{ message.role === 'user' ? '🙋' : '🍜' }}</div>
       <div class="bubble card">
         <div v-if="message.role === 'assistant' && badge(message)" class="head">
-          <span class="tag info">{{ badge(message) }}</span>
+          <span :class="badgeTone(message)">{{ badge(message) }}</span>
         </div>
 
         <div class="text">{{ message.text }}<span v-if="message.streaming" class="caret">▍</span></div>
@@ -54,6 +62,9 @@ const hasMessages = computed(() => props.messages.length > 0)
           <CitationItem v-for="item in message.citations" :key="item.index" :citation="item" />
         </div>
 
+        <p v-if="message.channel === 'throttled'" class="alert info">
+          这不是出错 —— 问得太密集被限流了,等一会儿再问即可(右侧参数面板不用改)。
+        </p>
         <p v-if="message.refused" class="alert info">拒答:知识库里没有能支撑这个问题的资料。</p>
         <p v-if="message.truncated" class="alert error">回答被截断(达到长度上限),不要当成完整答案。</p>
         <p v-if="message.stopped" class="alert info">已停止生成 —— 上面是已经收到的部分。</p>

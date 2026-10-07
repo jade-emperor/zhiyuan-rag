@@ -10,6 +10,7 @@ from .keyword_index import KeywordIndex
 from .ledger import LedgerStore
 from .llm import LLMClient
 from .matcher import TextMatcher
+from .ratelimit import RateLimiter
 from .reranker import Reranker
 from .sessions import SessionCatalog
 from .vector_store import VectorStore
@@ -25,6 +26,7 @@ __all__ = [
     "KeywordIndex",
     "LedgerStore",
     "LLMClient",
+    "RateLimiter",
     "Reranker",
     "SessionCatalog",
     "TextChunker",
