@@ -28,9 +28,8 @@ pymilvus 的 async 客户端),把 ``_call`` 里的 ``run_in_threadpool`` 换成�
    共用一份,不写在接口层。
 4. **业务接口一律在 ``/api/v1`` 下** —— 2026-10-06 从 ``/api/*`` 统一迁过来(P0-3b-5-②),
    **没有留别名**:两套路径就是两个真值来源,契约要写两遍,而前端只要一个前缀。
-   留在根上的只有 ``/health``(探活)、``/``(跳前端 app)与 ``/static``(静态资源:
-   前端产物在 ``/static/app/``、内置调试页在 ``/static/index.html``)—— 它们不是业务接口,
-   也不该跟着 API 版本走。这条有契约钉着(``check_m5_api`` 的「命名空间」那条):漏一个
+   留在根上的只有 ``/health``(探活)、``/``(跳前端 app)与 ``/static``(静态资源,
+   前端产物在 ``/static/app/``)—— 它们不是业务接口,也不该跟着 API 版本走。这条有契约钉着(``check_m5_api`` 的「命名空间」那条):漏一个
    老式路径进去,前端的 TS 客户端就会生成两个前缀。
 
 装配复用 ``cli/deps.py`` 那一套(``Deps`` / ``build_real_deps`` / ``knowledge_callable``):
@@ -1230,7 +1229,11 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         直接返回文件会让浏览器去 `/assets/…` 拿资源 —— 404,而且页面白屏。
         重定向的另一个好处是 URL 变对了,用户刷新/收藏都对。
 
-        内置调试页还在 `/static/index.html`(它窄、无依赖,后端出问题时更有用)。
+        这一份产物是**唯一的界面**:2026-10-07 删掉了原来那个 101 行的内置调试页。
+        两份 UI = 两套要跟着后端一起改的东西,而其中一份没人日常打开 —— 它漂了也不会
+        有人发现(旧调试页那次就比新前端晚了半天才跟上 `/api/v1` 迁移)。排障也不缺入口:
+        接口文档 `/docs`、能力自述 `/api/v1/capabilities`、`curl` 直接打 `/api/v1/query`
+        能拿到一份不流式的答案;界面本身则由 `check_m7_*` 那几套契约与浏览器用例盯着。
         """
         return RedirectResponse(url="/static/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 

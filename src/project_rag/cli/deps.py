@@ -143,7 +143,6 @@ def build_real_deps() -> Deps:
     from project_rag.adapters.chunker_recursive import ChineseRecursiveChunker
     from project_rag.adapters.document_loader import load_documents, supported_suffixes
     from project_rag.adapters.documents_mysql import MySQLDocumentStore
-    from project_rag.adapters.embedder_bge_m3 import BGEM3Embedder
     from project_rag.adapters.ledger_mysql import MySQLLedgerStore
     from project_rag.adapters.llm_deepseek import DeepSeekLLM
     from project_rag.adapters.milvus_store import (
@@ -174,9 +173,8 @@ def build_real_deps() -> Deps:
         return MilvusVectorStore(settings.milvus)
 
     @lru_cache(maxsize=1)
-    def _embedder() -> BGEM3Embedder:
-        note_build("embedder")  # 2G 模型:账本里"冷"最主要的那一笔
-        return BGEM3Embedder(settings.embedding)
+    def _embedder() -> Embedder:
+        return _embedder_factory(settings)
 
     @lru_cache(maxsize=1)
     def _reranker() -> BGEReranker:
@@ -237,6 +235,33 @@ def build_real_deps() -> Deps:
         cache_ttl=settings.cache.ttl_s,
         thinking=settings.llm.thinking,
     )
+
+
+def _embedder_factory(settings) -> Embedder:
+    """输入:配置。行为:按 `embedding.backend` 造嵌入器。输出:实现 `Embedder` 的实例。
+
+    两档，**默认必须是真的语义模型**：
+
+    * ``bge_m3``（默认）—— BGE-M3，1024 维，2G 模型；`note_build("embedder")` 记在**这里**，
+      因为"冷"这个词只在真要加载模型时才成立（哈希实现零成本，不该记一笔冷启动）；
+    * ``hashing`` —— 字符 bigram 哈希，256 维、零模型、确定性。**它不是语义模型**：
+      只保证"文本越像、向量越近"（见 `adapters/hashing_embedder.py` 的 docstring）。
+      它存在的唯一理由是让"没有 4.4G 模型"的机器也能跑通 ingest→search→界面
+      （演示与验收），所以这里**必须打一条 WARNING** —— 否则使用者会以为检索"正常"，
+      而拿到的全是字面匹配。
+    """
+    if settings.embedding.backend == "hashing":
+        from project_rag.adapters.hashing_embedder import HashingEmbedder
+
+        _logger.warning(
+            "嵌入用的是**演示实现**（embedding.backend=hashing）：字符 bigram 哈希，"
+            "只按字面相似度检索，不是语义模型。要真语义请设回 bge_m3 并准备好 models/bge-m3。"
+        )
+        return HashingEmbedder()
+    from project_rag.adapters.embedder_bge_m3 import BGEM3Embedder
+
+    note_build("embedder")  # 2G 模型:账本里"冷"最主要的那一笔
+    return BGEM3Embedder(settings.embedding)
 
 
 def _rate_limiter(settings) -> Callable[[], RateLimiter] | None:

@@ -7,6 +7,12 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+
+[[manifest.dependency-metadata]]
+name = "en-core-web-sm"
+version = "3.8.0"
+
 [[package]]
 name = "accelerate"
 version = "1.14.0"

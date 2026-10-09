@@ -1,0 +1,872 @@
+#!/usr/bin/env python
+"""M5.5 验收：延迟观测（TTFT / tokens per second / 分段耗时）。
+
+用法::
+
+    uv run python scripts/acceptance/check_m5_5_latency.py
+
+本脚本是 **M5.5 契约的唯一权威**（`docs/STATUS.md` §0.5 只留设计理由）。
+不需要容器、不花钱、不联网:全部用假端口 + 假 LLM 跑,日志用挂在
+``project_rag.observability.latency`` 上的 handler 抓。
+
+公开契约::
+
+    from project_rag.observability import StreamTiming
+    StreamTiming(label, channel=None)
+        .mark(name) / .token(text) / .finish(channel=, refused=, truncated=) / .line() / .emit()
+
+    from project_rag.application.streaming import timed
+    timed(events: Iterator[QaEvent], timing: StreamTiming) -> Iterator[QaEvent]
+
+日志行（``INFO``，logger = ``project_rag.observability.latency``）::
+
+    latency label=qa channel=rag thinking=auto faq_ms=108.2 sources_ms=330.5 \
+retrieve_ms=- embed_ms=- vector_ms=- bm25_ms=- fuse_ms=- collapse_ms=- rerank_ms=- \
+llm_think_ms=- llm_ttft_ms=- think_tokens=0 ttft_ms=930.9 tokens=173 gen_ms=3010.9 \
+tps=57.5 total_ms=3944.2 refused=false truncated=false aborted=false
+
+**字段与顺序固定**（26 个），拿不到的一律 ``-`` —— 「没量到」和「量到 0」必须分得开;
+``awk``/``grep`` 才敢按列取。
+
+口径（改口径 = 改契约）::
+
+    检索分段     retrieve() 内部六处打点：embed / vector / bm25 / fuse / collapse / rerank
+                 （后五个是段耗时,六段之和 ≈ retrieve_ms;没装重排器时 rerank_ms 为 -）
+    ttft_ms     从流开始到**第一帧非空 token** —— 用户看到第一个字的时刻
+    gen_ms      第一帧 token → 最后一帧 token 的墙钟（不含 TTFT;不足两帧给 -,不给 0）
+    tps         tokens / gen_ms;不足两帧给 -（单帧算不出速率,不编数）
+    llm_think_ms ``llm_start`` → **最后一帧思考帧**;一个思考帧都没看到给 -
+    think_tokens **思考帧数**（0 = 这一轮没看到思考;与 tokens 同样是帧数近似,不给 -）
+    thinking     配置档位（auto/off/low/high/max）—— **静态标签,不是测量值**;没传给账本就给 -
+
+**怎么读这三列**（M5.8;最容易读错的是把「没调模型」当成「没想」）::
+
+    llm_ttft_ms=-    think_tokens=0                 → 根本没调模型（FAQ 命中 / 检索为空拒答）
+    llm_ttft_ms=578  think_tokens=0                 → 调了、没看到思考（如 thinking=off）
+    llm_ttft_ms=2412 think_tokens=192 llm_think…    → 想了 ~2.4s,首字也等到 2.4s
+
+``llm_think_ms`` 与 ``llm_ttft_ms`` **同一个原点**（``llm_start``）,所以两个值可以直接
+相减:差值 = 「想完到吐出第一个字」之间的空档。这也意味着 ``llm_think_ms ≤ llm_ttft_ms``
+该恒成立（唯一的例外是 provider 把思考帧和正文交错着发 —— DeepSeek 不这样）。
+
+``tokens`` 数的是**非空 token 帧的个数**,``think_tokens`` 同理数思考帧 —— DeepSeek 的 SSE
+一个 chunk 通常就是一个 token,够用的近似;精确值要引 tokenizer（见 `docs/deferred.md` §1.3 第 28 条）。
+
+**思考内容不许混进答案**:适配器把 ``reasoning_content`` 装在 ``LlmDelta.reasoning_text``
+上与 ``text`` **分开**（不是塞进 ``text`` 再打个标记）。这样「答案 = 所有 text 帧拼起来」
+这条恒等式不用加任何过滤条件,漏加过滤也不会把思考写到用户脸上。
+
+**五件刻意定下来的事**::
+
+    1. **账本显式传递,不用 contextvars**。帧流是同步生成器,会在线程池的不同线程里被
+       next()（api 的 _in_thread）,contextvar 的写入会随调用上下文丢失 —— 那会得到
+       「有时有账、有时没账」的日志,比没有日志更坏。
+    2. **只观察、不改写**。timed 包在帧流外面,内容/顺序/条数一个字节都不动（本脚本拿
+       未包装的帧逐帧比对）。
+    3. **逐帧透传、不许预取**。写成 list(events) 就等于「全部生成完再交出来」,
+       「边生成边出」和 TTFT 一起没了（本脚本取走第一帧后断言上游只产出了一帧）。
+    4. **中断也要留账**。客户端断开时生成器被 close(),走 GeneratorExit 分支:
+       「慢到用户跑掉」的请求恰恰最该看;顺手把 close() 传给上游,让它照旧做
+       「这一轮不入库」的清理（M5.3b 的语义不许被这层破坏）。
+    5. **一次回答的账是一对嵌套 span**:``label=qa``（路由 + FAQ 匹配 + …）在外,
+       ``label=rag``（检索 + 首字 + 吐字）在内,各一条。合成一条就得让内层把打点
+       回传给外层,那是给日志改协议,不值当。
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib
+import logging
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+from _harness import check, report, record
+from _fakes import FakeEmbedder, FakeFaqStore, FakeMatcher, FakeVectorStore, PacedFakeLLM
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC = ROOT / "src" / "project_rag"
+
+FAQ_QUESTION = "退款流程怎么走？"
+FAQ_ANSWER = "在订单页点「申请退款」，1-3 个工作日到账。"
+KB_PARENT = "装饰器是一个接收函数并返回新函数的函数。"
+KB_PARTS = ("装饰器是", "给函数加行为的语法 [1]")
+REFUSAL = "信息不足,无法回答,请联系人工客服。"
+LATENCY_LOGGER = "project_rag.observability.latency"
+
+# 日志行的字段与顺序 —— 这张表是契约的一部分,产品改了这里必须同步改
+_FIELD_ORDER = (
+    "label",
+    "request_id",
+    "channel",
+    "thinking",
+    "cold",
+    "builds",
+    "faq_ms",
+    "sources_ms",
+    "retrieve_ms",
+    "embed_ms",
+    "vector_ms",
+    "bm25_ms",
+    "fuse_ms",
+    "collapse_ms",
+    "rerank_ms",
+    "llm_think_ms",
+    "llm_ttft_ms",
+    "think_tokens",
+    "ttft_ms",
+    "tokens",
+    "gen_ms",
+    "tps",
+    "total_ms",
+    "refused",
+    "truncated",
+    "aborted",
+)
+
+# 渲染成**字符串**而不是数字的字段（其余字段要么是 '-'、要么是 true/false、要么能被 float() 吃掉）
+_STRING_FIELDS = ("label", "request_id", "channel", "thinking")
+
+
+def _require(module_name: str, names: tuple[str, ...]):
+    module = importlib.import_module(module_name)
+    missing = [n for n in names if not hasattr(module, n)]
+    if missing:
+        raise AssertionError(f"{module_name} 缺少公开成员 {missing}")
+    return module
+
+
+def _stream_timing():
+    return _require("project_rag.observability", ("StreamTiming",)).StreamTiming
+
+
+def _timed():
+    return _require("project_rag.application.streaming", ("timed",)).timed
+
+
+def _stream_rag():
+    return _require("project_rag.application", ("stream_rag",)).stream_rag
+
+
+def _answer_rag():
+    return _require("project_rag.application", ("answer_rag",)).answer_rag
+
+
+def _stream_question():
+    return _require("project_rag.application", ("stream_question",)).stream_question
+
+
+def _answer_question():
+    return _require("project_rag.application", ("answer_question",)).answer_question
+
+
+def _qa_event():
+    return _require("project_rag.domain", ("QaEvent",)).QaEvent
+
+
+# ── 抓日志：只挂在 latency 这一个 logger 上（不碰全局配置） ───────────────────
+class _Catcher(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.lines: list[str] = []
+        self.levels: list[int] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(record.getMessage())
+        self.levels.append(record.levelno)
+
+
+@contextmanager
+def _capture() -> Iterator[_Catcher]:
+    logger = logging.getLogger(LATENCY_LOGGER)
+    catcher = _Catcher()
+    old_level, old_propagate = logger.level, logger.propagate
+    logger.addHandler(catcher)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # 别把断言用的行漏进 root 的 handler（跑验收时不该刷屏）
+    try:
+        yield catcher
+    finally:
+        logger.removeHandler(catcher)
+        logger.setLevel(old_level)
+        logger.propagate = old_propagate
+
+
+def _parse(line: str) -> dict[str, str]:
+    """输入:一条 latency 日志行。行为:拆成字段字典。输出:{字段名: 文本值}。"""
+    tokens = line.split(" ")
+    if tokens[0] != "latency":
+        raise AssertionError(f"日志行必须以 'latency ' 开头,实际 {line!r}")
+    fields: dict[str, str] = {}
+    for token in tokens[1:]:
+        key, sep, value = token.partition("=")
+        if not sep:
+            raise AssertionError(f"字段 {token!r} 不是 key=value 形状:{line!r}")
+        fields[key] = value
+    return fields
+
+
+def _num(fields: dict[str, str], key: str) -> float | None:
+    value = fields[key]
+    return None if value == "-" else float(value)
+
+
+def _int(fields: dict[str, str], key: str) -> int:
+    return int(fields[key])
+
+
+def _only(catcher: _Catcher) -> dict[str, str]:
+    """输入:抓到的日志。行为:断言恰好一条并解析。输出:字段字典。"""
+    if len(catcher.lines) != 1:
+        raise AssertionError(f"这一轮应该恰好一条账,实际 {len(catcher.lines)} 条:{catcher.lines}")
+    return _parse(catcher.lines[0])
+
+
+# ── 假件（带可控延迟，用来验证「真的在量时间」） ──────────────────────────────
+
+
+def _kb_hit(source: str = "bagu_ai"):
+    from project_rag.domain import Chunk, RetrievedChunk
+
+    return RetrievedChunk(
+        chunk=Chunk("c1", "装饰器 子块", source, "d1", "p1", KB_PARENT), score=0.91
+    )
+
+
+def _faq_entry():
+    return _require("project_rag.domain", ("FaqEntry",)).FaqEntry(
+        id=7, question=FAQ_QUESTION, answer=FAQ_ANSWER
+    )
+
+
+def _rag_stream(llm, *, hits=None, store=None, options=None, thinking=None):
+    from project_rag.domain import RetrievalOptions
+
+    return _stream_rag()(
+        "装饰器有什么用",
+        embedder=FakeEmbedder(),
+        store=store or FakeVectorStore([_kb_hit()] if hits is None else hits),
+        llm=llm,
+        keyword_index=None,
+        options=options or RetrievalOptions(k=3, max_context=2),
+        thinking=thinking,
+    )
+
+
+def _question_stream(
+    *, faq_score=None, knowledge=None, faq_delay=0.0, session=None, thinking=None
+):
+    return _stream_question()(
+        "装饰器有什么用",
+        faq_store=FakeFaqStore([_faq_entry()], delay=faq_delay),
+        matcher=FakeMatcher(faq_score, delay=faq_delay),
+        knowledge=knowledge or (lambda history: iter(())),
+        session=session,
+        thinking=thinking,
+    )
+
+
+def _drain(events) -> list:
+    return list(events)
+
+
+# ── 0. 脚本自身 ───────────────────────────────────────────────────────────────
+@check("脚本自身：检查不许引用后文定义的帮助函数（@check 在定义时就立即执行）")
+def _() -> str:
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    defined: dict[str, int] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef | ast.FunctionDef):
+            defined[node.name] = node.lineno
+    problems: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        title = ""
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and decorator.args
+                and isinstance(decorator.args[0], ast.Constant)
+            ):
+                title = str(decorator.args[0].value)
+            elif isinstance(decorator, ast.Name):
+                title = decorator.id
+        if not title:
+            continue
+        used = {
+            sub.id
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load)
+        }
+        late = [
+            (name, defined[name])
+            for name in sorted(used & defined.keys())
+            if defined[name] > node.lineno
+        ]
+        if late:
+            where = "、".join(f"{name}@{line}" for name, line in late)
+            problems.append(f"「{title}」(第 {node.lineno} 行) 用了后文定义的 {where}")
+    if problems:
+        raise AssertionError(
+            "这些检查引用了**后文**才定义的帮助函数：\n    " + "\n    ".join(problems)
+        )
+    return f"{len(defined)} 个顶层定义全部先于引用它的检查"
+
+
+# ── 1. 形状与分层 ─────────────────────────────────────────────────────────────
+@check("形状：StreamTiming 从 observability 包入口拿得到，是 slots dataclass，五个动作齐全")
+def _() -> str:
+    import dataclasses
+
+    # 传**表达式**给 is_dataclass,不传变量:它是 TypeGuard,会把变量收窄成
+    # DataclassInstance,后面 cls(label=...) / cls.finish 就全报「对象不可调用」(pyright 的已知行为)
+    if not dataclasses.is_dataclass(_stream_timing()):
+        raise AssertionError("StreamTiming 应是 dataclass")
+    cls = _stream_timing()
+    if "__slots__" not in vars(cls):
+        raise AssertionError("StreamTiming 应声明 slots（它每请求一个实例，别给每条流都建 __dict__）")
+    for name in ("mark", "token", "finish", "line", "emit"):
+        if not callable(getattr(cls, name, None)):
+            raise AssertionError(f"StreamTiming 缺少 {name}()")
+    timing = cls(label="probe")
+    if timing.aborted is not True or timing.tokens != 0:
+        raise AssertionError("新账本应从「零 token、未收尾」开始")
+    timing.finish(channel="rag", refused=False, truncated=False)
+    if timing.aborted is not False or timing.channel != "rag":
+        raise AssertionError("finish() 之后应记下结局与通道")
+    return "dataclass + slots + mark/token/finish/line/emit"
+
+
+@check("分层：latency.py 只 import 标准库 + 同包 logging_setup（不许碰 domain/adapters）")
+def _() -> str:
+    path = SRC / "observability" / "latency.py"
+    # `uuid` 是 2026-10-06 加的:账本自己生成 `request_id`(不靠调用方记得传)。
+    # 它仍是**标准库**,不违反这条检查的本意(「账本不认识领域类型、不许碰 domain/adapters」);
+    # 白名单是逐项过审的,所以这里显式加一项而不是放宽成"标准库都行"。
+    allowed = {"__future__", "time", "dataclasses", "uuid"}
+    pairs: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            pairs.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:  # 同包相对导入（.logging_setup）
+                continue
+            pairs.append(node.module or "")
+    bad = [name for name in pairs if name.split(".")[0] not in allowed]
+    if bad:
+        raise AssertionError(f"latency.py 不该 import 这些：{bad}（账本是纯计时的，不认识领域类型）")
+    return f"只依赖 {sorted(allowed)} + 同包"
+
+
+# ── 2. 口径（三条定义各钉一条） ───────────────────────────────────────────────
+@check("口径 TTFT：空 token 帧不算第一个字（provider 的收尾空帧不许把 TTFT 提前）")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    timing.token("")
+    timing.token("")
+    if timing.first_token is not None or timing.ttft_ms is not None:
+        raise AssertionError("空帧不该定下 TTFT")
+    time.sleep(0.02)
+    timing.token("甲")
+    ttft = timing.ttft_ms
+    if ttft is None or ttft < 15:
+        raise AssertionError(f"非空帧才该定 TTFT，实际 {ttft}")
+    if timing.tokens != 1:
+        raise AssertionError(f"空帧不该计入 tokens，实际 {timing.tokens}")
+    return f"3 帧里只有 1 帧非空 → tokens=1、ttft={ttft:.1f}ms"
+
+
+@check("口径 tps：单帧不给速率（-），两帧才有；gen_ms 不足两帧也不给 0")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    timing.token("甲")
+    if timing.tps is not None or timing.gen_ms is not None:
+        raise AssertionError(
+            f"单帧算不出速率与窗口，应该都给 None（不许编 0），实际 {timing.tps} / {timing.gen_ms}"
+        )
+    time.sleep(0.02)
+    timing.token("乙")
+    tps, gen = timing.tps, timing.gen_ms
+    if gen is None or gen < 15 or tps is None:
+        raise AssertionError(f"两帧该有窗口与速率，实际 gen={gen} tps={tps}")
+    if not 40 <= tps <= 4000:
+        raise AssertionError(f"两帧间隔 ~20ms 时速率应落在几十~上千，实际 {tps}")
+    return f"单帧 -；两帧 gen={gen:.1f}ms tps={tps:.1f}"
+
+
+@check("口径 缺失：没量到的字段一律 '-'，但 tokens=0 / total_ms 是有值的（0 与没量到要分得开）")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    fields = _parse(f"latency {timing.line()}")
+    for key in (
+        "faq_ms",
+        "sources_ms",
+        "retrieve_ms",
+        "llm_think_ms",
+        "llm_ttft_ms",
+        "ttft_ms",
+        "gen_ms",
+        "tps",
+    ):
+        if fields[key] != "-":
+            raise AssertionError(f"没打过点/没有 token，{key} 应是 '-'，实际 {fields[key]!r}")
+    if fields["tokens"] != "0" or fields["think_tokens"] != "0":
+        raise AssertionError(
+            f"tokens / think_tokens 该老实报 0，实际 {fields['tokens']!r} / {fields['think_tokens']!r}"
+        )
+    if _num(fields, "total_ms") is None:
+        raise AssertionError("total_ms 永远量得到，不该是 '-'")
+    if fields["aborted"] != "true":
+        raise AssertionError("没收到 done 帧就该是 aborted=true")
+    return "缺失字段用 '-'，tokens=0 / think_tokens=0 照实报"
+
+
+# ── 2b. 思考口径（M5.8） ─────────────────────────────────────────────────────
+@check("口径 思考：空思考帧不算一帧；think_tokens 恒为整数（0 = 这一轮没看到思考，不是 '-'）")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    timing.think("")
+    timing.think("")
+    if timing.think_tokens != 0:
+        raise AssertionError(f"空思考帧不该计数，实际 {timing.think_tokens}")
+    time.sleep(0.02)
+    timing.think("先想想")
+    if timing.think_tokens != 1:
+        raise AssertionError(f"非空思考帧才该计数，实际 {timing.think_tokens}")
+    fields = _parse(f"latency {timing.line()}")
+    if fields["think_tokens"] != "1":
+        raise AssertionError(f"think_tokens 应渲染成整数，实际 {fields['think_tokens']!r}")
+    return "空思考帧不计；think_tokens=1"
+
+
+@check("口径 思考窗口：llm_think_ms 从 llm_start 到**最后一帧**思考；没思考帧给 '-'（不编 0）")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    timing.think("想了但还没 llm_start")
+    if timing.llm_think_ms is not None:
+        raise AssertionError(
+            "没打 llm_start 就不该有思考窗口（原点都不知道在哪），"
+            f"实际 {timing.llm_think_ms}"
+        )
+    timing = _stream_timing()("probe")
+    timing.mark("llm_start")
+    time.sleep(0.02)
+    timing.think("第一帧")
+    first = timing.llm_think_ms
+    time.sleep(0.02)
+    timing.think("第二帧")
+    second = timing.llm_think_ms
+    if first is None or first < 15:
+        raise AssertionError(f"第一帧思考就该量到窗口（~20ms），实际 {first}")
+    if second is None or second < first + 10:
+        raise AssertionError(f"思考窗口该被**最后一帧**推后:{first} -> {second}")
+    return f"最后一帧定窗口:{first:.1f}ms → {second:.1f}ms"
+
+
+@check("口径 思考 没想：调了模型但一帧思考都没有 → llm_think_ms='-'、think_tokens=0（可与「没调模型」区分）")
+def _() -> str:
+    timing = _stream_timing()("probe")
+    timing.mark("llm_start")
+    timing.token("答")
+    fields = _parse(f"latency {timing.line()}")
+    if fields["llm_think_ms"] != "-" or fields["think_tokens"] != "0":
+        raise AssertionError(f"没思考该是 '-' + 0，实际 {fields['llm_think_ms']!r} / {fields['think_tokens']!r}")
+    if _num(fields, "llm_ttft_ms") is None:
+        raise AssertionError("调过模型（有 llm_start）就该有 llm_ttft_ms —— 这才是「没调模型」与「没想」的分界")
+    return "调了但没想:llm_think_ms='-' think_tokens=0 llm_ttft_ms 有值"
+
+
+@check("口径 思考 ≤ 首字：llm_think_ms 与 llm_ttft_ms 同原点，所以前者不许大于后者")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS, think_pieces=("想", "想", "想"), first_delay=0.01, think_gap=0.01)
+    with _capture() as catcher:
+        _drain(_rag_stream(llm))
+    fields = _only(catcher)
+    think, ttft = _num(fields, "llm_think_ms"), _num(fields, "llm_ttft_ms")
+    if think is None or ttft is None:
+        raise AssertionError(f"这一轮既有思考又有正文，两个窗口都该有值，实际 {think} / {ttft}")
+    if think > ttft:
+        raise AssertionError(f"思考窗口不该比首字延迟还长（同原点）:{think} > {ttft}")
+    return f"think={think:.1f} ≤ llm_ttft={ttft:.1f}"
+
+
+@check("档位：账本按传入的 thinking 原样渲染；**没传给账本**就给 '-'（不替用户编一个 auto）")
+def _() -> str:
+    cls = _stream_timing()
+    for level in ("auto", "off", "low", "high", "max"):
+        fields = _parse(f"latency {cls('probe', thinking=level).line()}")
+        if fields["thinking"] != level:
+            raise AssertionError(f"档位该原样渲染 {level!r}，实际 {fields['thinking']!r}")
+    fields = _parse(f"latency {cls('probe').line()}")
+    if fields["thinking"] != "-":
+        raise AssertionError(
+            f"没传档位时账本不知道配置，必须给 '-'（编一个 auto 就是把猜的写成了量的），实际 {fields['thinking']!r}"
+        )
+    return "五个档位原样渲染；没传 → '-'"
+
+
+# ── 3. 真在量时间（量级检查） ─────────────────────────────────────────────────
+@check("真在量：给定的检索延迟/首字延迟/吐字间隔，都要出现在对应字段里（量级对得上）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS, first_delay=0.05, gap=0.01)
+    with _capture() as catcher:
+        _drain(_rag_stream(llm, store=FakeVectorStore([_kb_hit()], delay=0.03)))
+    fields = _only(catcher)
+    retrieve, llm_ttft, ttft = (
+        _num(fields, "retrieve_ms"),
+        _num(fields, "llm_ttft_ms"),
+        _num(fields, "ttft_ms"),
+    )
+    if retrieve is None or not 20 <= retrieve <= 2000:
+        raise AssertionError(f"检索延迟给了 30ms，retrieve_ms 应量到 ~30，实际 {retrieve}")
+    if llm_ttft is None or not 40 <= llm_ttft <= 3000:
+        raise AssertionError(f"首字延迟给了 50ms，llm_ttft_ms 应量到 ~60，实际 {llm_ttft}")
+    if ttft is None or ttft < retrieve + llm_ttft - 5:
+        raise AssertionError(f"ttft_ms 应 ≥ 检索 + 首字，实际 ttft={ttft} retrieve={retrieve} llm={llm_ttft}")
+    if _int(fields, "tokens") != len(KB_PARTS):
+        raise AssertionError(f"tokens 应等于非空 token 帧数 {len(KB_PARTS)}，实际 {fields['tokens']}")
+    tps = _num(fields, "tps")
+    if tps is None or not 20 <= tps <= 10000:
+        raise AssertionError(f"两帧间隔 10ms 时 tps 应在几十~上千，实际 {tps}")
+    return f"retrieve={retrieve:.1f} llm_ttft={llm_ttft:.1f} ttft={ttft:.1f} tps={tps:.1f}"
+
+
+@check("真在量（分段）：stream_rag 的账带 label/channel，且 sources_ms ≈ 检索那一段")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS, first_delay=0.01)
+    with _capture() as catcher:
+        _drain(_rag_stream(llm, store=FakeVectorStore([_kb_hit()], delay=0.02)))
+    fields = _only(catcher)
+    if fields["label"] != "rag" or fields["channel"] != "rag":
+        raise AssertionError(f"知识库那一段应是 label=rag channel=rag，实际 {fields}")
+    sources = _num(fields, "sources_ms")
+    if sources is None or sources < 15:
+        raise AssertionError(f"sources_ms 应量到检索那 20ms，实际 {sources}")
+    return f"label=rag sources={sources:.1f}ms"
+
+
+# ── 4. timed 的三条纪律：不改写 / 不预取 / 中断留账 ───────────────────────────
+@check("纪律 不改写：包装前后的帧完全一致（内容、顺序、条数一个字节都不动）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS)
+    with _capture():
+        wrapped = _drain(_rag_stream(llm))
+    kinds = [event.kind for event in wrapped]
+    if kinds != ["sources", "token", "token", "done"]:
+        raise AssertionError(f"帧序列应原样透传，实际 {kinds}")
+    texts = [event.text for event in wrapped if event.kind == "token"]
+    if texts != list(KB_PARTS):
+        raise AssertionError(f"token 帧内容应原样，实际 {texts}")
+    done = wrapped[-1]
+    # 注意 channel 是 None:补 channel 是合流层(stream_question)的活,rag 这一层不知道
+    # 自己是「主路」还是「兜底」—— 那条账里的 channel=rag 来自账本初值,不是帧
+    if done.answer != "".join(KB_PARTS) or done.channel is not None:
+        raise AssertionError(f"收尾帧应原样，实际 answer={done.answer!r} channel={done.channel!r}")
+
+    qa = _drain(
+        _question_stream(
+            knowledge=lambda history: iter(
+                [
+                    _qa_event()(kind="sources", citations=()),
+                    _qa_event()(kind="token", text="甲"),
+                    _qa_event()(kind="done", answer="甲", channel=None),
+                ]
+            )
+        )
+    )
+    got = [(event.kind, event.text, event.answer, event.channel) for event in qa]
+    want = [
+        ("sources", "", "", None),
+        ("token", "甲", "", None),
+        ("done", "", "甲", "rag"),  # done 由用例层补 channel，其余原样
+    ]
+    if got != want:
+        raise AssertionError(f"合流那层应只补 channel，实际 {got}")
+    return "帧序列逐帧一致"
+
+
+@check("纪律 不预取：取走第一帧时上游只产出了一帧（写成 list() 就等于先算完再交）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS)
+    with _capture():
+        stream = _rag_stream(llm)
+        first = next(stream)
+        if first.kind != "sources":
+            raise AssertionError(f"第一帧应是 sources，实际 {first.kind}")
+        if llm.calls or llm.produced:
+            raise AssertionError(
+                f"拿到 sources 时还没检索完/没调模型，实际 calls={llm.calls} produced={llm.produced}"
+            )
+        second = next(stream)
+        if second.kind != "token" or llm.produced != 1:
+            raise AssertionError(
+                f"取到第一帧 token 时上游只该产出 1 帧，实际 produced={llm.produced}"
+            )
+        stream.close()
+    return "逐帧透传，没有预取"
+
+
+@check("纪律 中断留账：close() 之后也有一条账，aborted=true，tokens 是已经出来的数")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS)
+    with _capture() as catcher:
+        stream = _rag_stream(llm)
+        next(stream)  # sources
+        next(stream)  # 第一帧 token
+        stream.close()
+    fields = _only(catcher)
+    if fields["aborted"] != "true":
+        raise AssertionError(f"中途断开应记 aborted=true，实际 {fields}")
+    if _int(fields, "tokens") != 1:
+        raise AssertionError(f"断开前只出了 1 帧 token，实际 {fields['tokens']}")
+    if _num(fields, "ttft_ms") is None:
+        raise AssertionError("断开前已经看到第一个字，ttft_ms 不该是 '-'")
+    return "中断也有账:aborted=true，tokens=1"
+
+
+@check("纪律 不吞异常：上游抛错时账照记（aborted=true），异常原样上抛")
+def _() -> str:
+    def boom(history):
+        yield _qa_event()(kind="token", text="半句")
+        raise RuntimeError("上游炸了")
+
+    with _capture() as catcher:
+        try:
+            _drain(_question_stream(knowledge=boom))
+        except RuntimeError as exc:
+            if "上游炸了" not in str(exc):
+                raise AssertionError(f"异常应原样上抛，实际 {exc!r}") from exc
+        else:
+            raise AssertionError("上游抛的异常被吞了 —— 那会让「答了一半」看起来像「答完了」")
+    fields = _only(catcher)
+    if fields["aborted"] != "true" or _int(fields, "tokens") != 1:
+        raise AssertionError(f"出错也该留半截账，实际 {fields}")
+    return "异常上抛 + 半截账"
+
+
+# ── 5. 各条链路的账 ───────────────────────────────────────────────────────────
+@check("检索分段：五段之和 ≈ retrieve_ms；没装重排器时 rerank_ms 是 '-'（不是 0.0）")
+def _() -> str:
+    with _capture() as catcher:
+        _drain(_rag_stream(PacedFakeLLM(KB_PARTS, first_delay=0.01)))
+    fields = _only(catcher)
+    if fields["rerank_ms"] != "-":
+        raise AssertionError(
+            "没装重排器时 rerank_ms 该是 '-'（打个 0.0 会让人以为「重排很快」），"
+            f"实际 {fields['rerank_ms']!r}"
+        )
+    legs = ("embed_ms", "vector_ms", "bm25_ms", "fuse_ms", "collapse_ms")
+    values = {name: _num(fields, name) for name in legs}
+    missing = [name for name, value in values.items() if value is None]
+    if missing:
+        raise AssertionError(f"这几个分段字段没量到：{missing}")
+    legs_sum = sum(value for value in values.values() if value is not None)
+    total = _num(fields, "retrieve_ms")
+    if total is None or not 0 <= total - legs_sum < 2:
+        raise AssertionError(
+            f"分段之和应 ≈ retrieve_ms（差在返回与截断那一下），实际 段和={legs_sum} retrieve={total}"
+        )
+    return f"五段和={legs_sum:.1f}ms ≈ retrieve={total:.1f}ms；没装重排 → rerank_ms='-'"
+
+
+@check("链路 拒答：一条 rag 账，refused=true、tokens=1、tps='-'（没调模型就不该有首字/速率）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS)
+    with _capture() as catcher:
+        _drain(_rag_stream(llm, hits=[]))
+    fields = _only(catcher)
+    if fields["refused"] != "true" or fields["aborted"] != "false":
+        raise AssertionError(f"拒答应 refused=true 且正常收尾，实际 {fields}")
+    if _int(fields, "tokens") != 1 or fields["tps"] != "-":
+        raise AssertionError(f"拒答只有一帧话术，tokens=1 且 tps='-'，实际 {fields}")
+    if llm.calls:
+        raise AssertionError("检索为空不该调 LLM")
+    return "拒答也有账:refused=true tokens=1 tps=-"
+
+
+@check("链路 FAQ 命中：一条 qa 账，channel=faq、faq_ms 有值、ttft≈faq_ms、knowledge 零调用")
+def _() -> str:
+    seen: list[int] = []
+
+    def knowledge(history):
+        seen.append(1)
+        return iter(())
+
+    with _capture() as catcher:
+        _drain(_question_stream(faq_score=0.97, knowledge=knowledge, faq_delay=0.03))
+    fields = _only(catcher)
+    if fields["label"] != "qa" or fields["channel"] != "faq":
+        raise AssertionError(f"应是 label=qa channel=faq，实际 {fields}")
+    faq, ttft = _num(fields, "faq_ms"), _num(fields, "ttft_ms")
+    if faq is None or faq < 20:
+        raise AssertionError(f"FAQ 匹配那一段给了 30ms，faq_ms 应量到，实际 {faq}")
+    if ttft is None or abs(ttft - faq) > 30:
+        raise AssertionError(f"命中 FAQ 时 ttft 应≈faq_ms，实际 ttft={ttft} faq={faq}")
+    if seen:
+        raise AssertionError("命中 FAQ 时 knowledge 一次都不该被调")
+    if fields["retrieve_ms"] != "-" or fields["sources_ms"] != "-":
+        raise AssertionError(f"没走检索就不该有检索字段，实际 {fields}")
+    return f"channel=faq faq_ms={faq:.1f} ttft={ttft:.1f}"
+
+
+@check("链路 合流走知识库：嵌套两条 span（内层 rag 先收尾、外层 qa），tokens 一致")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS, first_delay=0.01)
+    with _capture() as catcher:
+        _drain(_question_stream(knowledge=lambda history: _rag_stream(llm)))
+    if len(catcher.lines) != 2:
+        raise AssertionError(f"应恰好两条账（rag 内层 + qa 外层），实际 {catcher.lines}")
+    inner, outer = (_parse(line) for line in catcher.lines)
+    if inner["label"] != "rag" or outer["label"] != "qa":
+        raise AssertionError(f"内层应是 rag、外层应是 qa，实际 {inner['label']} / {outer['label']}")
+    if outer["channel"] != "rag":
+        raise AssertionError(f"外层通道应是 rag，实际 {outer['channel']}")
+    if _int(inner, "tokens") != _int(outer, "tokens"):
+        raise AssertionError(f"两层数的是同一条流，tokens 应相同：{inner['tokens']} vs {outer['tokens']}")
+    if _num(outer, "sources_ms") is None:
+        raise AssertionError("外层应量到 sources（检索完的时刻）")
+    if _num(outer, "retrieve_ms") is not None:
+        raise AssertionError("外层不直接做检索，retrieve_ms 不该有值（那是内层的活）")
+    return "两条嵌套 span：rag 内层 + qa 外层"
+
+
+@check("链路 非流式入口：answer_question 收拢后照样有账（收拢器不改计时语义）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS)
+    with _capture() as catcher:
+        result = _answer_question()(
+            "装饰器有什么用",
+            faq_store=FakeFaqStore([_faq_entry()]),
+            matcher=FakeMatcher(None),
+            knowledge=lambda history: _rag_stream(llm),
+            faq_threshold=0.85,
+        )
+    if result.answer != "".join(KB_PARTS):
+        raise AssertionError(f"答案不对，实际 {result.answer!r}")
+    labels = [_parse(line)["label"] for line in catcher.lines]
+    if labels != ["rag", "qa"]:
+        raise AssertionError(f"非流式也该有两条账（rag → qa），实际 {labels}")
+    outer = _parse(catcher.lines[1])
+    if outer["aborted"] != "false" or _int(outer, "tokens") != len(KB_PARTS):
+        raise AssertionError(f"收拢完应是正常收尾 + 数到全部 token，实际 {outer}")
+    return "answer_question 也有两条账"
+
+
+@check("链路 思考入账：思考帧进 think_tokens / llm_think_ms，**一个字都不许混进答案与 tokens**")
+def _() -> str:
+    think = ("9.11 与 9.8 比大小要先对齐小数位,", "对齐后 9.11 < 9.80,")
+    llm = PacedFakeLLM(KB_PARTS, think_pieces=think, first_delay=0.01, think_gap=0.01, gap=0.01)
+    with _capture() as catcher:
+        events = _drain(_rag_stream(llm))
+    fields = _only(catcher)
+    if _int(fields, "think_tokens") != len(think):
+        raise AssertionError(f"有 {len(think)} 帧思考，think_tokens 应数得一样，实际 {fields['think_tokens']}")
+    # 先查最坏的那种:思考有没有混进用户看到的东西(反向测试 RT-1 就是靠这条抓的 ——
+    # 它要是排在后面,先炸的是别的断言,报告出来的「罪名」就不是真的那一条)
+    answer = "".join(event.text for event in events if event.kind == "token")
+    if answer != "".join(KB_PARTS):
+        raise AssertionError(f"思考混进了答案 —— 这是最坏的一种:用户会看到模型的草稿。实际 {answer!r}")
+    if any(part in answer for part in think):
+        raise AssertionError(f"答案里出现了思考原文:{answer!r}")
+    if _int(fields, "tokens") != len(KB_PARTS):
+        raise AssertionError(
+            f"tokens 只该数**正文**帧 {len(KB_PARTS)} 个，把思考算进来就是口径串了，实际 {fields['tokens']}"
+        )
+    think_ms, ttft_ms = _num(fields, "llm_think_ms"), _num(fields, "llm_ttft_ms")
+    if think_ms is None or not 20 <= think_ms <= 3000:
+        raise AssertionError(f"思考间隔给了 2×10ms（+首字延迟），llm_think_ms 应量到，实际 {think_ms}")
+    if ttft_ms is None:
+        raise AssertionError("既有思考又有正文，llm_ttft_ms 该有值")
+    # 两个口径同原点，所以差值就是「想完 → 吐出第一个正文帧」之间那一个 gap（10ms）
+    gap = ttft_ms - think_ms
+    if not 5 <= gap <= 200:
+        raise AssertionError(
+            f"llm_ttft_ms - llm_think_ms 应≈正文帧前的 10ms gap（同原点才敢相减），实际 {gap}（{ttft_ms} - {think_ms}）"
+        )
+    return f"think_tokens={len(think)} llm_think_ms={think_ms:.1f} → +{gap:.1f}ms → 首字；答案干净"
+
+
+@check("档位 传递：stream_rag / answer_rag / stream_question 的 thinking= 落到账里（账本不认识配置）")
+def _() -> str:
+    from project_rag.domain import RetrievalOptions
+
+    rag_kwargs = dict(
+        embedder=FakeEmbedder(),
+        store=FakeVectorStore([_kb_hit()]),
+        llm=PacedFakeLLM(KB_PARTS),
+        options=RetrievalOptions(k=3, max_context=2),
+    )
+    with _capture() as catcher:
+        _drain(_rag_stream(PacedFakeLLM(KB_PARTS), thinking="low"))
+    streamed = _only(catcher)["thinking"]
+    if streamed != "low":
+        raise AssertionError(f"stream_rag(thinking='low') 该写进账里，实际 {streamed!r}")
+
+    with _capture() as catcher:
+        _answer_rag()("装饰器有什么用", **rag_kwargs, thinking="high")
+    collapsed = _only(catcher)["thinking"]
+    if collapsed != "high":
+        raise AssertionError(f"answer_rag(thinking='high') 该写进账里（它是 stream_rag 的收拢器），实际 {collapsed!r}")
+
+    with _capture() as catcher:
+        _drain(_question_stream(thinking="max", knowledge=lambda history: _rag_stream(PacedFakeLLM(KB_PARTS))))
+    outer = _parse(catcher.lines[-1])
+    if outer["label"] != "qa" or outer["thinking"] != "max":
+        raise AssertionError(f"合流外层也要带上档位（FAQ 命中时账里只有这一条），实际 {outer}")
+
+    # 没传 = 账本不知道配置 → '-':注入式调用（测试/直调）不会被编一个假档位
+    with _capture() as catcher:
+        _drain(_rag_stream(PacedFakeLLM(KB_PARTS)))
+    if _only(catcher)["thinking"] != "-":
+        raise AssertionError("没传档位时该是 '-'，不是编出来的默认值")
+    return "stream_rag/answer_rag/stream_question 都携带档位；没传 → '-'"
+
+
+# ── 6. 行格式（契约的机械部分） ───────────────────────────────────────────────
+@check("格式：字段与顺序固定 23 个，值要么是 '-' 要么可解析（awk 能按列取）")
+def _() -> str:
+    timing = _stream_timing()("probe", thinking="off")
+    timing.mark("faq")
+    timing.token("甲")
+    timing.think("想")
+    timing.finish(channel=None, refused=True, truncated=True)
+    line = timing.line()
+    names = [token.partition("=")[0] for token in line.split(" ")]
+    if tuple(names) != _FIELD_ORDER:
+        raise AssertionError(f"字段或顺序变了：\n  期望 {_FIELD_ORDER}\n  实际 {tuple(names)}")
+    fields = _parse(f"latency {line}")
+    for key, value in fields.items():
+        if value == "-" or key in _STRING_FIELDS:
+            continue
+        if value in ("true", "false"):
+            continue
+        float(value)  # 不是数字就抛 ValueError，由 @check 记成 FAIL
+    if fields["refused"] != "true" or fields["truncated"] != "true":
+        raise AssertionError(f"布尔字段应照实，实际 {fields}")
+    if fields["channel"] != "-":
+        raise AssertionError("finish 没给 channel 时应保持 '-'（别编一个）")
+    return f"26 个字段顺序固定；{len(fields)} 个值全部可解析"
+
+
+@check("格式 级别：账走 INFO，且这个 logger 不在 NOISY_LOGGERS 里（否则被抬到 WARNING 就看不见）")
+def _() -> str:
+    noisy = _require("project_rag.observability.logging_setup", ("NOISY_LOGGERS",)).NOISY_LOGGERS
+    if any(LATENCY_LOGGER.startswith(name) for name in noisy):
+        raise AssertionError(f"{LATENCY_LOGGER} 被降噪规则抬到了 WARNING，INFO 的账会被丢掉")
+    with _capture() as catcher:
+        _drain(_rag_stream(PacedFakeLLM(KB_PARTS)))
+    if catcher.levels != [logging.INFO]:
+        raise AssertionError(f"账应是 INFO，实际 {catcher.levels}")
+    return "INFO + 不在降噪名单"
+
+
+def main() -> int:
+    return report("M5.5 延迟观测（TTFT / tokens per second）验收")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

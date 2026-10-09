@@ -1,0 +1,48 @@
+name: 功能建议
+description: 提一个改动建议（请先说清"要解决谁的什么问题"）
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前值得先看两处，能省一轮讨论：
+        - `scripts/README.md`：这个项目已经保证了什么（23 套契约 + 14 份反向测试），
+          你的建议可能与已有能力重叠；
+        - 代码里的注释：若干"看起来更好但被否掉"的写法都写明了原因（例如
+          `adapters/bm25_index.py` 为什么不把 BM25 搬进 Milvus）。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 先说问题，再说方案。谁在什么场景下遇到它？
+      placeholder: 学生问「它有什么用」这种指代问句时，检索拿指代句去搜，召回不到 —— 多轮场景下很常见。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你建议怎么做
+      description: 能落到"改哪个端口/适配器/契约"更好。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的其他做法与代价
+      description: 这个项目的决策都要求写代价（延迟 / 钱 / 复杂度 / 可验证性）。
+    validations:
+      required: false
+
+  - type: textarea
+    id: verify
+    attributes:
+      label: 怎么证明它有效
+      description: |
+        理想答案：用评估集做 A/B（改一个旋钮、跑四指标、比差值）——评估脚本在 `scripts/tools/`。
+        说不清判据的建议，多半会被挂进 `docs/deferred.md` 等一个明确的触发条件。
+    validations:
+      required: false

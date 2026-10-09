@@ -200,6 +200,12 @@ class EmbeddingConfig(BaseModel):
     rerank_model_dir: str = "models/bge-reranker-v2-m3"
     device: str = "cpu"
     use_f16: bool = False
+    # 嵌入实现:**默认必须是真语义模型**。``hashing`` 只为演示与验收存在 ——
+    # 它是字符 bigram 哈希(零依赖、零模型、确定性),只保证「文本越像、向量越近」,
+    # **不保证语义相近**。默认值一旦被改成 hashing,没有模型的新机器会「看起来一切正常、
+    # 检索全是噪声」,而这种坏法**不报错** —— 所以有条契约专门钉默认值(见 check_m3_rag)。
+    # 演示用法(不必下载 4.4G 模型):`RAG_EMBEDDING__BACKEND=hashing`
+    backend: Literal["bge_m3", "hashing"] = "bge_m3"
 
     # property装饰器,将方法调用转为属性调用
     @property

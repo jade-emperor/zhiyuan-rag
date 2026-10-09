@@ -18,15 +18,26 @@ api:
   max_upload_mb: 50
   # 绑定地址:绑回环时 WSL 里 Windows 浏览器连不上(实测);进容器也映射不出去。
   host: 0.0.0.0
+  # 端口分层(三个角色,别混;实时占用看 `./scripts/dev.sh ports`):
+  #   18080 = **宿主上的代码后端**(裸跑 `uv run project-rag-api` 与 `./scripts/dev.sh serve` 都读这里):
+  #           改完源码直接跑,不必重建镜像;与容器各占一个口,两个可以同时开。
+  #   8080  = **容器里的 app**(交付形态)。镜像里 `ENV RAG_API__PORT=8080` 会盖住这一行,
+  #           所以改这里不影响容器 —— 那条链由 Dockerfile 的 ENV==EXPOSE 与
+  #           check_m6_deploy 的「端口分层」两条契约盯着。
+  # ApiConfig 的**类默认值**仍是 8080:它是「连 yaml 都没有」时的兜底,而那种场景只有
+  # 镜像里会发生(镜像里 yaml 与 ENV 都在),所以它跟镜像的口保持一致更安全
+  # (check_m1_1_config 也钉着它)。
   port: 18080
   # 预热查询。**换语料领域时记得换这一句** —— 检索不到东西的预热等于没预热。
   warmup_query: "装饰器有什么用"
   # CORS 允许的来源。本机全开;对外必须收紧成具体域名。
   # "全开 + 绑非回环地址"这个组合启动时会打一条 WARNING(不拦启动)。
   cors_origins: ["*"]
-  # 限流:进程内固定窗口(application/ratelimit.py)。每一档 <= 0 = 关掉这一档。
+  # 限流:**滑动窗口**(不是固定窗口,也不是令牌桶),计数默认在 Redis。
+  #   每一档 <= 0 = 关掉这一档;backend: memory 可退到单进程(重启清零、多 worker 各算各的)。
   #   一分钟 60 次问答够任何人用,但挡住循环脚本;上传背后是几分钟 CPU 嵌入,所以更紧。
-  #   多 worker / 多副本时它**必须**换成 Redis 计数(见 deferred.md)。
+  #   实现:adapters/ratelimit_redis.py —— 一段 Lua 原子完成「裁剪→计数→判定→写入→设 TTL」,
+  #   窗口时间取 **Redis 服务端时钟**(多机时钟不同步也不会各算各的窗口)。
   rate_limit:
     enabled: true
     # redis = 跨进程共享(重启不清零、多 worker 一份计数、时钟以 Redis 为准);
@@ -98,6 +109,13 @@ embedding:
   rerank_model_dir: models/bge-reranker-v2-m3
   device: cuda
   use_f16: false
+  # 嵌入实现:bge_m3(默认,真语义)| hashing(演示用,字符 bigram 哈希,**非语义**)。
+  #   为什么留 hashing 这一档:让"没有 4.4G 模型"的机器也能跑通 ingest→search→界面
+  #   (见 demo/README.md 的 5 分钟演示)。它**不是**语义模型,只按字面相似度检索,
+  #   所以选它时启动日志里必定有一条 WARNING。
+  #   ⚠️ 绝不能让"没模型"悄悄退回 hashing —— 那会让检索看起来正常、实际全是噪声,
+  #   所以默认值被契约钉死(check_m3_rag「演示后端必须显式开启」+ 反向 RT-6)。
+  backend: bge_m3
 
 rag:
   # 分块与检索默认值

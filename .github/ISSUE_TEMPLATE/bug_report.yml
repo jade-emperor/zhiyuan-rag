@@ -1,0 +1,82 @@
+name: Bug 报告
+description: 报一个可复现的问题（请尽量带证据 —— 这个项目按证据说话）
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        报之前请先确认：
+        1. 已按 `README.md` 第一节把环境跑起来（或说明卡在哪一步）；
+        2. 搜过已有 issue；
+        3. **安全漏洞不要走这里** —— 见 [SECURITY.md](https://gitee.com/The_Jade_Emperor/project_rag/blob/main/SECURITY.md)。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 一句话说清现象。
+      placeholder: 上传 docx 之后清单里状态一直停在「pending」。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: 你期望什么
+      placeholder: 几秒后变成「已入库」，并且能搜到。
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现
+      description: 命令 / 请求 / 点击顺序。能贴成一个能跑的片段最好。
+      render: shell
+      placeholder: |
+        ./scripts/dev.sh serve                       # 代码后端:默认 18080(容器那份是 8080,别混)
+        curl -s localhost:18080/api/v1/documents -H "Authorization: Bearer $TOKEN"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据（日志 / 那一行延迟账 / 报错原文）
+      description: |
+        最有用的两样：① 完整报错（别截断中间）；② 服务日志里 `label=… channel=… retrieve_ms=…` 那一行。
+        **注意删掉密钥、真实语料与别人的会话内容。**
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: "`git rev-parse --short HEAD` 的输出，或镜像 tag。"
+      placeholder: a2999448 / project-rag:0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: 怎么跑的
+      options:
+        - 宿主上的**代码后端**：`./scripts/dev.sh serve`（默认 18080）
+        - 容器里的 app：`docker compose up -d`（8080，页面和接口同一个进程）
+        - 单元级：直接跑某条验收脚本
+        - 其他（在下面说明）
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: 操作系统 / Python / 是否用 GPU / 中间件是容器还是本机。
+      placeholder: Windows 11 + WSL2 Ubuntu；Python 3.13；GPU RTX 5080（容器内 cuda）；Milvus/MySQL/Redis 都在 Docker Desktop 里。
+    validations:
+      required: true

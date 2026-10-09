@@ -1,21 +1,28 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
+/build/
+/dist/
+/wheels/
 *.egg-info
 *.ses
-logs/
+/logs/
 
 # 本地工作材料：只在磁盘上保留，不进版本库
-#   data/    语料与评估集（课程方版权 + 体积大），来源与形状见 data/README.md
-#   docs/    讲义底稿、STATUS、决策登记（deferred.md）
-#   scripts/ 验收脚本与一次性工具
-# 换机器时按各自 README 重建；历史里已有的版本仍可从 git log 取回。
-data/
-docs/
-scripts/
+#   /data/     语料与评估集（**课程方版权** + 体积大）—— 永不公开
+#   /models/   模型权重（4.4G，按 README 第一节下载）
+/data/
+/models/
+
+/docs/
+
+# 脚本：默认不公开；契约与反向测试公开（可验证性的根），工具里排除一次性脚本
+/scripts/*
+!/scripts/README.md
+!/scripts/dev.sh
+!/scripts/acceptance/
+!/scripts/tools/
+/scripts/tools/extract_lecture.py
 
 # Virtual environments
 .venv
@@ -23,15 +30,11 @@ scripts/
 # 存放密钥等
 .env
 
-# 生成物（讲义提取、临时实验等），可随时重建
-.cache/
-
-# 模型权重（bge-m3 / bge-reranker-v2-m3 各 2.2G）
-# 不进版本库：体积大 + 可以从课程包本地拷贝或 modelscope 下载
-# 取模型：.venv/bin/python scripts/tools/fetch_models.py [--with-reranker]
-models/
+# 生成物（临时实验等），可随时重建
+/.cache/
 
 # 前端：源码与 package-lock 进版本库,**依赖目录与构建中间产物不进**
 #   （构建产物落在 src/project_rag/api/static/app/ 下,那是入库的 —— 见 docs/frontend.md §1）
+#   ⚠️ `web/scripts/` 要进版本库（source-digest.mjs 是 build 的一环），别在这里写 `scripts/`
 web/node_modules/
 web/dist/

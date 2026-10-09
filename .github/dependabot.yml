@@ -1,0 +1,61 @@
+# 依赖更新（Dependabot）
+#
+# 这个项目有 260+ 个 Python 包、100+ 个前端包，全部自动跟进会淹没 issue 区 ——
+# 所以**分组 + 限量 + 每周一次**，把噪声压到"一次一个 PR"。
+# 注意：`uv.lock` 会跟着 pyproject 一起变，PR 里两个文件都要改。
+#
+# ⚠️ 如果托管平台不支持 `uv` 这个 ecosystem，把它改成 `pip`（Dependabot 的 pip
+# 也能读 pyproject.toml，但不会更新 uv.lock —— 那就得手动 `uv lock` 再提交）。
+
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      # 大版本单独一个 PR：它们最容易破坏契约 —— 本项目对 langchain / pymilvus / pydantic
+      # 的行为都做过实测（结论写在代码注释与 scripts/acceptance/ 的契约里）
+      python-major:
+        applies-to: version-updates
+        update-types: ["major"]
+      python-minor-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+    labels: ["dependencies"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      web-dev:
+        applies-to: version-updates
+        update-types: ["minor", "patch", "major"]
+    commit-message:
+      prefix: "deps(web)"
+    labels: ["dependencies", "frontend"]
+    # 前端产物入库：依赖升级后必须 `npm run build` 并把产物一起提交，
+    # 否则 check_m7_frontend 的「产物与源码同源」会红。这条注释就是给 review 的人看的。
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps(ci)"
+    labels: ["dependencies", "ci"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps(docker)"
+    labels: ["dependencies", "docker"]

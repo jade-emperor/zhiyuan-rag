@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（不要开公开 issue）
+    url: https://gitee.com/The_Jade_Emperor/project_rag/blob/main/SECURITY.md
+    about: 认证/越权/上传/注入/限流绕过等，请走私密渠道，见 SECURITY.md
+  - name: 部署与配置问题
+    url: https://gitee.com/The_Jade_Emperor/project_rag/blob/main/README.md
+    about: 跑不起来先看 README 第一节与「已知边界」，以及 SECURITY.md 的「部署方必读」
+  - name: 验收体系与契约索引
+    url: https://gitee.com/The_Jade_Emperor/project_rag/blob/main/scripts/README.md
+    about: 「这个项目保证什么」全在这里；「暂不做」的清单在维护者本地（不随仓库发布）

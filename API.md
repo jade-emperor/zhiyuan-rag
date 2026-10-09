@@ -12,14 +12,21 @@
 ## 一、起服务
 
 ```bash
-uv run project-rag-api            # 默认 0.0.0.0:18080
+uv run project-rag-api            # 绑 config.yaml 里的 0.0.0.0:18080（宿主上的**代码后端**）
+./scripts/dev.sh serve            # 同一件事的短命令（默认 18080；带端口参数可换）
 ```
+
+> **端口分层**（三个角色，别混）：`18080` = 宿主上的**代码后端**（`uv run project-rag-api` /
+> `./scripts/dev.sh serve`，跑的是当前源码）；`8080` = 容器里的 app（交付形态，
+> `docker compose up -d` 之后就有，一个进程同时发页面和接口 —— 镜像里的 `RAG_API__PORT=8080`
+> 会把 yaml 的值盖住）；`5173` = vite 开发服务器（`cd web && npm run dev`，只发页面）。
+> 两者可同时跑；当前占用情况看 `./scripts/dev.sh ports`。
 
 绑定地址、CORS、启动预热都由配置决定（可被环境变量覆盖）：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| `api.host` / `api.port` | `0.0.0.0` / `18080` | 绑回环时 WSL 里的 Windows 浏览器连不上，故默认全网卡 |
+| `api.host` / `api.port` | `0.0.0.0` / `18080` | 绑回环时 WSL 里的 Windows 浏览器连不上，故默认全网卡。18080 是**宿主代码后端**的口，与容器发布的口（8080）分开，所以两个后端能同时开 |
 | `api.cors_origins` | `["*"]` | 本机全开；**对外必须收紧成具体域名** |
 | `api.warmup` | `true` | 启动时把嵌入 / 重排模型、语料索引、Milvus 连接先建好 |
 | `api.warmup_query` | `装饰器有什么用` | 预热查询；**换语料领域时记得换这一句**，检索不到的预热等于没预热 |
@@ -59,7 +66,9 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 - **Base URL**：`http://<host>:<port>`；请求与响应都是 JSON（UTF-8）。
 - **路径**：业务接口**一律在 `/api/v1` 下**（2026-10-06 从 `/api/*` 统一迁完，**没有留别名** ——
   两套路径就是两个真值来源）。根上只有三个：`/health`（探活）、`/`（307 跳前端 app）、
-  `/static`（静态资源：前端产物在 `/static/app/`、内置调试页在 `/static/index.html`）。
+  `/static`（静态资源：前端产物在 `/static/app/`）。**旧的 101 行内置调试页
+  `/static/index.html` 2026-10-07 已删**（界面只留一份，见 `docs/STATUS.md` §7.3），
+  现在访问它得到 **404**。
   这条有契约钉着（`check_m5_api` 的「命名空间」那条 + `reverse_m5_api.py`）。
 - **无状态**：服务端不发 cookie；会话靠调用方保存 `session_id`，**令牌**靠调用方保存并每次带上
   （`Bearer`）。`session_id` 与令牌是两件事：前者指一段对话，后者证明你是谁。
@@ -79,7 +88,7 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 
 ---
 
-## 三、端点一览（16 条业务路由 + `/health` + 前端 app + 调试页）
+## 三、端点一览（16 条业务路由 + `/health` + 前端 app）
 
 「认证」一列说明**必须带什么**：`—` = 不需要；`Bearer` = 任意登录账号；`admin` = 管理员角色。
 
@@ -104,7 +113,6 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 | `GET` | `/health` | 进程探活 | — |
 | `GET` | `/` | **307 → `/static/app/`**（前端 app，M7.1 起） | — |
 | `GET` | `/static/app/` | 前端产物（Vite+Vue3+TS 构建；hash 路由，无需服务端 rewrite） | — |
-| `GET` | `/static/index.html` | 内置调试页（窄、无依赖；后端出问题时它比 SPA 更有用） | — |
 | `GET` | `/static/{path}` | 静态文件挂载（`api/static/`） | — |
 
 ### 3.1 `POST /api/v1/query`

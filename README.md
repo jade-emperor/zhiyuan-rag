@@ -7,13 +7,33 @@
 代码按**端口-适配器**分层：`ports/` 只声明「我需要什么能力」，`adapters/` 是全项目唯一碰
 第三方 SDK 的地方，`domain/` 只用标准库。换模型厂商、换向量库、换缓存都只换一个适配器文件。
 
+**English**: [`README.en.md`](README.en.md)（短版：能力、5 分钟演示、验证方式）。
+
 ---
 
-## 一、跑起来：仓库里只有代码
+## 零、先看效果？5 分钟，不需要模型
+
+不想先下 4.4G 模型、也不想准备语料，只想看看界面与一次问答长什么样：
+
+```bash
+./scripts/dev.sh up            # 起 Milvus / MySQL / Redis（已经起着就跳过）
+./scripts/dev.sh demo          # 灌演示语料（自写的面试八股，哈希嵌入 → 零模型）
+./scripts/dev.sh demo-serve    # 起服务 → http://127.0.0.1:18080/
+```
+
+演示语料在 [`demo/`](demo/README.md)：FAQ 通道问「深拷贝与浅拷贝的区别?」（**不调 LLM**，毫秒级），
+知识库通道问「混合检索与 RRF 融合是怎么回事」（会调一次 LLM，答案带 `[1]` 引用）。
+演示模式与生产配置只差三个环境变量（`EMBEDDING__BACKEND=hashing` / 独立集合 `rag_demo` /
+关重排），**产品代码里没有"演示分支"**；它在你的库里加了什么、怎么撤回，`demo/README.md` 里逐条写了。
+
+## 一、跑起来：仓库里只有代码（有什么、没有什么见文末两节）
 
 **版本库里只有代码**：`src/`（产品代码）、`config/config.yaml`、`docker-compose.yaml`、
 `Dockerfile`、`pyproject.toml` + `uv.lock`、`.env.example`，加上两份文档
-（`README.md` 与本仓的 [`API.md`](API.md)，后者是 HTTP / WebSocket / CLI 接口文档）。
+（`README.md` 与本仓的 [`API.md`](API.md)，后者是 HTTP / WebSocket / CLI 接口文档），
+以及验收脚本（`scripts/acceptance/`）。
+（维护者本地的决策与状态文档放在 `docs/`，**不随仓库发布** —— 下文偶尔引用它只作溯源；
+克隆者能跑、能读的判据都在 `scripts/acceptance/` 与其 docstring 里。）
 下面这几样**不在**仓库里，得自己准备 —— 缺哪一样，
 对应的功能就跑不起来：
 
@@ -21,8 +41,8 @@
 |---|---|
 | `.env`（API key、数据库密码） | 启动即报错（密码字段空值校验 fail-fast） |
 | 三个中间件容器 | Milvus/MySQL/Redis 一律 `Connection refused` |
-| 模型权重（各 2.2G） | 知识库检索与重排起不来 |
-| 语料（FAQ CSV + 知识库文档） | 没有可匹配/可检索的数据 |
+| 模型权重（各 2.2G） | 知识库检索与重排起不来（**想跳过就用上面的演示模式**） |
+| 语料（FAQ CSV + 知识库文档） | 没有可匹配/可检索的数据（演示语料可先用） |
 | 三处一次性初始化 | 表/集合不存在 → 抛错（不是「查不到」） |
 
 ### 0. 前置条件
@@ -105,7 +125,7 @@ data/
 - 认识五种后缀：`.md` / `.txt`（直接读原文）、`.docx`（Word 的 Heading 样式）、
   `.pptx`（每页标题）、`.pdf`（书签目录）。不认识的格式、以及认了但抽不出文字的
   （扫描件）会**在 stderr 里各报一行** —— 少入库一份文档必须让人当场看见。
-- 还没接 HTML / Excel / 扫描件 OCR，见 [`docs/deferred.md`](docs/deferred.md) §1.4。
+- 还没接 HTML / Excel / 扫描件 OCR（能验证的三种格式见 `scripts/acceptance/check_doc_formats.py`）。
 - 语料按**标题层级**切父块、父块再切子块；标题层级丢了父块就会碎，所以 Markdown 的结构别省
   （Word 与 PDF 那边，标题来自文档自己的样式 / 书签，不用另做）。
 
@@ -209,7 +229,8 @@ uv run project-rag qa   -q "装饰器有什么用？"               # 同一入�
 uv run project-rag qa   -q "它有什么用？" --session u1       # 多轮：最近几轮历史进提示词，这一轮也记下来
 uv run project-rag qa   -q "装饰器有什么用？" --stream       # 逐字流式打印（边生成边出）
 uv run project-rag search -q "课程版本" --route bm25         # 只跑关键字那一路（不加载嵌入模型，最快）
-uv run project-rag-api                                      # HTTP + WebSocket 服务（0.0.0.0:8080）
+uv run project-rag-api                                      # HTTP + WebSocket 服务（config.yaml 的 0.0.0.0:18080）
+./scripts/dev.sh serve                                      # 同一件事的短命令（18080）+ 端口占用守卫
 
 uv run project-rag <子命令> --help                           # 每个子命令的参数见这里
 ```
@@ -224,33 +245,69 @@ uv run project-rag <子命令> --help                           # 每个子命�
 按 `uv.lock` 装依赖，runtime 只带 `.venv` + 代码；非 root 跑，带 `/health` 探活）。**中间件不进这个镜像。**
 
 ```bash
+mkdir -p logs data/uploads          # 容器要写的两个目录（缺了 Docker 会建成 root 属主 → 写不进）
 docker compose up -d --build        # 一次起全套：中间件 + app（首次要构建镜像，最久）
 docker compose ps                   # app 那行要是 healthy（首次最多等 3 分钟：启动预热要加载 BGE-M3）
 curl http://localhost:8080/health
-# 浏览器打开 http://localhost:8080/ —— 就是个能问话的页面（api/static/index.html）
+# 浏览器打开 http://localhost:8080/ —— 307 → /static/app/，就是那个 Vue 前端
 ```
 
 - **地址用服务名**：`standalone:19530` / `mysql:3306` / `redis:6379`。同一个 compose 网络里，
   既不需要 `host.docker.internal`，也不经过 1008x/1009x 那些宿主映射。
+- **端口有三个角色，别混**：`18080` = 宿主上的**代码后端**（`uv run project-rag-api` 或
+  `./scripts/dev.sh serve`，改完源码直接跑、不必重建镜像），`8080` = 容器里的 app（上面这条命令；
+  一个进程同时发页面和接口），`5173` = vite 开发服务器（只发页面）。当前谁占着：`./scripts/dev.sh ports`。
+  **两个后端可以同时跑**（会话/向量/限流配额都在中间件里，同源不撕裂），代价是模型显存各占一份。
 - **只想起中间件**（在宿主上 `uv run` 开发）：`docker compose up -d standalone mysql redis`。
 - **模型与语料挂卷、不进镜像**：`./models` 与 `./data`。配置里的相对路径是按**项目根**解析的，
   所以容器里的路径与宿主一致（`/app/models/bge-m3`、`/app/data/corpus/...`）。
-- 容器里默认 `RAG_EMBEDDING__DEVICE=cpu`（看不见宿主 GPU）。要用 GPU 得换基础镜像、
-  再把该变量改回 `cuda`，见 `Dockerfile` 顶部第 2 条。
+- **容器用 GPU**：`docker-compose.yaml` 的 app 服务里这两行**已经打开**（2026-10-07）：
+  ```yaml
+      gpus: all                        # 把宿主 GPU 交给容器（等价 deploy.resources.reservations.devices）
+      environment:
+        RAG_EMBEDDING__DEVICE: cuda     # 告诉应用用哪块设备；与上面那行**必须成对**
+  ```
+  **不用换基础镜像、也不用重建镜像** —— 镜像里的 torch 本来就是 CUDA 版（容器内实测
+  `torch 2.14.0+cu130` + 一整套 `nvidia-*`，这也是镜像 11G 的主要来源），缺的只是上面这两件事；
+  改完 `docker compose up -d app` 即可（只重建容器）。**这两行必须成对**：只写 `cuda` 不申请 GPU 的
+  后果是**预热静默失败 + `/health` 照样绿**，直到第一次真提问才炸（`docs/STATUS.md` §0.3 第 39 条），
+  契约 `check_m6_deploy.py`「推理设备与 GPU 预约一致」+ 反向 RT-18 就盯着这个配对。
+  实测收益（真容器、真模型）：预热 **18240ms（CPU）→ 7757ms（GPU）**；嵌入 8 条 **CPU 1164ms → GPU 38.2ms**，重排 8 候选 **CPU 527.7ms → GPU 30.7ms**（开 fp16 再快一倍）。
+  想开 fp16 再加 `RAG_EMBEDDING__USE_F16=true`（`embedding.use_f16` 同时管嵌入与重排）。
+  ⚠️ **别用自己 shell 里的 `ls /dev/dxg` / `nvidia-smi` 判断"宿主能不能用 GPU"** ——
+  这个开发沙箱的 `/dev` 是过滤过的 tmpfs（只有 `null/zero/random/tty/pts…`，**没有 `dxg` 节点**），
+  在里面看到的口径一概不算数；容器这条路走 dockerd 的 **nvidia runtime**，不受沙箱影响。
+  验 GPU 一律用这条（注意容器里**没有** `nvidia-smi`，`python:slim` 基础镜像不带）：
+  ```bash
+  docker run --rm --gpus all --entrypoint python project-rag:0.1.0 \
+    -c "import torch;print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+  # → True NVIDIA GeForce RTX 5080 Laptop GPU
+  ```
+  改完再看一眼启动日志：`docker logs rag_platform-app-1 | grep -E "预热|NVIDIA"` ——
+  **不该**再出现 `Found no NVIDIA driver`（那条失败是静默的，`/health` 不会变红）。
 - 一次性任务用 `run`，不必手写一长串挂载：
   `docker compose run --rm app project-rag ingest --path data/corpus/doc_data`
 - 镜像偏大：`uv.lock` 里的 torch 是 CUDA 版，会拖进 `nvidia-*`（本地 `.venv` 实测 6.7G，
   其中 nvidia 3.2G + triton 0.9G）。CPU-only 的瘦身办法写在 `Dockerfile` 末尾注释里，
   **没在真机验证过**，验过再改默认。
-- **构建期不需要 GitHub**：`unstructured` 那一档（37 个包）已经挪到可选依赖，运行时用不到，
-  `uv sync --locked --no-dev` 也就不会去拉那个只有 GitHub 一个源的 `en-core-web-sm`（见 §1）。
+- **那个 `en-core-web-sm` 已经不会再让构建/启动随机失败了**（2026-10-07 两轮实测 + 根治）：
+  它在可选依赖档 `unstructured` 里、运行时用不到，但过去 `uv sync --locked` 仍会去 github 取它的
+  **元数据**来校验锁 —— 取一次实测宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次重试
+  → **46s 就失败**。于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步
+  （同一天各一次）。根治是**静态声明它的元数据**：那个 wheel 的 METADATA 里只有 `Name`/`Version`
+  （纯数据包，没有一条 `Requires-Dist`），所以 `pyproject.toml` 写了 `[tool.uv] dependency-metadata`，
+  `uv lock` 又把它带进 `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked` 校验**零网络**（实测 0 秒）。
+  还留着 `UV_HTTP_TIMEOUT=300` 兜底：首次 sync 时 uv 仍要下载一次那个 wheel 做**哈希校验**（12MB，
+  进缓存后不再下），这一次可能被慢网络拖死。契约：`check_m6_deploy.py`「静态元数据」+ 反向 RT-19。
+  想连这一次都省掉：把 wheel 放进仓库、`[tool.uv.sources]` 指本地文件（12MB 入库的取舍，
+  `Dockerfile` 末尾第 1 条另有一条 `uv export` 的路）。
 - **国内网络两道坎**（2026-09-30 真机踩过，报错原文在 `Dockerfile` 头部）：
   ① **别给 `Dockerfile` 加 `# syntax=`** —— 那会让 BuildKit 先去 registry 拉一个 frontend 镜像，
   它是整个构建的第一个网络请求；② Docker Desktop 的**手工代理**（Settings → Resources → Proxies）
   如果指着本机的 Clash/V2Ray，代理没开时连 registry mirror 都连不上
   （报 `dial tcp 127.0.0.1:7897: connectex: … refused`，**代理对 mirror 一样生效**）——
   要么把代理开起来，要么关掉手工代理、只留 registry mirror。
-  现在构建期只需要 **docker 镜像源 + pip 源（清华）**，不碰 `github.com` / `ghcr.io`。
+  现在构建期需要 **docker 镜像源 + pip 源（清华）**；冷缓存首次构建还会为哈希校验下载一次那个 wheel（12MB，见上一条），不碰 `ghcr.io`。
 
 **等价的手工 `docker run`**（不想用 compose 时；注意这时中间件在宿主上，要走 `host.docker.internal`）：
 
@@ -387,8 +444,9 @@ src/project_rag/
 ├── application/     用例：合流路由、RAG 检索与生成、FAQ、缓存、帧协议、切分入库、问候
 ├── observability/   日志装配 + 延迟账本
 ├── cli/             命令行入口与组合根（Deps：全是惰性工厂）
-└── api/             FastAPI 接口层 + 静态页面
+└── api/             FastAPI 接口层 + 前端产物（static/app/ 由 web/ 构建进来）
 config/config.yaml   全部可调项（检索旋钮、模型路径、设备、思考档位、阈值、表名）
+web/                 前端工程（Vite+Vue3+TS）：`npm run build` 把产物写进 src/project_rag/api/static/app/
 docker-compose.yaml  中间件：Milvus(etcd+minio) / MySQL / Redis / Attu ＋ `app`(服务本体)
 Dockerfile           服务本体的镜像（中间件不进它）
 API.md               HTTP / WebSocket / CLI 接口文档
@@ -397,11 +455,47 @@ API.md               HTTP / WebSocket / CLI 接口文档
 ### 已知边界
 
 - **还没接的格式**：HTML / Excel / 扫描件 OCR，以及页码、工作表这类元数据到引用清单的透传；
-  优先级与代价见 [`docs/deferred.md`](docs/deferred.md) §1.4。真要做时先
-  `uv sync --extra unstructured`（那一档默认不装，见 §1）。
-- **应用已编进 compose，但镜像还没在真机构建过**（开发环境里没有 `docker` 命令）：
-  `docker compose up -d --build` 起得来、`/health` 会变 healthy 是**纸面验收**；第一次真机构建
-  仍可能暴露构建期问题（体积 ~9G、CUDA torch 怎么换成 CPU 轮子），见 §8 与 `Dockerfile` 末尾注释。
+  真要做时先 `uv sync --extra unstructured`（那一档默认不装，见 §1）。
+- **镜像已在真机构建并跑起来过**（2026-10-07，之前"开发环境里没有 `docker` 命令"那条已作废）：
+  `docker compose up -d --build` 构建成功、app 变 healthy、宿主 8080 上打开的就是仓库里这份
+  Vue 前端（容器内预热 7649ms、`/static/app/` 200、旧调试页 404）。
+  **体积 ~11G 的成因已量清**：venv 7.0G 里 `nvidia` 3.2G + `torch` 1.2G + `triton` 0.9G = 5.3G 是 CUDA 相关；
+  想要瘦身版用 `docker build --build-arg TORCH_BACKEND=cpu`（代价：容器里不能再用 GPU；
+  ⚠️ 这条路本机**没验成** —— 它要从 `download.pytorch.org` 取 torch/triton，实测卡住 15 分钟无进展，
+  换到能连官方源的环境再试，见 `Dockerfile` 的 `ARG TORCH_BACKEND` 那段）。
+  桌面壳（pywebview 窗口 / 打包）那两件仍是纸面验收。
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
-  「暂不做」的条目与**触发条件**都写在 [`docs/deferred.md`](docs/deferred.md)。
-- 当前状态、验收基线、每条踩过的坑记在 [`docs/STATUS.md`](docs/STATUS.md)。
+  「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
+- 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 23 套契约 + 14 份反向 runner，
+  以及 `CHANGELOG.md`。
+
+---
+
+## 许可证
+
+**MIT**，见 [`LICENSE`](LICENSE) —— 可以自由使用、修改、分发，保留版权声明即可。
+与许可有关的三件事写在这里，免得误会：
+
+- **模型权重有各自的许可**：`BAAI/bge-m3` 与 `BAAI/bge-reranker-v2-m3` 由 ModelScope /
+  HuggingFace 提供，使用时请自行确认它们的条款；**本项目不分发权重**（`models/` 不在仓库里）。
+- **语料不在仓库里**：`data/` 是课程语料与评估集，有**第三方版权**（见下）。
+- 依赖的许可见 `uv.lock` 与 `web/package-lock.json`（前端依赖只用于构建，产物已入库）。
+
+## 仓库里有什么、没有什么
+
+| | 内容 |
+|---|---|
+| **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` 与离线工具 `scripts/tools/` |
+| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（课程语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原） |
+
+后两条是**刻意的**，不是忘了：
+
+1. **前端产物反而要入库**：Python 侧与 Docker 镜像都不装 node，`vite build` 的结果就得提交进来；
+   代价是"改了前端必须重新构建"，所以有一条契约盯着「产物与源码同源」——
+   判据是**内容摘要**而不是 mtime（`scripts/acceptance/check_m7_frontend.py` 的第 1 条契约）。
+2. **`web/node_modules` 不入库**：它是 `npm ci` 的产物（和 `.venv` 一个性质），而且里面装着
+   **平台相关的二进制**（esbuild / rollup 的 linux-x64 构建）。真值来源是
+   `web/package.json` + `web/package-lock.json` —— 有这两个，任何机器都能还原出一样的依赖树。
+   （这段是 2026-10-07 开源化时补的：它在 `.gitignore` 里写着"别提交"，但文件比那条规则更早进仓库，
+   忽略规则**不会**自动取消已跟踪的文件，所以一直躺在版本库里。）

@@ -1,0 +1,118 @@
+# CI：三件事，按"需要什么外部条件"分层
+#
+#   ① `contracts`  —— **零容器、零网络、零模型**：pyright + 16 套契约 + 14 份反向 runner。
+#                     分组依据是实测（scripts/acceptance/run_all.py 的 docstring 记了探测方法），
+#                     缺模型/语料的检查会 SKIP 并点名 owner，不是 FAIL。这一层是 required。
+#   ② `frontend`   —— 前端：typecheck + build + **断言产物与源码同源**（构建后 git diff 必须为空）。
+#   ③ `services`   —— 夜间/手动：起真 Milvus/MySQL/Redis 后再跑那 4 套依赖真中间件的契约。
+#                     需要真数据的 3 套（check_m2_faq / check_m5_qa / check_m5_stream）**永不进 CI**
+#                     —— 语料有版权、真 provider 调用花钱，见 run_all.py 的 LOCAL_ONLY。
+#
+# 平台说明：主仓在 Gitee，这个文件是 GitHub Actions 的格式。两种用法：① 在 GitHub 上镜像一份跑；
+# ② 本地/自建 runner 直接跑等价命令（`uv run python scripts/acceptance/run_all.py --set ci`）。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 20 * * 0" # 每周一 04:00（北京时间）跑一次含中间件的
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 配置里有三个必填项会 fail-fast：CI 用假值，保证"缺密钥"和"代码坏了"能分开
+  RAG_LLM__DEEPSEEK_API_KEY: sk-ci-dummy
+  RAG_MYSQL__PASSWORD: ci-dummy
+  RAG_REDIS__PASSWORD: ci-dummy
+  RAG_EMBEDDING__DEVICE: cpu
+
+jobs:
+  contracts:
+    name: 契约 + 反向测试（零容器零网络）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 uv（版本与 Dockerfile / 本地一致）
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.11"
+          enable-cache: true
+
+      - name: 同步依赖（--locked：pyproject 与 uv.lock 不一致就当场失败）
+        run: uv sync --locked
+
+      - name: 类型检查
+        run: uv run pyright src scripts
+
+      - name: 验收（ci 集合：16 套契约 + 14 份反向 runner）
+        run: uv run python scripts/acceptance/run_all.py --set ci
+
+  frontend:
+    name: 前端 typecheck + 产物与源码同源
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: 产物必须与源码同源（构建后不该有任何 diff）
+        run: |
+          if ! git diff --exit-code -- ../src/project_rag/api/static/app; then
+            echo "::error::前端产物与源码不同源 —— 本地跑一次 \`cd web && npm run build\` 并把产物一起提交"
+            exit 1
+          fi
+
+  services:
+    name: 真中间件（夜间/手动）
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.11"
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      - name: 起中间件（用仓库自己的 compose，端口与本地一致）
+        run: docker compose up -d standalone mysql redis
+
+      - name: 等它们真的能应答（Milvus 起来要一两分钟）
+        run: |
+          for i in $(seq 1 40); do
+            if uv run python scripts/acceptance/check_env_services.py > /tmp/probe.log 2>&1; then
+              echo "中间件就绪（第 $i 次探测）"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::中间件 10 分钟内没就绪"; tail -30 /tmp/probe.log; exit 1
+
+      - name: 依赖真中间件的那几套
+        run: uv run python scripts/acceptance/run_all.py --set services
+
+      - name: 失败时留日志
+        if: failure()
+        run: docker compose logs --tail 80

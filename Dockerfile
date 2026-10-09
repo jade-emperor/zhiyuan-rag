@@ -32,8 +32,18 @@
 #     project-rag:0.1.0
 #
 # 依赖分了两档:运行时(进这个镜像)与可选 `unstructured`(**不进**)—— 后者那一档里
-# `en-core-web-sm` 的 wheel 只有 GitHub 一个来源,留在运行时依赖里会让 `uv sync --locked`
-# 在构建时去 github.com 取一个产品路径不用的模型。加/减依赖见 pyproject.toml 的注释。
+# `en-core-web-sm` 的 wheel 只有 GitHub 一个来源。加/减依赖见 pyproject.toml 的注释。
+#
+# 2026-10-07 的两轮实测与根治(结论:**解析阶段不再碰 github**):
+#   ① 挪进 optional **并不等于**解析期不去取它 —— `uv sync --locked` 仍要那个 wheel 的
+#      **元数据**来校验锁(实测取一次:宿主 172s / 容器 186s,而 uv 默认超时 30s×3 → 46s 就失败)。
+#      于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步(同一天各一次)。
+#   ② 根治:wheel 的 METADATA 里**只有 Name/Version**(纯数据包,没有一条 Requires-Dist),
+#      所以在 pyproject 的 `[tool.uv] dependency-metadata` 里**静态声明**了它,并写进了
+#      `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked` 校验**零网络**(实测 0 秒)。
+#   ③ 仍然留着 `UV_HTTP_TIMEOUT=300`:首次 sync 时 uv 还会下载一次那个 wheel 做**哈希校验**
+#      (12MB,进缓存后不再下),这一次仍可能被慢网络拖死 —— 它是兜底,不是主修法。
+#      想连这一次都省掉:把 wheel 放进仓库、`[tool.uv.sources]` 指向本地文件(12MB 入库的取舍)。
 #
 # 三个必须知道的事实:
 #
@@ -64,7 +74,16 @@ RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" uv==0.12.11
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
-    UV_PROJECT_ENVIRONMENT=/app/.venv
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_HTTP_TIMEOUT=300
+
+# UV_HTTP_TIMEOUT=300(默认 30)—— **兜底,不是主修法**。主修法是 pyproject 的
+# `[tool.uv] dependency-metadata`(静态声明那个 wheel 的元数据,已写进 uv.lock 的 [manifest]),
+# 它让**解析期**不再去 github;这里兜的是**首次 sync 那次哈希校验下载**(12MB,冷缓存才有)。
+#   为什么当初会死:uv 解析时要那个 wheel 的元数据才肯校验锁,而它 307 到
+#   release-assets.githubusercontent.com,实测宿主 172s / 容器 186s,30s × 3 次重试全超时 →
+#   `Failed to generate package metadata for en-core-web-sm==3.8.0`。
+#   300 是实测值的 1.6 倍余量;缓存挂载留着,第二次构建不必再付这笔时间。
 
 WORKDIR /app
 
@@ -72,12 +91,36 @@ WORKDIR /app
 # `--locked` 而不是 `--frozen`:前者会在 pyproject 与 uv.lock 不一致时**直接构建失败** ——
 # 那正是我们要的(静默装上一份过期的依赖比报错难查得多)。加依赖记得先 `uv lock`。
 COPY pyproject.toml uv.lock ./
+
+# `--build-arg TORCH_BACKEND=cpu` = 装 CPU 版 torch,**镜像能小一半以上**(见文末"想瘦身"第 1 条)——
+# 代价是**容器里再也不能用 GPU**(compose 的 `gpus: all` + `RAG_EMBEDDING__DEVICE=cuda` 会失败,
+# 那就是预热静默失败那条老路)。所以默认仍是 `cuda`:默认配置与 compose 的 GPU 路径一致,
+# 想瘦身的部署自己显式选 cpu。实测(2026-10-07,GPU 版镜像内):
+#   venv 合计 7.0G,其中 nvidia 3.2G + torch 1.2G + triton 0.9G = **5.3G 是 CUDA 相关**;
+#   CPU 版这条路走 `uv export` + `uv pip install --torch-backend=cpu`。
+#   ⚠️ **本机未验证成功**(2026-10-07 实测):它要去 download.pytorch.org 取 torch/triton 的轮子,
+#      卡在 "Downloading torch (187.2MiB)" 上 **15 分钟无进展**(累计构建 25 分钟),只好中断 ——
+#      也就是说这条路**吃网络**,换到能连 pytorch 官方源的环境再验。默认(cuda)路径不受影响。
+#      顺带量到:即使选了 cpu backend,triton(235MiB)仍会被拉进来(它来自锁里的依赖),
+#      所以"能省多少"要以实际构建出来的镜像为准 —— 本机没验到,不写数字。
+ARG TORCH_BACKEND=cuda
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-install-project
+    if [ "$TORCH_BACKEND" = "cpu" ]; then \
+      uv export --locked --no-dev --no-emit-project -o /tmp/req.txt \
+      && uv venv /app/.venv \
+      && uv pip install --python /app/.venv/bin/python --torch-backend=cpu -r /tmp/req.txt ; \
+    else \
+      uv sync --locked --no-dev --no-install-project ; \
+    fi
 
 # 再放代码,装项目本体(editable 指向 /app/src)
 COPY src/ src/
 COPY config/ config/
+# LICENSE 与 README 也要进来:pyproject 里声明了 `license-files = ["LICENSE"]` 与
+# `readme = "README.md"`(2026-10-07 开源化加的),缺任何一个 hatchling 在**这一步构建元数据**
+# 时就会报 "Readme file does not exist" / "license file not found" —— 实测踩过一次(见 STATUS.md §10)。
+# 放在这一层而不是上面那层:改版权年份/改 README 不该让 5G 的依赖层失效。
+COPY LICENSE README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
@@ -123,22 +166,27 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
 CMD ["project-rag-api"]
 
 # =============================================================================
-# 想瘦身(未在真机验证,验过再改成默认):
+# 想瘦身:
 #
-#   1) torch 换 CPU 轮子 —— 省 ~4G:
-#        RUN uv export --frozen --no-dev --no-emit-project -o /tmp/req.txt \
-#         && uv venv /app/.venv \
-#         && uv pip install --python /app/.venv/bin/python --torch-backend=cpu -r /tmp/req.txt
-#      代价:重新解析依赖(不再严格等于 uv.lock)、多一个 index(要能连 download.pytorch.org)。
+#   1) torch 换 CPU 轮子 —— 实测可省的量与代价见上面 `ARG TORCH_BACKEND` 那段。
+#      用法(默认仍是 GPU 版,**必须显式选**):
+#        docker build --build-arg TORCH_BACKEND=cpu -t project-rag:0.1.0-cpu .
+#      代价:① 容器里再也不能用 GPU(compose 的 `gpus: all` / `device=cuda` 会失败);
+#            ② 装依赖不再走 `uv sync --locked`,而是 `uv export`(锁仍被校验) + `uv pip install`,
+#               并且要多连一个 index(`download.pytorch.org`,国内网络常常连不上)。
 #
 #   2) 用不到 OCR / 图片那一路时,可从 pyproject 摘掉 `opencv-python` /`rapidocr-onnxruntime`
-#      / `PyMuPDF` 之外的重包(摘之前先确认没有别的代码 import)。
+#      / `PyMuPDF` 之外的重包(摘之前先确认没有别的代码 import)。实测这些也不小:
+#      pyarrow 156M / opencv 116M+72M / transformers 115M / scipy 109M / kubernetes 82M。
 #
 #   3) 构建缓存挂载要求 BuildKit(docker buildx / Docker Desktop 默认开)。
 #      老引擎会把 `--mount=type=cache` 当语法错误 —— 那时删掉这两个挂载即可,
 #      **不要**加回 `# syntax=docker/dockerfile:1.7`(那会多一次 registry 请求,见文件头)。
 #
-#   4) 构建期**不需要** github.com / ghcr.io:依赖走 pyproject 里的清华源,uv 自身走 pip 清华源。
+#   4) 构建期**不需要** ghcr.io(uv 用 pip 装);github.com 也**只在冷缓存首次构建时碰一次**
+#      —— 那一次是给 `en-core-web-sm` 的 wheel 做哈希校验(12MB,见 UV_HTTP_TIMEOUT 那段),
+#      **解析期已经不碰了**(静态元数据,见文件头 2026-10-07 那段)。github 完全不可达时,
+#      走文末第 1 条那条 `uv export` + `uv pip install` 的路(实测它不带那个包)。
 #      在能直连 ghcr 的机器上想换回官方镜像,把上面那两行 pip 换回
 #      `COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /bin/` 即可。
 # =============================================================================
