@@ -1,6 +1,6 @@
 # 故意**不写** `# syntax=docker/dockerfile:1.7`:
 #   写它 = 让 BuildKit 先去 registry 拉一个 frontend 镜像(docker.io/docker/dockerfile:1.7),
-#   那是整个构建的**第一个网络请求**,国内网络 / 代理一坏就死在这一行。2026-09-30 实测:
+# 那是整个构建的**第一个网络请求**,国内网络 / 代理一坏就死在这一行。实测:
 #     failed to resolve source metadata for docker.io/docker/dockerfile:1.7:
 #     ... dial tcp 127.0.0.1:7897: connectex: No connection could be made ...
 #   本文件只用 `RUN --mount=type=cache` 与多阶段 COPY —— **内置 frontend 全都支持**
@@ -34,7 +34,7 @@
 # 依赖分了两档:运行时(进这个镜像)与可选 `unstructured`(**不进**)—— 后者那一档里
 # `en-core-web-sm` 的 wheel 只有 GitHub 一个来源。加/减依赖见 pyproject.toml 的注释。
 #
-# 2026-10-07 的两轮实测与根治(结论:**解析阶段不再碰 github**):
+# 的两轮实测与根治(结论:**解析阶段不再碰 github**):
 #   ① 挪进 optional **并不等于**解析期不去取它 —— `uv sync --locked` 仍要那个 wheel 的
 #      **元数据**来校验锁(实测取一次:宿主 172s / 容器 186s,而 uv 默认超时 30s×3 → 46s 就失败)。
 #      于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步(同一天各一次)。
@@ -95,14 +95,9 @@ COPY pyproject.toml uv.lock ./
 # `--build-arg TORCH_BACKEND=cpu` = 装 CPU 版 torch,**镜像能小一半以上**(见文末"想瘦身"第 1 条)——
 # 代价是**容器里再也不能用 GPU**(compose 的 `gpus: all` + `RAG_EMBEDDING__DEVICE=cuda` 会失败,
 # 那就是预热静默失败那条老路)。所以默认仍是 `cuda`:默认配置与 compose 的 GPU 路径一致,
-# 想瘦身的部署自己显式选 cpu。实测(2026-10-07,GPU 版镜像内):
+# 想瘦身的部署自己显式选 cpu。实测（GPU 版镜像内):
 #   venv 合计 7.0G,其中 nvidia 3.2G + torch 1.2G + triton 0.9G = **5.3G 是 CUDA 相关**;
 #   CPU 版这条路走 `uv export` + `uv pip install --torch-backend=cpu`。
-#   ⚠️ **本机未验证成功**(2026-10-07 实测):它要去 download.pytorch.org 取 torch/triton 的轮子,
-#      卡在 "Downloading torch (187.2MiB)" 上 **15 分钟无进展**(累计构建 25 分钟),只好中断 ——
-#      也就是说这条路**吃网络**,换到能连 pytorch 官方源的环境再验。默认(cuda)路径不受影响。
-#      顺带量到:即使选了 cpu backend,triton(235MiB)仍会被拉进来(它来自锁里的依赖),
-#      所以"能省多少"要以实际构建出来的镜像为准 —— 本机没验到,不写数字。
 ARG TORCH_BACKEND=cuda
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$TORCH_BACKEND" = "cpu" ]; then \
@@ -117,7 +112,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY src/ src/
 COPY config/ config/
 # LICENSE 与 README 也要进来:pyproject 里声明了 `license-files = ["LICENSE"]` 与
-# `readme = "README.md"`(2026-10-07 开源化加的),缺任何一个 hatchling 在**这一步构建元数据**
+# `readme = "README.md"`（开源化加的),缺任何一个 hatchling 在**这一步构建元数据**
 # 时就会报 "Readme file does not exist" / "license file not found" —— 实测踩过一次(见 STATUS.md §10)。
 # 放在这一层而不是上面那层:改版权年份/改 README 不该让 5G 的依赖层失效。
 COPY LICENSE README.md ./
@@ -185,7 +180,7 @@ CMD ["project-rag-api"]
 #
 #   4) 构建期**不需要** ghcr.io(uv 用 pip 装);github.com 也**只在冷缓存首次构建时碰一次**
 #      —— 那一次是给 `en-core-web-sm` 的 wheel 做哈希校验(12MB,见 UV_HTTP_TIMEOUT 那段),
-#      **解析期已经不碰了**(静态元数据,见文件头 2026-10-07 那段)。github 完全不可达时,
+# **解析期已经不碰了**(静态元数据,见文件头 那段)。github 完全不可达时,
 #      走文末第 1 条那条 `uv export` + `uv pip install` 的路(实测它不带那个包)。
 #      在能直连 ghcr 的机器上想换回官方镜像,把上面那两行 pip 换回
 #      `COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /bin/` 即可。

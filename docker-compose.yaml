@@ -147,14 +147,6 @@ services:
   # 为什么放这里而不是让它在宿主上跑:中间件都在同一个 compose 网络里,地址直接写
   # 服务名(standalone / mysql / redis)、端口用**容器内部端口**(19530 / 3306 / 6379),
   # 不再是 `host.docker.internal` + 1008x/1009x 那一串宿主映射。
-  #
-  # 三条纪律(与 Dockerfile 里的说明互为表里):
-  #   1) 模型与语料**挂卷**,不进镜像 —— ./models(4.4G)与 ./data;
-  #      配置里的相对路径按「项目根」解析,所以容器里路径与宿主一致(/app/models、/app/data)。
-  #   2) 密钥不进镜像 —— env_file 读仓库根的 .env(它同时是 compose 的插值文件,所以
-  #      mysql 那段 ${MYSQL_PASSWORD:-1234} 与容器的 RAG_MYSQL__PASSWORD 同源)。
-  #   3) 默认 CPU —— 容器里看不见宿主 GPU。
-  #
   # 只想起中间件(在宿主上 `uv run` 开发)时,指名道姓即可:
   #   docker compose up -d standalone mysql redis
   # ---------------------------------------------------------------------------
@@ -166,18 +158,6 @@ services:
     restart: "no"                       # 与其它服务一致:不随 Docker Desktop 自启
     env_file:
       - .env                            # LLM key / MySQL / Redis 密码
-    # GPU(2026-10-07 打开):容器里跑 BGE-M3 + 重排走宿主 GPU。
-    #   ① `gpus: all` —— 把 GPU 交给容器(等价写法 deploy.resources.reservations.devices);
-    #   ② environment 里的 `RAG_EMBEDDING__DEVICE: cuda` —— 告诉应用用哪块设备。
-    #   **两条必须成对**:只写 cuda 不申请 GPU 的后果是**预热静默失败 + `/health` 照样绿**,
-    #   直到第一次真提问才炸(`STATUS.md` §0.3 第 39 条)。契约 `check_m6_deploy.py`
-    #   「推理设备与 GPU 预约一致」+ 反向 RT-18 就盯着这个配对。
-    #   镜像**不用重建** —— 它本来就是 CUDA 版 torch(实测容器内 `torch 2.14.0+cu130`)。
-    #   验证(注意:**别在自己 shell 里 `ls /dev/dxg` 判断** —— 这个开发沙箱的 `/dev` 是过滤过的
-    #   tmpfs,没有 dxg 节点,看不到不代表宿主没有;容器这条路走 dockerd 的 nvidia runtime,
-    #   不受沙箱影响):
-    #     docker run --rm --gpus all --entrypoint python project-rag:0.1.0 \
-    #       -c "import torch;print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
     gpus: all
     environment:
       # 覆盖 .env 里给「宿主上的服务」准备的那套地址 —— 容器里 127.0.0.1 是容器自己
@@ -197,7 +177,7 @@ services:
       - ./data:/app/data:ro
       # 上传落盘目录**单独给一条可写 bind**:config.yaml 的 api.uploads_dir 就是 data/uploads,
       # 而它落在上面那条只读挂载里 —— 少了这一行,容器里的「上传文档」必然失败
-      # (`_stream_to_file` 报 OSError [Errno 30] Read-only file system,实测于 2026-10-08,
+      # (`_stream_to_file` 报 OSError [Errno 30] Read-only file system,实测于，
       # 见 STATUS.md §0.3 第 43 条)。只开这一个写入口,语料其余部分仍然只读。
       # ⚠️ 宿主侧 `data/uploads` 必须先存在(README 的 quickstart 与 `./scripts/dev.sh up` 都会
       # `mkdir -p`):否则 Docker 会替你建一个 root 属主的目录,容器里的 uid 1000 写不进去。

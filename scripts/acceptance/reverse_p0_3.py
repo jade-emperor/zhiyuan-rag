@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = "check_p0_3_auth.py"
 # 备份放 .cache(它已经在 .gitignore 里):**改坏源码期间被 SIGKILL/SIGTERM 时 finally 跑不到**,
-# 源码就会留着坏版本 —— 2026-10-06 真踩了一次(WS 那条检查挂死 → 外层超时杀进程 →
+# 源码就会留着坏版本 —— 真踩了一次(WS 那条检查挂死 → 外层超时杀进程 →
 # `if auth.enabled and ws_user is None:` 变成了 `if False:`)。所以:改之前先落一份备份,
 # 启动时先检查有没有残留的备份并还原,再开始跑。
 BACKUP_DIR = ROOT / ".cache" / "reverse_backup"

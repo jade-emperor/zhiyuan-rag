@@ -138,7 +138,11 @@ def _configs_match_options() -> str:
 
 @check("FAQ 阈值：实测可用区间必须罩住 faq.threshold（放行礼貌语、拦住无关问法）")
 def _faq_threshold() -> str:
-    """P0-4 第三组:FAQ 命中阈值（`faq.threshold`，现在 0.85）。
+    """P0-4 第三组:FAQ 命中阈值（`faq.threshold`，读 `config.yaml` —— 本机现在是 0.95）。
+
+    注意这里**只断言"配置值落在实测区间里"**，不钉具体数字：0.85 是**代码默认值**
+    （`check_m2_faq` / `check_m5_qa` 钉着），而 `config.yaml` 那一行是**部署旋钮**，
+    作者可以调（§5 第 26 条）—— 调完由这条检查负责说"还在不在可用区间内"。
 
     口径与工具**共用一份**:直接 import ``calibrate_threshold`` 的 ``probe`` 与 ``NOISE_PROBES``。
     各写一份探针的话,"工具量的是 A、检查量的是 B",两边对不上还没人知道。

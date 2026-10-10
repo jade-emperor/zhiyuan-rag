@@ -123,7 +123,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "RT-11 可选档被改名（`uv sync --extra unstructured` 失效）",
         "pyproject.toml",
         # 锚点只取那一行:原来带着 `[project.optional-dependencies]` 头一起匹配,
-        # 2026-10-06 加 `desktop` 那一档时插在头与它之间,锚点当场漂了(机制抓到了)
+        # 加 `desktop` 那一档时插在头与它之间,锚点当场漂了(机制抓到了)
         "unstructured = [\n",
         "unused = [\n",
         "那一档在 optional-dependencies 里",
@@ -242,7 +242,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "端口分层",
     ),
     (
-        "RT-28 config.yaml 的 api.port 改回容器口（裸跑又和容器抢；2026-10-08 作者定的是 18080）",
+        "RT-28 config.yaml 的 api.port 改回容器口（裸跑又和容器抢；作者定的是 18080）",
         "config/config.yaml",
         "  port: 18080",
         "  port: 8080",

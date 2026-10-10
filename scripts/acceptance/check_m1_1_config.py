@@ -17,7 +17,7 @@ SKIP 表示需要你人工确认。脚本只依赖标准库 + 本项目，任何
 为什么要把它们列为契约：调用方 import 的路径是承诺，内部文件叫
 ``setting.py`` 还是 ``settings.py`` 是你的自由，但不该影响调用方。
 
-密钥摆放契约（2026-09-14 起）：所有密钥都住在**嵌套配置**里，走 ``RAG_`` 前缀 +
+密钥摆放契约：所有密钥都住在**嵌套配置**里，走 ``RAG_`` 前缀 +
 双下划线，放在 ``.env`` —— ``RAG_LLM__DEEPSEEK_API_KEY`` / ``RAG_MYSQL__PASSWORD`` /
 ``RAG_REDIS__PASSWORD``。不再有 ``Settings.deepseek_api_key`` 这个顶层字段。
 """
@@ -430,7 +430,7 @@ def _() -> str:
     return f"明文长度 {len(secret)}，对外一律 **********"
 
 
-# 这里原本有一条「密钥缺失时 fail-fast，且报错点名 DEEPSEEK_API_KEY」，2026-09-14 契约变更时删除。
+# 这里原本有一条「密钥缺失时 fail-fast，且报错点名 DEEPSEEK_API_KEY」，契约变更时删除。
 # 理由（同步记在 docs/STATUS.md §8，以及 docs/deferred.md 的对应条目）：
 #   1. 密钥完全缺失**不是静默失败** —— 首次调用 DeepSeek 会以 401 暴露出来，
 #      不存在"带着错配置悄悄跑出错误答案"的风险；
@@ -494,6 +494,37 @@ def _() -> str:
     if int(proc.stdout.strip() or 0) <= 0:
         raise AssertionError("读到的密钥为空，说明 .env 没被定位到")
     return "CWD 无关"
+
+
+
+@check("新增旋钮的类默认值：读一致性 strong、重排半精度 false（默认不改变既有语义）")
+def _() -> str:
+    """两个新加的旋钮，类默认值都取"这段代码一直以来的行为"：
+
+    * ``MilvusConfig.read_consistency`` 默认 ``strong`` —— 代码里原先硬编码就是 Strong。
+      改成 bounded 是**部署选择**（实测 399ms → 2ms，200×），写进 config.yaml，不写进类默认：
+      默认值一改，语义就跟着变（这正是本条与上面几条存在的原因）。
+    * ``EmbeddingConfig.rerank_use_f16`` 默认 False —— 与嵌入的 ``use_f16`` 分开，
+      因为两者的收益/精度风险不同（重排实测 3.2×、嵌入 2.4×）。
+    """
+    from project_rag.config import EmbeddingConfig, MilvusConfig
+
+    bare_milvus = MilvusConfig()
+    if bare_milvus.read_consistency != "strong":
+        raise AssertionError(
+            f"MilvusConfig 类默认 read_consistency 应为 'strong'（= 代码原先硬编码的行为），"
+            f"实际 {bare_milvus.read_consistency!r} —— 默认值一改语义就变"
+        )
+    bare_embedding = EmbeddingConfig()
+    if bare_embedding.rerank_use_f16 is not False:
+        raise AssertionError(
+            f"EmbeddingConfig 类默认 rerank_use_f16 应为 False，实际 {bare_embedding.rerank_use_f16!r}"
+        )
+    allowed = {"bounded", "eventually", "strong"}
+    args = set(typing.get_args(MilvusConfig.model_fields["read_consistency"].annotation))
+    if args != allowed:
+        raise AssertionError(f"read_consistency 的取值域变了：{sorted(args)}，契约是 {sorted(allowed)}")
+    return "read_consistency 默认 strong（域 bounded/eventually/strong）；rerank_use_f16 默认 False"
 
 
 def main() -> int:

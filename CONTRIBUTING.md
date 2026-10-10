@@ -18,10 +18,6 @@
 | **前端改动** | `web/` 是 Vite + Vue3 + TS | 必须 `npm run build`（产物入库，有摘要契约盯着） |
 | **性能优化** | **先量再改**：本项目的每条性能结论都带实测数字（延迟账本那一行 26 个字段就是干这个的） | 前后对照读数 |
 
-**不做的事**（不是懒，是决策；清单在维护者本地的 `docs/deferred.md`，每条带触发条件）：引入 LangChain/LlamaIndex 的
-`Index`/`Retriever` 抽象层、把 BM25 搬进向量库、给检索结果设分数阈值（融合分的量纲不允许）——
-想推翻这些决策请先在 issue 里谈，别直接改。
-
 ## 二、开发环境
 
 ```bash
@@ -50,7 +46,7 @@ docker compose up -d app          # 或者整份用容器跑（宿主 8080，页
 ## 三、提交前自检（和 CI 跑的一样）
 
 ```bash
-./scripts/dev.sh ci        # pyright + 16 套契约 + 14 份反向 runner（= CI 的 contracts 任务）
+./scripts/dev.sh ci        # pyright + 16 套契约 + 15 份反向 runner（= CI 的 contracts 任务）
 ./scripts/dev.sh frontend  # 改了 web/ 才需要：typecheck + build（产物要一起提交）
 
 # 只想跑你改到的那一块时：

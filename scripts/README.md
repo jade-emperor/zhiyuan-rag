@@ -11,12 +11,12 @@
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 16 套契约 + 14 份反向（CI 跑的就是这条，实测 560s）
-./scripts/dev.sh all        # 全套：23 套契约 + 14 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 16 套契约 + 15 份反向（CI 跑的就是这条，实测 560s）
+./scripts/dev.sh all        # 全套：23 套契约 + 15 份反向（要中间件 + 语料 + key）
 ```
 
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
-分组依据是 2026-10-07 的一次实测探测：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
+分组依据是 的一次实测探测：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
 再跑全部 23 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
@@ -25,7 +25,7 @@
 > 脚本与注释里出现的 `docs/...` 引用（如「见 STATUS.md §5 第 30 条」）是**维护者的本地文档**，
 > 对克隆者不可见、也不影响运行。要结论时看脚本自己的 docstring 与 `--help`。
 
-**两份公共模块（2026-09-29 抽的）** —— 每个 `check_*.py` 只剩下面这几行壳子：
+**两份公共模块（抽的）** —— 每个 `check_*.py` 只剩下面这几行壳子：
 
 ```python
 from _harness import check, report          # 三态 / @check 装饰器 / env / 报告打印
@@ -43,10 +43,10 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 2. **别把反向测试的输出管进 `head`** —— `head` 读够行数就关管道，Python 收到 SIGPIPE 当场死，正好死在窗口里（真踩过）。要看短的输出就 `> .cache/xxx.log` 再 `grep`。每个用例都要先核对**锚点恰好出现 1 次**并把它算成失败：锚点漂了的那条反向测试是「安静地没跑」，而它看起来只是报告里的一句「1 条没红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 23 份检查 + 14 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 23 份检查 + 15 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
-> **评估的范围（2026-09-23 定）**：只跑 RAGAS 四指标
+> **评估的范围（定）**：只跑 RAGAS 四指标
 > （`faithfulness` / `answer_relevancy` / `context_precision` / `context_recall`）。
 > **一轮 A/B = 改一次配置 + 跑一次**（112 条约 15 分钟 + 一次 judge 费用），
 > **不为"量噪声"重复跑** —— 噪声只量过一次（`bagu_v1` 的 `mean_of_four` 极差 0.0090），
@@ -75,7 +75,7 @@ uv run python scripts/tools/run_ragas_eval.py \
 uv run python scripts/acceptance/check_m4_eval.py
 ```
 
-### 2026-10-08 之后：作者真实数据的问答对与评估集
+### 之后：作者真实数据的问答对与评估集
 
 上面那套（`bagu_v1`，112 条、只有八股）是 M4 的历史读数，仍然成立。新一轮换成了
 **八股（`###` 标题→问题、正文→答案，确定性、零成本）+ PDF 教材（DeepSeek 逐块生成，
@@ -218,7 +218,7 @@ uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（�
 
 **第六条是 P0-4 第三组（FAQ 阈值）**：`check_p0_4_ab` 直接 import 标定工具的 `probe` 与
 `NOISE_PROBES`（**探针口径只有一处**），只跑最快的 A/B/C 三组（0.8 秒）并断言
-`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。2026-10-06 读数：**463 条语料上
+`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数：**463 条语料上
 区间 (0.303, 1.000]、余量 0.697，0.85 在区间内 → 不改默认**；反向 RT-4 把配置改成 0.20 会让它红。
 ⚠️ 区间只挡「分数太低」，挡不住「答成了隔壁那条」（近邻混淆）—— 那是排序问题，见
 `deferred.md` 第 67 条；规则见 STATUS §5 第 38 条。
@@ -292,10 +292,10 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 | 为什么产物入库、为什么 hash 路由 | `check_m7_frontend.py`「产物与源码同源」+「hash 路由 + 相对 base」两条契约 |
 | 契约（M7.1 聊天页） | `check_m7_frontend.py` **17 条**（静态 9 + 行为 8）；反向 `reverse_m7_frontend.py` **10 条** |
 | 契约（M7.2 知识库页） | `check_m7_2_kb.py` **12 条**（预览接口行为 7 + 前端静态 5）；反向 `reverse_m7_2_kb.py` **9 条** |
-| 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **9 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 3）；反向 `reverse_m7_3_metrics.py` **9 条** |
+| 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **11 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 5）；反向 `reverse_m7_3_metrics.py` **13 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"） |
 | 契约（M7.4 安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
 | 改了前端忘了构建 | 契约第 1 条就会红：产物摘要与当前源码不一致 |
-| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 17 条）+ `browser_m7_2_kb.cjs`（知识库页 12 条）+ `browser_m7_3_metrics.cjs`（可观测看板 15 条，含"样本不够要画 `—` 不是 0"这条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的 `docs/frontend.md`（不随仓库发布） |
+| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 17 条）+ `browser_m7_2_kb.cjs`（知识库页 12 条）+ `browser_m7_3_metrics.cjs`（可观测看板 18 条，含"样本不够要画 `—` 不是 0"这条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的 `docs/frontend.md`（不随仓库发布） |
 
 **三个不进回归的验证件**（在同一个目录里，但**不会**被 `check_*` / `reverse_*` 的 glob 扫到）:
 
@@ -313,7 +313,7 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
   三者都断言 0 报错 0 失败请求）。需要一次性装 playwright + 一个 Chromium（国内走 npmmirror 镜像）
   + 缺的 `libnss3` 那三个库 —— 完整命令写在各 `browser_*.cjs` 的文件头注释里。
   ⚠️ 假后端的上传落在 `.cache/fake_uploads/`，**不会**碰 `data/uploads/`。
-* `browser_container_smoke.cjs`（2026-10-07 加）—— 同一个 Chromium，但打的是**真容器**：
+* `browser_container_smoke.cjs`（加）—— 同一个 Chromium，但打的是**真容器**：
   `BASE=http://127.0.0.1:8080/ LD_LIBRARY_PATH=… node scripts/acceptance/browser_container_smoke.cjs`。
   它回答的是另一个问题：**镜像里那份产物在浏览器里真的渲染出来了吗**（假后端那几套证明不了这个 ——
   它们打的是仓库里那份产物 + 壳的回环服务）。8 条断言：307 落 `/static/app/#/login`、登录卡片渲染、

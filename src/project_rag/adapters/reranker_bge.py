@@ -35,14 +35,16 @@ class BGEReranker(Reranker):
     """BGE 系列的重排模型(默认 bge-reranker-v2-m3)。"""
 
     def __init__(self, config: EmbeddingConfig) -> None:
-        """输入:嵌入配置(复用 rerank_model_dir / device / use_f16)。
+        """输入:嵌入配置(复用 rerank_model_dir / device;精度用**自己的** rerank_use_f16)。
 
         行为:加载 CrossEncoder 模型。
         输出:无。**加载是重操作**(实测 1.6s + 上 G 内存),所以它该发生在工厂被调用时,
         而不是 import 时 —— 否则连 `--help` 都要交这份钱。
         """
         self._model = CrossEncoder(str(config.rerank_model_path), device=config.device)
-        if config.use_f16 and config.device.startswith("cuda"):
+        if config.rerank_use_f16 and config.device.startswith("cuda"):
+            # 用 rerank_use_f16 而不是 use_f16:重排与嵌入的收益/精度风险不同,要能分开拧
+            # (实测 9 条 1104 字父块 fp32 398ms → fp16 101ms,3.9×)。
             # CPU 上 fp16 反而更慢,所以只在 CUDA 上开(和嵌入适配器一个口径)。
             # CrossEncoder 没有自己的 half(),要落到里面那个 transformers 模型上
             self._model.half()

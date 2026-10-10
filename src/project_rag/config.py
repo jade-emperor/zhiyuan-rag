@@ -107,7 +107,7 @@ class CacheConfig(BaseModel):
     # 加配置项不许悄悄改变默认语义(有验收脚本钉住类默认值)。
     ttl_s: int = 300
 
-    # BM25 索引「语料指纹」的缓存秒数(2026-10-06 加)。
+    # BM25 索引「语料指纹」的缓存秒数（加)。
     # 为什么值得一个旋钮:指纹查询在 3938 块时实测 **397.6ms**,而它**每次检索都要调**;
     # 真正的 BM25 打分只要 ~1ms。缓存后每查询变成一次 Redis GET(~0.1ms),
     # 代价是「语料变了」最多晚这么多秒被发现。
@@ -191,6 +191,22 @@ class MilvusConfig(BaseModel):
     # 只准填已存在的库(milvus内置):Milvus 不会自动建库,命名库得先 create_database
     database: str = "default"
     collection: str = "rag_chunks"
+    # 读一致性档（Milvus 的 consistency_level）。**只作用于 search 那一路**；
+    # 指纹（变更检测）与写后回查总数固定用 strong —— 那两处要的是"看到最新"，且不在热路径上
+    # （见 adapters/milvus_store.py 里两个常量的分工）。
+    #
+ # 为什么要有这个旋钮：实测（本机 3927 块，各 30 次采样）
+    #   strong  → 中位 **399ms**（22/30 落在 350–403ms）
+    #   bounded → 中位 **2ms**
+    # 同一份数据、同一个 FLAT 索引，只换这一档就是 **200×**。那 400ms 不是计算，
+    # 是等"保证时间戳"对齐的同步往返（与 k、与取哪些字段都无关：k=1 取大字段同样 2ms）。
+    # 代价：刚写完的一小段窗口（亚秒级）内，search 可能看不到新块。
+    # ⚠️ 灌完立刻可见这件事**另有兜底**：ingest 的每一批写完都会做一次 strong 的 `_count()`
+    # 回查（upsert 的返回值），那次强读会把可见性推上去，用户界面上还要点几下才会来搜。
+    #
+    # 类默认保持 "strong"：它是这段代码一直以来的行为，默认值一改语义就变
+    # （有契约钉着，见 check_m1_1_config）。要那 400ms 就在 config.yaml 里写 bounded。
+    read_consistency: Literal["bounded", "eventually", "strong"] = "strong"
 
 
 class EmbeddingConfig(BaseModel):
@@ -199,7 +215,14 @@ class EmbeddingConfig(BaseModel):
     # 先把位置定下来,免得后面改两处配置
     rerank_model_dir: str = "models/bge-reranker-v2-m3"
     device: str = "cpu"
+    # 嵌入模型是否用 fp16。**与重排分开**：两者的收益与精度风险不是一回事。
     use_f16: bool = False
+ # 重排模型是否用 fp16。实测（RTX 5080 Laptop，9 条 1104 字父块）
+    #   fp32 398ms → fp16 101ms（**3.9×**）；嵌入侧 fp16 在批量 32 时 2.17 → 0.73ms/条（3×）。
+    # 精度影响两边都要用评估集验（`data/eval/eval_set_bagu_pdf_v1.json` 那 50 条），
+    # 所以默认 false —— **不改现有行为**，要开自己开，开完拿评估集说话。
+    # 只在 CUDA 上生效（CPU 上 fp16 更慢，适配器里判 device）。
+    rerank_use_f16: bool = False
     # 嵌入实现:**默认必须是真语义模型**。``hashing`` 只为演示与验收存在 ——
     # 它是字符 bigram 哈希(零依赖、零模型、确定性),只保证「文本越像、向量越近」,
     # **不保证语义相近**。默认值一旦被改成 hashing,没有模型的新机器会「看起来一切正常、

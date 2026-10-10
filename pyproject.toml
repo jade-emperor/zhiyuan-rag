@@ -19,7 +19,7 @@ name = "project-rag"
 version = "0.1.0"
 description = "课程知识库问答 RAG:FAQ 标准答案优先 + 混合检索(向量 + BM25)兜底,答案带引用、逐字流式、带延迟观测"
 requires-python = ">=3.13,<3.14"
-# 对外元数据(2026-10-07 开源化补):在此之前只有 name/version/description ——
+# 对外元数据（开源化补):在此之前只有 name/version/description ——
 # PyPI 页面、依赖分析工具、以及"这个项目能不能用"的判断都拿不到这些信息。
 license = "MIT"
 license-files = ["LICENSE"]
@@ -120,7 +120,7 @@ packages = ["src/project_rag"]
 [tool.uv.sources]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
 
-# 静态元数据(2026-10-07 加)——**别再删掉它**,删了就把下一条注释里那两次事故请回来。
+# 静态元数据（加)——**别再删掉它**,删了就把下一条注释里那两次事故请回来。
 #
 # 为什么需要:那个 wheel 的 METADATA 里**只有 Name/Version**(实测:没有一条
 # ``Requires-Dist`` / ``Requires-Python`` / ``Provides-Extra`` —— 它是纯数据包,
@@ -128,7 +128,7 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 # 所以可以如实静态声明。而 uv 解析时**即使没选中这个 extra 也要它的元数据**来校验锁 ——
 # 那个 wheel 又只有 GitHub 一个来源(实测取一次:宿主 **172s**、容器 **186s**,
 # 而 uv 默认 HTTP 超时 30s × 3 次重试 → **46s 就失败**)。于是它会随机死在这一步:
-#   * `docker build`(2026-10-07 镜像构建第一次就死在这里,见 STATUS.md §0.3 第 38 条);
+# * `docker build`（镜像构建第一次就死在这里,见 STATUS.md §0.3 第 38 条);
 #   * **日常 `uv run project-rag-api`**(同一天第二次,报错一模一样)。
 # 声明之后 uv 不必再去取它 —— 开发与构建都不再依赖 github。
 # 维护:URL 里的版本(`en_core_web_sm-3.8.0`)与这里的 `version` 必须一致,

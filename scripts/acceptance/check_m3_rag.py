@@ -32,7 +32,7 @@ M3 分步（一步一绿一提交；每步都已落地）::
                retrieval_k=5 candidate_m=2 fusion=rrf rrf_k=60
                bm25_weight=0.5 vector_weight=0.5 rerank=True
 
-``retrieval_k`` / ``candidate_m`` 在 2026-09-22 被作者调成 10/3、随后又被 M4 的评估集
+``retrieval_k`` / ``candidate_m`` 在 被作者调成 10/3、随后又被 M4 的评估集
 量回了 5/2（均值 0.9347 vs 0.9313，详见 ``docs/STATUS.md`` §0.4）——
 **这就是 M4 存在的意义：调参不再靠感觉**。
 ⚠️ ``config.py`` 里 ``RagConfig`` 的字段默认值**也要一起改**（本文件检查的是
@@ -132,6 +132,7 @@ import importlib
 import math
 import os
 import sys
+import typing
 import threading
 from pathlib import Path
 
@@ -163,7 +164,7 @@ EXPECTED_RAG = {
     "parent_chunk_size": 1200,
     "child_chunk_size": 300,
     "chunk_overlap": 50,
-    # 2026-09-22：作者一度调成 retrieval_k=10 / candidate_m=3，M4 的评估集量过之后**回退到 5/2**
+    #：作者一度调成 retrieval_k=10 / candidate_m=3，M4 的评估集量过之后**回退到 5/2**
     # （四指标均值 0.9347 → 0.9313：recall 涨了，但 precision 与 faithfulness 掉了，
     # 代价是多喂一块父块）。A/B 证据在 docs/STATUS.md §0.4，数据集按旋钮命名、可重跑。
     "retrieval_k": 5,
@@ -1929,7 +1930,7 @@ def _() -> str:
 # _RecordingReranker / _parented_store / _gpu_invisible 都定义在**文件顶部**：
 # @check 在定义时就立即执行，后文定义的帮助函数前文的检查看不到（见顶部注释）。
 
-@check("重排适配器：两个本地适配器都在 import 前关联网，且都真的读 config.device/use_f16")
+@check("两个本地适配器：import 前关联网，且设备/精度都从配置读（嵌入 use_f16、重排 rerank_use_f16）")
 def _() -> str:
     seen = []
     for name in ("embedder_bge_m3.py", "reranker_bge.py"):
@@ -1960,14 +1961,17 @@ def _() -> str:
                 f"第 {importer + 1} 行）—— ST 读的是 import 期的环境变量,放后面等于没设"
             )
         # 设备与精度必须**从配置读**,不能在适配器里写死 ——
-        # 否则 yaml 改成 cuda/true 也不会有任何效果,而这一点从代码上看不出来
-        for key in ("config.device", "config.use_f16"):
+        # 否则 yaml 改成 cuda/true 也不会有任何效果,而这一点从代码上看不出来。
+ # 精度**分开**:嵌入读 use_f16、重排读 rerank_use_f16（拆的,
+        # 理由见 EmbeddingConfig 的注释:两者收益/精度风险不同,共用一个开关就拧不动)
+        wanted = ("config.device", "config.rerank_use_f16" if name.startswith("reranker") else "config.use_f16")
+        for key in wanted:
             if key not in source:
                 raise AssertionError(
                     f"{name} 没读 {key} —— 配置里改了设备/精度它不会听"
                 )
         seen.append(f"{name}({setter + 1}<{importer + 1})")
-    return "、".join(seen) + "；两个适配器的 device/use_f16 都来自配置"
+    return "、".join(seen) + "；嵌入读 use_f16、重排读 rerank_use_f16、设备读 device"
 
 
 @check("重排适配器：真模型给相关句的分显著高于无关句（bge-reranker-v2-m3，慢）")
@@ -2376,7 +2380,7 @@ def _() -> str:
     而是在跑到 A 的时候抛 ``NameError`` —— 报的是那个帮助函数的名字，
     看着像它写错了，不像顺序问题。
 
-    真实事故（2026-09-22）：CLI 那条 rag 检查用了 M3.9 一节才定义的 ``_RecordingReranker``，
+    真实事故：CLI 那条 rag 检查用了 M3.9 一节才定义的 ``_RecordingReranker``，
     整条红成 ``NameError``；而把同一段逻辑单独抽出来跑却完全正常，很容易白查半天。
     """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
@@ -2491,6 +2495,141 @@ def _() -> str:
     if not llm.prompts or text not in llm.prompts[0]:
         raise AssertionError("喂给模型的提示词里没有检索到的正文,兜底链路没接上")
     return f"FAQ 未命中 → 知识库通道答,{len(result.citations)} 条引用"
+
+
+# ── 读一致性与精度开关的接线────────────────────────────────────
+@check("读一致性：search 走配置档，其余读（指纹/写后回查/全量导出）固定 strong")
+def _() -> str:
+    """实测背景（本机 3927 块，各 30 次采样）：同一份数据、同一个 FLAT 索引，
+    ``strong`` 中位 **399ms**、``bounded`` 中位 **2ms** —— 200×。那 400ms 是等"保证时间戳"
+    对齐的同步往返，不是计算（与 k、与取哪些字段都无关）。
+
+    所以分工必须钉住：**热路径（search）可配**，**变更检测与写后回查固定 strong**
+    —— 后者用 bounded 会拿旧状态判"语料没变"（新入库的文档一直检索不到，静默错误），
+    或把刚写完的块数数少（前端卡片骗人）。两个常量合成一个就等于把这条分工丢了。
+    """
+    from project_rag.adapters.milvus_store import MilvusVectorStore
+    from project_rag.config import MilvusConfig
+    from project_rag.domain.models import Chunk, Embedding
+
+    class SpyClient:
+        """只记录传下去的 consistency_level，不做任何真调用。"""
+
+        def __init__(self) -> None:
+            self.seen: list[tuple[str, str | None]] = []
+
+        def has_collection(self, name: str) -> bool:
+            return True
+
+        def search(self, **kw):  # noqa: ANN003, ANN201
+            self.seen.append(("search", kw.get("consistency_level")))
+            return [[]]  # 空命中：不构造 RetrievedChunk，省掉造夹具
+
+        def describe_collection(self, name: str) -> dict:
+            """_output_fields() 会问"集合有哪些列" —— 给一份够用的列清单。"""
+            names = [
+                "chunk_id",
+                "text",
+                "dense_vector",
+                "source",
+                "doc_id",
+                "parent_id",
+                "parent_content",
+                "page",
+            ]
+            return {"fields": [{"name": item} for item in names]}
+
+        def query(self, **kw):  # noqa: ANN003, ANN201
+            self.seen.append(("query", kw.get("consistency_level")))
+            return [{"count(*)": 0}] if "count(*)" in (kw.get("output_fields") or []) else []
+
+    def spy_for(
+        level: typing.Literal["bounded", "eventually", "strong"],
+    ) -> tuple[SpyClient, MilvusVectorStore]:
+        """造一个「客户端是桩」的 store。
+
+        **必须在构造期就把 `MilvusClient` 换成桩**：`__init__` 会真连一次 Milvus，而这条检查
+        属于 `--set ci`（零容器）—— 容器没起时它会以 `Fail connecting to server on 127.0.0.1:10086`
+        的样子假红（看着像代码坏了，其实只是没起中间件）。只替换客户端这一层，
+        `__init__` 里那行「配置档 → consistency 常量」的映射照常执行，接线仍然被验到。
+        """
+        import project_rag.adapters.milvus_store as milvus_store
+
+        spy = SpyClient()
+        original = milvus_store.MilvusClient
+        milvus_store.MilvusClient = lambda **kw: spy  # type: ignore[assignment]
+        try:
+            store = MilvusVectorStore(MilvusConfig(read_consistency=level))
+        finally:
+            milvus_store.MilvusClient = original
+        return spy, store
+
+    vector = Embedding(dense=tuple([0.0] * 4))
+    three: tuple[tuple[typing.Literal["bounded", "eventually", "strong"], str], ...] = (
+        ("bounded", "Bounded"),
+        ("strong", "Strong"),
+        ("eventually", "Eventually"),
+    )
+    for level, want in three:
+        spy, store = spy_for(level)
+        store.search(vector, k=3)
+        got = spy.seen[-1][1]
+        if got != want:
+            raise AssertionError(f"read_consistency={level!r} 时 search 应传 {want!r}，实际 {got!r}")
+    spy, store = spy_for("bounded")
+    store._count()
+    store.load_all()
+    store.fingerprint()
+    wrong = [item for item in spy.seen if item[1] != "Strong"]
+    if wrong:
+        raise AssertionError(
+            f"这些读不该跟着 search 一起放松：{wrong} —— 指纹用 bounded 会让新入库的文档"
+            "一直检索不到（静默），写后回查会数少块数"
+        )
+    return "search 随配置（bounded/strong/eventually 三档都验过）；指纹 / 回查 / 导出固定 Strong"
+
+
+@check("重排半精度：rerank_use_f16 与嵌入的 use_f16 **分开**，且只在 CUDA 上生效")
+def _() -> str:
+    """为什么分开：实测（受控两份权重）重排 2 条 1142 字父块 fp32 98ms → fp16 31ms（3.2×），
+    嵌入 8 条 22.5 → 9.2ms（2.4×）—— 收益不同、精度风险不同，用一个开关绑在一起就拧不动。
+
+    这里用一个假的 ``CrossEncoder`` 记录"有没有调 half()"，所以**不需要模型、不需要 GPU**：
+    真去加载模型的话，这条检查在没有 4.4G 模型的机器上只能 SKIP（等于没检查）。
+    """
+    import project_rag.adapters.reranker_bge as module
+    from project_rag.config import EmbeddingConfig
+
+    class FakeCrossEncoder:
+        instances: list["FakeCrossEncoder"] = []
+
+        def __init__(self, path: str, device: str = "cpu") -> None:
+            self.path = path
+            self.device = device
+            self.halved = False
+            FakeCrossEncoder.instances.append(self)
+
+        def half(self) -> None:  # noqa: D102
+            self.halved = True
+
+    original = module.CrossEncoder
+    module.CrossEncoder = FakeCrossEncoder
+    try:
+        cases = (
+            ({"device": "cuda", "use_f16": True, "rerank_use_f16": True}, True, "cuda + 重排开关开"),
+            ({"device": "cuda", "use_f16": True, "rerank_use_f16": False}, False, "cuda + 重排开关关"),
+            ({"device": "cpu", "use_f16": True, "rerank_use_f16": True}, False, "cpu（fp16 更慢，不许开）"),
+            ({"device": "cuda", "use_f16": False, "rerank_use_f16": True}, True, "只看重排自己的开关"),
+        )
+        for overrides, want_half, why in cases:
+            FakeCrossEncoder.instances.clear()
+            module.BGEReranker(EmbeddingConfig(**overrides))
+            got = FakeCrossEncoder.instances[-1].halved
+            if got != want_half:
+                raise AssertionError(f"{why}：期望 half()={'调' if want_half else '不调'}，实际 {'调' if got else '不调'}")
+    finally:
+        module.CrossEncoder = original
+    return "4 种组合都验过：重排只看 rerank_use_f16，且仅 CUDA 生效"
 
 def main() -> int:
     return report("M3 向量知识库 + RAG 验收")

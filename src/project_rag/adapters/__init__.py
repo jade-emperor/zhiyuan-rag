@@ -4,7 +4,7 @@
 #   * **llm_deepseek** —— 它拉的是 langchain_openai + langchain_deepseek,实测
 #     `import project_rag.adapters.llm_deepseek` = **3510ms**。而 import 任何一个子模块都会先跑
 #     这个 `__init__`,所以它只要留在名单里,`--help`(实测 4.5s)和每一次
-#     `from project_rag.adapters import …` 都得替它付这 3.5 秒 —— 2026-09-30 挪出去。
+# `from project_rag.adapters import …` 都得替它付这 3.5 秒 —— 挪出去。
 from .bm25_index import BM25KeywordIndex
 from .cache_redis import RedisCache
 from .chunker_recursive import ChineseRecursiveChunker

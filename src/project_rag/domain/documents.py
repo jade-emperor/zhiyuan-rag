@@ -3,7 +3,7 @@
 
 **为什么需要它**:向量库里只有 chunk 级的 ``doc_id``(内容哈希),回答不了
 "库里有哪些文件、各多少块、什么时候传的、处理成功没有" —— 而那正是前端要显示的东西
-(参考图里的卡片:文件名 / 15 chunks / Processed / 2026-2-8)。
+(参考图里的卡片:文件名 / 15 chunks / Processed / &lt;时间&gt;)。
 
 **为什么时间用字符串**:``created_at`` 是给人看的登记信息,不是用来算间隔的
 (算间隔的地方用 ``time.perf_counter()``,见 observability/latency.py)。

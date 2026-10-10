@@ -1,6 +1,6 @@
 """验收脚本共用的假件(端口的进程内替身)。
 
-**为什么抽出来**(2026-09-29):`_FakeLLM` 在 5 份脚本里各写一遍、`_FakeVectorStore` 5 份、
+**为什么抽出来**:`_FakeLLM` 在 5 份脚本里各写一遍、`_FakeVectorStore` 5 份、
 `_FakeFaqStore` 4 份、`_FakeMatcher` 4 份…… **合计 530 行**,抽成一份约 200 行。
 而且它们**已经开始漂**:同一个 `_FakeKeywordIndex` 有 4 个版本(有的记调用、有的不记),
 同一个 `_FakeConversationStore` 有 3 个版本。漂了就意味着"同一个假件在不同的检查里行为不同",

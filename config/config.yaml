@@ -78,8 +78,10 @@ redis:
 
 faq:
   # 口径 = top1 原始分 / 该条问自己的分
-  # 0.85 = 只答近乎一字不差的问题;改写问法交给 RAG 通道
-  threshold: 0.85
+  # 只答近乎一字不差的问题;改写问法交给 RAG 通道。
+  # ⚠️ 这是**部署旋钮**:代码默认值仍是 0.85(check_m2_faq / check_m5_qa 钉着),
+  #    这里改成多少只由 `check_p0_4_ab` 的「实测可用区间」罩着(本机实测 (0.206, 1.000])。
+  threshold: 0.95
   table: faq
 
 cache:
@@ -101,6 +103,19 @@ milvus:
   # 只准填已存在的库。Milvus 不会自动建库,当前环境里只有 default
   database: default
   collection: rag_chunks
+  # 读一致性档（只作用于**稠密检索那一路**；指纹与写后回查总数固定用 strong，见适配器注释）。
+  # 实测（3927 块，各 30 次采样）：strong 中位 399ms、bounded 中位 2ms —— **200×**。
+  # 同一份数据同一个索引只换这一档。那 400ms 是等"保证时间戳"对齐的同步往返，不是计算
+  # （与 k、取哪些字段都无关：k=1 取大字段同样 2ms）。
+  # 代价：刚写完的一小段窗口（亚秒级）内 search 可能看不到新块。灌完立刻可见另有兜底 ——
+  # ingest 每批写完都会做一次 strong 的 _count() 回查，那次强读把可见性推上去。
+  # ⚠️ **默认留 strong，别顺手改成 bounded**：实测把 bounded 打开之后，
+  # `check_m3_rag` 的「建集合 → upsert → 按 doc_id 删 → search」那条当场变红 ——
+  # 删完立刻搜，看到的还是删除前的三块。也就是说那 400ms 是**读己之写**的价格：
+  # 「灌完/删完立刻能搜到」这件事，bounded 给不了保证（亚秒级窗口）。
+  # 要用它就得同时改掉那条检查的语义（改成"等一小段"）或者把可见性单独推一次，
+  # 两件事都不该顺手做掉 —— 所以这里保持 strong，把选择留给明确要它的部署。
+  read_consistency: strong
 
 embedding:
   # 目录相对项目根;写绝对路径也认
@@ -108,7 +123,15 @@ embedding:
   # 重排模型,现在只把位置定下来
   rerank_model_dir: models/bge-reranker-v2-m3
   device: cuda
-  use_f16: false
+  use_f16: true
+ # 重排模型的半精度。**与嵌入分开**：实测（新代码 + 显式两份权重）
+  #   权重 dtype 确认：fp32 配置 float32 / fp16 配置 float16（不是空操作）
+  #   重排 2 条 1142 字真实父块：fp32 98ms → fp16 31ms（**3.2×**）
+  #   嵌入（同一次受控测量）：8 条 22.5 → 9.2ms（2.43×）、32 条 49.8 → 20.0ms（2.49×）；
+  #   单条查询两者一样（14.3 vs 14.7ms，固定开销占满）
+  # 精度影响要用评估集验：`data/eval/eval_set_bagu_pdf_v1.json` 那 50 条跑前后对比
+  # （先跑一次 fp32 基线，再开这个开关跑一次，比 mean_of_four）。
+  rerank_use_f16: true
   # 嵌入实现:bge_m3(默认,真语义)| hashing(演示用,字符 bigram 哈希,**非语义**)。
   #   为什么留 hashing 这一档:让"没有 4.4G 模型"的机器也能跑通 ingest→search→界面
   #   (见 demo/README.md 的 5 分钟演示)。它**不是**语义模型,只按字面相似度检索,
@@ -124,7 +147,7 @@ rag:
   chunk_overlap: 50
   # ingest 的嵌入批大小:CPU 上批量越大越划算,显存小的机器反而要调小。
   ingest_batch_size: 64
-  # 2026-09-22 用评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
+  # 用评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
   # 10/3 把 recall 从 0.9654 抬到 0.9844,但 precision 0.9732→0.9595、
   # faithfulness 0.9680→0.9491,四项均值 0.9347→0.9313 —— 花更多上下文买到更差的忠实度,
   # 所以**回到 5/2**。证据留档:docs/STATUS.md §0.5 与 data/README.md。

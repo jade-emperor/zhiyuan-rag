@@ -9,7 +9,7 @@
 断言），而静态契约的老毛病是它可能永远为真。这里每条都真的把代码改坏一次，再看那一行变没变红
 （"没红过的检查 = 没有检查"，`STATUS.md` §5 第 16 条）。
 
-九条各自的坏法，共同点是**都不会报错**：
+十三条各自的坏法，共同点是**都不会报错**：
 
 * RT-1 `capabilities` 把 p95 的门槛报成 5（前端会解释成"n≥5 就该有 p95"）;
 * RT-2 窗口白名单只报 `24h`（后端有五个窗口,界面只给一个）;
@@ -19,7 +19,11 @@
 * RT-6 前端把 `null` 画成 `0.0 ms`（同上,只是搬到了界面上）;
 * RT-7 前端写死窗口列表（后端加窗口界面不知道）;
 * RT-8 最慢榜不标冷启动（"用户真的等了很久"那条被抹平）;
-* RT-9 空窗口不给话术（空白表格被读成"坏了"）。
+* RT-9 空窗口不给话术（空白表格被读成"坏了"）;
+* RT-10 守卫不补拉能力（直接落在 `#/metrics` → 红字,点「刷新」也救不回来）;
+* RT-11 store 不补拉（后端恢复后这一页永远停在"还没读到 capabilities"）;
+* RT-12 能力没读到时把"连不上"说成"还没读到 capabilities"（两件事混成一件）;
+* RT-13 空白名单冒充"不支持的类型"（用户被指到"后端不支持"这个错方向）。
 """
 
 from __future__ import annotations
@@ -35,6 +39,9 @@ from _harness import patched_source, restore_stale_patches
 ROOT = Path(__file__).resolve().parents[2]
 API_APP = ROOT / "src" / "project_rag" / "api" / "app.py"
 VIEW = ROOT / "web" / "src" / "views" / "MetricsView.vue"
+ROUTER = ROOT / "web" / "src" / "router.ts"
+METRICS_STORE = ROOT / "web" / "src" / "stores" / "metrics.ts"
+UPLOAD_PANEL = ROOT / "web" / "src" / "components" / "UploadPanel.vue"
 SCRIPT = "check_m7_3_metrics.py"
 
 
@@ -117,6 +124,49 @@ CASES: tuple[Case, ...] = (
         old="      这个窗口里还没有请求 —— 去「对话」页问几个问题,回来刷新就有了。",
         new="      无数据。",
         needle="窗口选项来自 capabilities",
+    ),
+    Case(
+        title="RT-10  守卫不补拉能力（直接落在 #/metrics → 红字,「刷新」也救不回来）",
+        target=ROUTER,
+        old="  if (capabilitiesState().data === null) await loadCapabilities()\n",
+        new="",
+        needle="能力自述在守卫里补拉",
+    ),
+    Case(
+        title="RT-11  store 不补拉（后端恢复后这一页永远停在「还没读到 capabilities」）",
+        target=METRICS_STORE,
+        old=(
+            "  if (state.window === '') {\n"
+            "    // 「刷新」必须是能自救的:缺窗口名只有一种原因 —— 能力还没读到(守卫那条枪打空了,\n"
+            "    // 或后端当时正在重启)。不在这里补拉的话,后端回来了这一页也永远停在红字上。\n"
+            "    await loadCapabilities()\n"
+            "    adoptMetricsCapabilities()\n"
+            "  }\n"
+        ),
+        new="",
+        needle="能力自述在守卫里补拉",
+    ),
+    Case(
+        title="RT-12  能力没读到时把「连不上」说成「还没读到 capabilities」",
+        target=METRICS_STORE,
+        old=(
+            "    // 补拉之后还是没有:这时真正的原因在能力那一侧(连不上后端…),照实转述它,\n"
+            "    // 别用一句\"还没读到 capabilities\"把\"连不上\"盖掉 —— 两件事的话术不一样。\n"
+            "    state.error = capabilitiesState().error || '还没读到 capabilities,不知道该请求哪个窗口'\n"
+        ),
+        new="    state.error = '还没读到 capabilities,不知道该请求哪个窗口'\n",
+        needle="能力自述在守卫里补拉",
+    ),
+    Case(
+        title="RT-13  空白名单冒充「不支持的类型」（用户被指去查「后端不支持」）",
+        target=UPLOAD_PANEL,
+        old=(
+            "  if (suffixes.value.length === 0) {\n"
+            "    return '还没读到后端能力(capabilities)—— 先看左上角「后端」是否连通,再重进这一页'\n"
+            "  }\n"
+        ),
+        new="",
+        needle="白名单还没读到时不冒充",
     ),
 )
 

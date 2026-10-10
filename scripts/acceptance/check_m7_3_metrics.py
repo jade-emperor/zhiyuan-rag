@@ -28,7 +28,8 @@
         # 报表本身的口径由 check_m5_9_metrics.py 钉着（10 条），这里只钉"报给前端的那些数"
 
 前端部分是静态契约（读源码）：`—` 不折算成 0、比率带分子分母、最慢榜标冷启动、
-空窗口有话术、分段保持后端顺序。不需要容器 / 模型 / 网络。
+空窗口有话术、分段保持后端顺序、**能力自述的取数时机**（守卫补拉 / 「刷新」自救 /
+空白名单的话术）。不需要容器 / 模型 / 网络。
 """
 
 from __future__ import annotations
@@ -184,6 +185,56 @@ def _() -> str:
     assert not re.search(r"sort\(.*p95", view), "按 p95 重排了分段 —— 分段顺序是链路顺序,有意义"
     return "窗口/默认窗口都来自 capabilities;空窗口有话术;分段不重排"
 
+
+@check("能力自述在守卫里补拉，「刷新」也能自救（直接落在 #/metrics 不是死局）")
+def _() -> str:
+    """能力自述的取数时机 —— 这是用户报过的一个真事故(见 `docs/STATUS.md` 事故表)。
+
+    事故形态:capabilities 原来只由「登录页」与「对话页」挂载时拉一次,于是"直接落在
+    `#/metrics`"(在这一页按 F5 / 书签 / 上次关在这一页)时,看板读到一个**空 store**,
+    只回一句「还没读到 capabilities,不知道该请求哪个窗口」,而**点「刷新」读的还是同一个
+    空 store** —— 后端明明是好的,这一页却自己把自己锁死了。两处都要有:
+
+    1. 路由守卫:业务页入场前补拉(**必须 await**:不 await 的话视图挂载时还是空的;
+       且必须在"已登录"之后 —— 登录页自己会拉);
+    2. store:窗口名缺失时补拉一次并**转述真正的原因**(连不上后端…),不拿"还没读到
+       capabilities"把"连不上"盖掉 —— 两件事的话术不一样。
+    """
+    router = _strip_comments(_read("router.ts"))
+    store = _strip_comments(_read("stores/metrics.ts"))
+
+    assert "beforeEach" in router, "路由守卫不见了?"
+    guard = router[router.index("beforeEach") :]
+    assert re.search(
+        r"if \(capabilitiesState\(\)\.data === null\) await loadCapabilities\(\)", guard
+    ), "守卫里没有 await 补拉 capabilities(不条件化的话每次导航都白打一枪)"
+    assert guard.index("auth.user === null") < guard.index("await loadCapabilities()"), (
+        "补拉放在了登录判断之前 —— 还没登录也会白打一枪(登录页自己会拉)"
+    )
+    assert "capabilitiesState().error" in store, (
+        "窗口名缺失时没有转述能力那一侧的真实错误(连不上后端会被说成「还没读到 capabilities」)"
+    )
+    retry = store[store.index("export async function loadMetrics") :]
+    assert "await loadCapabilities()" in retry[: retry.index("state.loading = true")], (
+        "「刷新」不会重拉能力 —— 后端恢复后这一页仍然是死局"
+    )
+    return "守卫(已登录之后)条件化 await 补拉;store 在窗口名缺失时补拉并转述真错"
+
+
+@check("白名单还没读到时不冒充「不支持的类型」（两件事的话术不能混）")
+def _() -> str:
+    """空白的 `suffixes` = "还没读到 capabilities",不是"后端不认这个后缀"。
+
+    以前混成一句话,用户拖一份 `.docx` 上去看到的是「不支持的类型 .docx —— 这个后端
+    只吃 」(后面空着)—— 被指到"后端不支持"这个错方向去查。
+    """
+    panel = _strip_comments(_read("components/UploadPanel.vue"))
+    assert "suffixes.value.length === 0" in panel, "空白名单没有单独分支"
+    assert panel.index("suffixes.value.length === 0") < panel.index("不支持的类型"), (
+        "先判了后缀再看白名单是否为空 —— 空的时候会说成「不支持的类型 …」"
+    )
+    assert "还没读到后端能力" in panel, "空白名单的话术没说是「没读到能力」"
+    return "空白名单单独一支:说「还没读到后端能力」并指路左上角「后端」;非空才判后缀"
 
 
 @check("报表按窗口取数：1h 与 24h 传给账本的起点真的差 23 小时")

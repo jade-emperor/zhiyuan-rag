@@ -588,7 +588,7 @@ def _() -> str:
     #   /auth/logout       幂等退出(没令牌也给 200 + revoked=false),令牌本身在头里
     #   /api/v1/stream     WebSocket:**浏览器不能给 WS 设头**,令牌只能走 ?token=(路由里手验)
     #   /docs /redoc /openapi.json  FastAPI 自带的接口文档:暴露的是**形状**不是数据
-    #   / /static          前端产物(旧的调试页 2026-10-07 已删,现在只剩这一份界面)
+    # / /static 前端产物(旧的调试页 已删,现在只剩这一份界面)
     whitelist = {
         "/health",
         "/api/v1/capabilities",

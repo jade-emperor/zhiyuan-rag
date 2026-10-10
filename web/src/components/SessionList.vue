@@ -16,7 +16,7 @@ onMounted(() => {
 })
 
 function stamp(value: string): string {
-  // 后端给的是 "2026-10-06T12:34:56"(本机时间,不带时区):只显示到分钟就够了
+  // 后端给的是 "YYYY-MM-DDThh:mm:ss"(本机时间,不带时区):只显示到分钟就够了
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(

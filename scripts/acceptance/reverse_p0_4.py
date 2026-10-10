@@ -12,7 +12,8 @@
 * RT-1 空 reference 判成命中(整份评估集可能满分);
 * RT-2 覆盖率换成 Jaccard(长 context 被稀释,命中判成不中);
 * RT-3 阈值判定写成 ``>``(正好卡在阈值上的那条漏掉,读数静默偏移);
-* RT-4 **把 FAQ 阈值调到无关问法的分数之上**(看着像"让 FAQ 多命中一些",实际是让无关问题误答);
+* RT-4 **把 FAQ 阈值调到无关问法的分数之下**(看着像"让 FAQ 多命中一些",实际是让无关问题误答;
+  锚点从 config 里**读当前值**,不抄一份 —— 抄了就会在作者调旋钮时静默失效);
 * RT-5 **重排旋钮没接上**(`rerank_input` 收了却永远喂父块 —— 两种喂法读出来一模一样，A/B 直接变成平局，而且不会报错)。
 """
 
@@ -28,6 +29,19 @@ from _harness import patched_source, restore_stale_patches
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = "scripts/tools/ab_retrieval.py"
 CONFIG = "config/config.yaml"
+
+
+def _configured_threshold() -> str:
+    """输入:无。行为:从 `config/config.yaml` 读**当前**的 `faq.threshold` 字面量。输出:文本。
+
+    **锚点不许抄一份期望值**（§5 第 26/50 条）：这里原来写死 `threshold: 0.85`，作者
+ 把部署旋钮改成 0.95 之后，这条反向测试的锚点当场过时 —— 它自己变成了摆设
+    （"锚点在 config 里出现 0 次"），而 `--set ci` 会因此报一条不合格。读当前值就不会再漂。
+    """
+    for line in (ROOT / CONFIG).read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("threshold:"):
+            return line.strip().split(":", 1)[1].strip()
+    raise RuntimeError(f"{CONFIG} 里读不到 faq.threshold —— 反向测试的锚点没了依托")
 
 # 每条用例自带目标文件:改的是工具还是配置,只有用例自己知道
 CASES: list[tuple[str, str, str, str, str, str]] = [
@@ -56,10 +70,10 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
         "check_p0_4_ab.py",
     ),
     (
-        "RT-4  把 FAQ 阈值调到无关问法之上（看着像「多命中一些」，实际是让无关问题误答）",
+        "RT-4  把 FAQ 阈值调到无关问法的分数之下（看着像「让 FAQ 多命中一些」，实际是让无关问题误答）",
         CONFIG,
-        "threshold: 0.85",
-        "threshold: 0.20",
+        f"threshold: {_configured_threshold()}",
+        "threshold: 0.0",
         "FAQ 阈值：实测可用区间",
         "check_p0_4_ab.py",
     ),

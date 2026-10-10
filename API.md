@@ -30,6 +30,8 @@ uv run project-rag-api            # 绑 config.yaml 里的 0.0.0.0:18080（宿�
 | `api.cors_origins` | `["*"]` | 本机全开；**对外必须收紧成具体域名** |
 | `api.warmup` | `true` | 启动时把嵌入 / 重排模型、语料索引、Milvus 连接先建好 |
 | `api.warmup_query` | `装饰器有什么用` | 预热查询；**换语料领域时记得换这一句**，检索不到的预热等于没预热 |
+| `milvus.read_consistency` | `strong` | 稠密检索那一路的读一致性。实测（3927 块，各 30 次采样）`strong` 中位 **399ms**、`bounded` **2ms**（200×，等的是"保证时间戳"对齐，不是计算）。**默认留 strong 是因为那 400ms 买的是"删除/灌完立刻能搜到"** —— 换成 bounded 会让 `check_m3_rag` 的「删完立刻搜」那条变红。要快就改它，代价自己认 |
+| `embedding.use_f16` / `embedding.rerank_use_f16` | `false` / `false` | 两个模型各自的半精度开关（**不共用一个**：收益与精度风险不同）。实测 重排 2 条 1142 字父块 98ms → 31ms（3.2×）、嵌入 8 条 22.5 → 9.2ms（2.4×）；只在 CUDA 上生效。开之前用 `data/eval/eval_set_bagu_pdf_v1.json` 跑前后对比 |
 
 启动顺序是「装日志 → 预热 → 起 uvicorn」，预热**失败不拦启动**（只记 warning，首个请求会自己补做）。
 uvicorn **只起一个 worker**：嵌入 / 重排是进程内单例，多 worker 会各加载一份、内存翻倍。
@@ -64,10 +66,10 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 ## 二、通用约定
 
 - **Base URL**：`http://<host>:<port>`；请求与响应都是 JSON（UTF-8）。
-- **路径**：业务接口**一律在 `/api/v1` 下**（2026-10-06 从 `/api/*` 统一迁完，**没有留别名** ——
+- **路径**：业务接口**一律在 `/api/v1` 下**（从 `/api/*` 统一迁完，**没有留别名** ——
   两套路径就是两个真值来源）。根上只有三个：`/health`（探活）、`/`（307 跳前端 app）、
   `/static`（静态资源：前端产物在 `/static/app/`）。**旧的 101 行内置调试页
-  `/static/index.html` 2026-10-07 已删**（界面只留一份，见 `docs/STATUS.md` §7.3），
+  `/static/index.html` 已删**（界面只留一份，见 `docs/STATUS.md` §7.3），
   现在访问它得到 **404**。
   这条有契约钉着（`check_m5_api` 的「命名空间」那条 + `reverse_m5_api.py`）。
 - **无状态**：服务端不发 cookie；会话靠调用方保存 `session_id`，**令牌**靠调用方保存并每次带上
@@ -230,7 +232,7 @@ ws.onmessage = (event) => {
 # 我名下的会话目录(M7.1 加):标题 = 首问裁到 40 字(后端裁,前端不再截第二次)
 curl -s -H "Authorization: Bearer <令牌>" 'http://127.0.0.1:8080/api/v1/sessions?limit=50'
 # {"sessions": [{"session_id": "b7f0…", "title": "每周加班最多多长时间",
-#                "rounds": 3, "created_at": "2026-10-06T09:00:00", "updated_at": "2026-10-06T09:30:00"}]}
+#                "rounds": 3, "created_at": "<ISO 时间>", "updated_at": "<ISO 时间>"}]}
 #   ↑ **只列有轮次的会话**(前端"首次提问时才建会话",刚建没问过的不占地方);
 #     按最近活动倒序;无认证模式给空表(没有账号时"这是谁的会话"没有答案);
 #     认证开着却没装配会话目录 → 503(不拿空表冒充"你还没有会话")
@@ -385,7 +387,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 | `window_s` | `60` | 窗口秒数 |
 | `query` / `upload` / `login` | `60` / `10` / `10` | 每档上限;**`<= 0` = 关掉这一档**(不是"限 0 次") |
 
-**超限之后回什么,按路径分三种**(2026-10-06 作者定:**问答要兜底话术,不要错误码**):
+**超限之后回什么,按路径分三种**（作者定:**问答要兜底话术,不要错误码**):
 
 | 路径 | 超限回什么 | 为什么 |
 |---|---|---|
@@ -481,7 +483,7 @@ grep -h " | latency " logs/app.log | tail -5
   本文档若与它冲突，以 `/openapi.json` 为准并回来改本文档。
 - 兼容性承诺：**只增不改** —— 新增字段给默认值；删字段 / 改类型 / 改路由属于破坏性变更，要同步改
   `scripts/acceptance/check_m5_api.py`（那份脚本是端点契约的唯一权威）。
-- **路由前缀**：业务接口一律 `/api/v1`。2026-10-06 从 `/api/*` 一次性迁完并**删掉了老路径**
+- **路由前缀**：业务接口一律 `/api/v1`。从 `/api/*` 一次性迁完并**删掉了老路径**
   （那时还没有任何真实客户端，是唯一不用背兼容包袱的窗口）。映射：`/api/query`→`/api/v1/query`、
   `/api/stream`→`/api/v1/stream`、`/api/create_session`→`/api/v1/create_session`、
   `/api/history/{id}`→`/api/v1/history/{id}`、`/api/sources`→`/api/v1/sources`、

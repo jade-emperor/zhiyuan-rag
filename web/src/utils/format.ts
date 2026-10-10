@@ -17,7 +17,7 @@ export function humanBytes(value: number): string {
   return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[unit]}`
 }
 
-/** 输入:后端给的时间(`2026-10-06T10:00:00`,本机时间、不带时区)。行为:压成一行。输出:字符串。 */
+/** 输入:后端给的时间(`YYYY-MM-DDThh:mm:ss`,本机时间、不带时区)。行为:压成一行。输出:字符串。 */
 export function humanTime(iso: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso

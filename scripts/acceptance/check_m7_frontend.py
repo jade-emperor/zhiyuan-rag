@@ -9,7 +9,7 @@
 是文档里自己标注的「内置调试页」—— 没有会话列表、没有角色分流、没有参数面板；
 而参数面板要的那些旋钮（融合方式 / 两路权重 / 重排开关 / 上下文条数）**在 HTTP 上根本不存在**
 （`QueryRequest` 只有 query/session_id/source_filter/k）。M7.1 把这条链补成
-「前端每个控件 → 一个接口字段 → 一次可断言的行为」。那份旧页面后来被删掉（2026-10-07）：
+「前端每个控件 → 一个接口字段 → 一次可断言的行为」。那份旧页面后来被删掉：
 它守着的那两条性质搬到了新前端上 —— 「页面连的是服务端那条 WS」归**前端清单↔后端路由表**
 那条，「令牌走 `?token=`」归 WebSocket 那条（见 `reverse_m7_frontend` 的 RT-11 / RT-12）。
 
@@ -24,7 +24,7 @@
         -> {sessions: [{session_id, title, rounds, created_at, updated_at}]}   # 按账号过滤
     GET  /          -> 307 -> /static/app/
     GET  /static/app/  -> 前端产物（index.html 引用 ./assets/…）
-    GET  /static/index.html -> **404**（那份 101 行的内置调试页 2026-10-07 已删，界面只留一份）
+    GET /static/index.html -> **404**（那份 101 行的内置调试页 已删，界面只留一份）
 
 **五条口径**（每条都对着一个静默坏法）::
 
@@ -196,11 +196,11 @@ class _FakeCatalog:
 
         self.rows = {
             "u-admin": [
-                SessionSummary("s-admin-1", "管理员的第一段", 3, "2026-10-06T09:00:00", "2026-10-06T09:30:00"),
-                SessionSummary("s-admin-2", " 第二段\n带换行 ", 1, "2026-10-05T09:00:00", "2026-10-05T09:05:00"),
+                SessionSummary("s-admin-1", "管理员的第一段", 3, "<ISO 时间>", "<ISO 时间>"),
+                SessionSummary("s-admin-2", " 第二段\n带换行 ", 1, "<ISO 时间>", "<ISO 时间>"),
             ],
             "u-emp": [
-                SessionSummary("s-emp-1", "员工的第一段", 7, "2026-10-04T09:00:00", "2026-10-04T10:00:00"),
+                SessionSummary("s-emp-1", "员工的第一段", 7, "<ISO 时间>", "<ISO 时间>"),
             ],
         }
         self.calls: list[tuple[str, int]] = []
@@ -369,7 +369,7 @@ def _() -> str:
         raise AssertionError("endpoints.ts 里没有 `export const API_PREFIX = '/api/v1'`")
     # `endpoints.ts` **自己**也要扫,只放过定义前缀的那一行:
     # 否则 `export const STREAM_PATH = '/api/stream'` 这种"绕开 API_PREFIX 的老路径"
-    # 正好落在这条检查的盲区里(2026-10-07 补,见 reverse_m7_frontend 的 RT-11)。
+    # 正好落在这条检查的盲区里（补,见 reverse_m7_frontend 的 RT-11)。
     declaration = "export const API_PREFIX = '/api/v1'"
     stray = [
         name
@@ -709,7 +709,7 @@ def _() -> str:
     return f"空白压平 + 裁到 {TITLE_CHARS} 字加省略号"
 
 
-@check("根路径跳前端 app；static/ 下只剩这一份界面（旧调试页 2026-10-07 已删）")
+@check("根路径跳前端 app；static/ 下只剩这一份界面（旧调试页 已删）")
 def _() -> str:
     client = _World().client()
     root = client.get("/", follow_redirects=False)

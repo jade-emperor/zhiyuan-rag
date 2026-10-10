@@ -32,7 +32,7 @@
 命令：``faq -q/--question`` 必填（缺了退出码 2）。刻意不复用 ``-p/--prompt``：
 chat 是「把这句话发给模型」，faq 是「拿这个问题去检索」。
 
-> 命令名 2026-09-23（M5.1）从 `ask` 改成 **`faq`**：合流入口叫 `qa` 之后，
+> 命令名 （M5.1）从 `ask` 改成 **`faq`**：合流入口叫 `qa` 之后，
 > `ask` 那种「我要提问」的口气听起来像总入口，喧宾夺主；`faq` / `rag` 成对，
 > 都点明这条命令走的是哪条通道。**行为一个字没变**（本脚本只改了命令名）。
 
@@ -45,7 +45,7 @@ chat 是「把这句话发给模型」，faq 是「拿这个问题去检索」�
               truncated: bool = False)      # M5.3a:模型没说完时为 True
 
 ``score`` 的口径归适配器，用例层只认 ``score >= threshold``。当前 ``matcher_bm25.py``
-给的是 **top1 原始分 ÷「该条问题问自己」的原始分**（2026-09-18 换的口径，此前是
+给的是 **top1 原始分 ÷「该条问题问自己」的原始分**（换的口径，此前是
 ``(top-second)/top``）。为什么换：旧 margin 口径度量的是**区分度**而不是相似度，分数随
 **语料冗余度**衰减——库里只要有一条近似重复问法，完全一致的问题也会掉到 0.14；而且
 条目越多分数越低，阈值被迫随语料规模漂移，标不出来（实测 N=3 时真命中 0.411 →
@@ -96,7 +96,7 @@ N=50 时 0.335，同期无关问法最高 0.481，阈值区间是空集）。新
 分层（静态扫描，不靠自觉）：``application/`` 只准依赖 标准库 + ``project_rag.domain`` /
 ``project_rag.ports`` / ``project_rag.observability``；``pymysql`` / ``redis`` / ``jieba`` /
 ``rank_bm25`` 只准出现在 ``adapters/``。（**不要求**适配器显式继承端口：Protocol 就是结构化子类型，
-符合性由 pyright 断 —— 2026-09-30 删掉了那条 AST 检查。）
+符合性由 pyright 断 —— 删掉了那条 AST 检查。）
 
 缓存必须测**短路**（第二次不再查库、不再匹配），只测「写进去了」等于没测。
 """
@@ -471,27 +471,27 @@ def _() -> str:
         "reranker_factory",
         # M5.2 起:会话历史的工厂。字段名同样是契约 —— 加字段就得同步这里。
         "conversation_store_factory",
-        # P0-2(2026-10-06)起:延迟账本落表。默认 None = 不落表(只记日志),
+        # P0-2起:延迟账本落表。默认 None = 不落表(只记日志),
         # 连不上 MySQL 时 `attach_ledger` 会退到这一档 —— 所以它**必须**允许为 None。
         "ledger_store_factory",
-        # P0-3a(2026-10-06)起:认证与授权(用户/令牌/会话归属)。默认 None = **无认证模式**
+        # P0-3a起:认证与授权(用户/令牌/会话归属)。默认 None = **无认证模式**
         # —— 只可能来自显式注入(验收/本机),`build_real_deps` 永远接上。
         "auth_store_factory",
-        # P0-3b-2(2026-10-06)起:文档登记表。默认 None = 不接(纯检索路径与老契约用不上)。
+        # P0-3b-2起:文档登记表。默认 None = 不接(纯检索路径与老契约用不上)。
         "document_store_factory",
-        # P0-3b-3(2026-10-06)起:上传入库要用的三样(切分器/装载函数/后缀表)。
+        # P0-3b-3起:上传入库要用的三样(切分器/装载函数/后缀表)。
         # 走工厂而不是让 api/ 直接 import 适配器 —— 分层法律有 AST 检查钉着。
         "chunker_factory",
         "loader_factory",
         "suffixes_factory",
-        # P0-5 之后(2026-10-06)起:集合级运维 —— 列出集合、删掉一个集合。
+        # P0-5 之后起:集合级运维 —— 列出集合、删掉一个集合。
         # Milvus 特有,所以包成两个函数放在组合根;命令层不 import pymilvus。
         "collections_factory",
         "drop_collection_factory",
-        # M7.1(2026-10-06)起:会话目录(前端左侧「我有哪些会话」)。
+        # M7.1起:会话目录(前端左侧「我有哪些会话」)。
         # 与 conversation_store_factory 是**两张不同的表**(归属表 + 对话表),所以是两个工厂。
         "session_catalog_factory",
-        # M7.4(2026-10-06)起:限流计数器(默认 Redis,见 cli/deps.py 的 `_rate_limiter`)。
+        # M7.4起:限流计数器(默认 Redis,见 cli/deps.py 的 `_rate_limiter`)。
         "rate_limiter_factory",
     )
     # M5.8 起:思考档位。它**不是工厂** —— 是个静态标签,唯一用途是让延迟账里能看出
@@ -514,7 +514,7 @@ def _() -> str:
         )
     # 两个静态标量（阈值 / TTL）的默认值是 **default_factory**：构造时才去读配置，
     # 所以这里直接构造一个裸 Deps，验「没注入时确实取自配置」。
-    # 2026-09-30 之前是两个字面量 + 一条"与 config 比对"的检查 —— 同一个值两个真源，
+    # 之前是两个字面量 + 一条"与 config 比对"的检查 —— 同一个值两个真源，
     # 而它防的开销（import config）实测只有 79~179ms，比真正的大头（import adapters = 3.5s）小 40 倍。
     from project_rag.cli.deps import Deps as DepsClass
     from project_rag.config import get_settings

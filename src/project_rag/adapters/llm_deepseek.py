@@ -23,7 +23,7 @@ from project_rag.ports import LLMClient
 
 # 配置里的思考模式 -> provider 的 reasoning_effort。
 # OpenAI 格式下它**同时管开关与强度**:none 关思考,low/high/max 开启并指定强度;
-# 不传 = 服务端默认(开启、high)。实测(2026-09-26,deepseek-flash,同一个问题):
+# 不传 = 服务端默认(开启、high)。实测（deepseek-flash,同一个问题):
 #   不传     -> 64 token 预算全被思考吃掉,一个内容字都没出
 #   off      -> **0 个思考帧**,首个内容字 504ms
 #   low/high -> 仍然先思考(思考帧 64/64,首个思考帧 645/723ms)
@@ -104,11 +104,11 @@ class DeepSeekLLM(LLMClient):
 
         **也不丢 reasoning_content**:思考模型在正文之前先吐一串思考,langchain 把它
         放在 ``chunk.additional_kwargs["reasoning_content"]``(**不在** ``chunk.content`` 里 ——
-        实测 2026-09-26)。它作为 ``reasoning_text`` 交出去,与 ``text`` 分开:上层要靠它数
+        实测）。它作为 ``reasoning_text`` 交出去,与 ``text`` 分开:上层要靠它数
         「这一轮想没想、想了多久」,但答案里一个字都不能有它(见 ``domain.LlmDelta``)。
         一帧同时带思考和正文时按「先思考后正文」发两帧 —— provider 真这么做时顺序也是对的。
 
-        四个实测细节(2026-09-23 / 2026-09-26,deepseek-flash):
+        四个实测细节（/，deepseek-flash):
         ① finish_reason 在 ``chunk.response_metadata`` 里,不在 ``chunk.finish_reason``
            (langchain 的 AIMessageChunk 根本没那个属性);
         ② provider 在带 finish_reason 的那帧**之后**还会再发一个空帧(无内容、无元数据)——

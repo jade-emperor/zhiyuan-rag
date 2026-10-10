@@ -8,7 +8,11 @@
  *   3. 分段表:`total_ms` 的 p95 有值(n=24 ≥ 20),`rerank_ms` 的 p95 是 `—`(n=3 < 20)
  *      —— 而且那一格的 title 说明了门槛;`—` 绝不能被画成 0;
  *   4. 切到 `30d` → 条数变成 25、冷启动 1,最慢榜第一条挂「冷启动」徽章;
- *   5. 0 条 JS 报错 / 0 个失败请求。
+ *   5. **直接落在 `#/metrics`**(在这一页按 F5 / 书签 / 上次关在这一页)也自己把能力读回来
+ *      —— 不经过「对话」页,不能停在「还没读到 capabilities」那句红字上;
+ *   6. **能力那一枪打空了**(后端当时不在)点「刷新」要能自救:先如实说"连不上",
+ *      后端回来说话就恢复,而不是拿着一个空的窗口名一直说"还没读到 capabilities";
+ *   7. 0 条 JS 报错 / 0 个失败请求。
  *
  * 跑法(准备见 docs/frontend.md §7)::
  *
@@ -133,6 +137,65 @@ async function main() {
 
   expect('没有 JS 报错', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || '无')
   expect('没有失败请求', failedRequests.length === 0, failedRequests.slice(0, 2).join(' | ') || '无')
+
+  // ── 直接落在 #/metrics:在可观测页按 F5 也要能用 ──────────────────────────
+  // 这条钉的是用户报过的死局:能力自述以前只由「登录页」与「对话页」挂载时拉一次,
+  // 于是"上次关在这一页 / 书签 / 手输 #/metrics"直接进来时,看板读到一个空 store,
+  // 只回一句「还没读到 capabilities,不知道该请求哪个窗口」—— 而「刷新」读的还是
+  // 同一个空 store,救不回来。修法在路由守卫(业务页入场前补拉),这条就是它的反面。
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('h1:has-text("可观测")', { timeout: 15000 })
+  let buttonsAfterReload = []
+  try {
+    // 坏版本里窗口按钮永远不会出现(store 是空的)→ 等超时,下面那条断言变红
+    await page.waitForSelector('.windows button', { timeout: 5000 })
+  } catch {
+    /* 交给断言去说 */
+  }
+  buttonsAfterReload = await page.locator('.windows button').allInnerTexts()
+  const boxAfterReload = (await page.locator('.alert.error').allInnerTexts()).join(' ')
+  expect(
+    '直接落在 #/metrics 也自己补拉能力(不经过对话页)',
+    buttonsAfterReload.join(',') === '1h,6h,24h,7d,30d' && !boxAfterReload.includes('还没读到'),
+    `窗口 ${JSON.stringify(buttonsAfterReload)};红字 ${JSON.stringify(boxAfterReload.slice(0, 60))}`,
+  )
+
+  // ── 能力那一枪打空了(后端当时不在)→「刷新」必须能自救 ──────────────────
+  // 把 capabilities 连掐两次(守卫那次 + loadMetrics 里那次补拉),逼出"读不到能力"的状态;
+  // 之后放行,点一次「刷新」就该恢复。**注意这条故意制造失败请求**,所以放在
+  // 「没有失败请求」那两条断言之后。
+  let aborts = 0
+  await page.route('**/api/v1/capabilities', (route) => {
+    if (aborts < 2) {
+      aborts += 1
+      return route.abort()
+    }
+    return route.continue()
+  })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('h1:has-text("可观测")', { timeout: 15000 })
+  await page.waitForSelector('.alert.error', { timeout: 15000 })
+  const boxWhenDown = (await page.locator('.alert.error').allInnerTexts()).join(' ')
+  expect(
+    '能力打空时如实说「连不上」,不拿「还没读到 capabilities」盖住',
+    boxWhenDown.includes('连不上后端'),
+    boxWhenDown.slice(0, 80),
+  )
+  await page.getByRole('button', { name: '刷新' }).click()
+  let healed = []
+  try {
+    await page.waitForSelector('.windows button', { timeout: 15000 })
+    healed = await page.locator('.windows button').allInnerTexts()
+  } catch {
+    /* 交给断言去说 */
+  }
+  expect(
+    '点「刷新」能把能力补回来(后端恢复后不是死局)',
+    healed.join(',') === '1h,6h,24h,7d,30d',
+    JSON.stringify(healed),
+  )
+  await page.screenshot({ path: `${SHOT}_3_selfheal.png` })
+  await page.unroute('**/api/v1/capabilities')
 
   await browser.close()
   console.log(failures === 0 ? '\n可观测看板浏览器实测:全部通过' : `\n可观测看板浏览器实测:${failures} 条失败`)

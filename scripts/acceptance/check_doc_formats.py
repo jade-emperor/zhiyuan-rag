@@ -196,7 +196,7 @@ def _() -> str:
             raise AssertionError(f"{name} 没有可调用的 read")
     # 符合性靠 `_CONFORMANCE` 那一行的注解让 pyright 断,不要求显式继承端口 ——
     # Protocol 的意义就是结构化子类型;以前那条"必须显式继承"的检查只抓到写法、没抓到 bug
-    # (2026-09-30 删)。
+    # （删)。
     return "read + suffixes 声明齐全;三个适配器由 pyright 断符合性"
 
 

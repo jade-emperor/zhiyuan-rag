@@ -62,7 +62,7 @@ ragas 读不了它,但「检索到底给了什么」只能从这里看,而且 ``
 （``bagu_v1`` = k5/m2；调参时另有一份 ``bagu_v1_k10m3``）。这些检查**遍历目录里所有**
 ``*_dataset.json``,不写死名字 —— 每一份都要同样合格,否则 A/B 的两条腿一条粗一条细。
 
-2026-09-22 的第一组 A/B（``retrieval_k`` 5→10、``candidate_m`` 2→3）**结论是回退到 5/2**
+的第一组 A/B（``retrieval_k`` 5→10、``candidate_m`` 2→3）**结论是回退到 5/2**
 （均值 0.9347 vs 0.9313）,那份 10/3 的数据集已按结论删除;它那次的**结果 CSV 保留在
 ``ragas_runs/`` 里作为历史读数**（输入已删,不再可核 —— provenance 检查会显式报出来,
 不报的话下一个人会以为它还核得动）。
@@ -881,7 +881,7 @@ def _() -> str:
     return "；".join(detail)
 
 
-# ── 新评估集（八股 + PDF 教材，2026-10-08）──────────────────────────────────
+# ── 新评估集（八股 + PDF 教材，）──────────────────────────────────
 # 为什么另起一组而不是改上面那组：`eval_set_bagu_v1.json`（112 条，只有八股、两种问法）
 # 是 M4 的历史读数，它的分层契约必须继续成立；新那份是"作者真实数据的问答对"——
 # 200 条里 150 条进 faq 表做演示直答、50 条做评估，来源多了 PDF 教材。
@@ -894,7 +894,7 @@ NEW_SOURCES = ("bagu_ai", "bagu_java", "pdf")
 QA_TOTAL, QA_FAQ, QA_EVAL = 200, 150, 50
 FAQ_CSV_ROWS = 150
 # 与 build_qa_dataset.QuestionFilter 同一个阈值：评估题与 faq 表里的题"近似"到这个程度
-# 就可能在阈值 0.85 的 FAQ 通道上命中，评估就短路了
+# 就可能在 FAQ 通道上命中（代码默认阈值 0.85；config.yaml 那个部署旋钮现在更高），评估就短路了
 FAQ_OVERLAP_MAX = 0.5
 
 
@@ -1022,7 +1022,7 @@ def _() -> str:
             if score > FAQ_OVERLAP_MAX:
                 raise AssertionError(
                     f"评估题「{question}」与 faq 表里的「{other}」相似度 {score:.2f} "
-                    f"(> {FAQ_OVERLAP_MAX}) —— FAQ 通道阈值 0.85，这种题会被直答，评估等于没评检索"
+                    f"(> {FAQ_OVERLAP_MAX}) —— FAQ 通道会直答（阈值默认 0.85），评估等于没评检索"
                 )
     return f"{len(eval_rows)} 条评估题 vs {len(faq_questions)} 条 FAQ，最相似 {worst[0]:.2f}（「{worst[1][:18]}」/「{worst[2][:18]}」）"
 

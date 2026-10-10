@@ -344,7 +344,7 @@ def _() -> str:
 @check("分层：latency.py 只 import 标准库 + 同包 logging_setup（不许碰 domain/adapters）")
 def _() -> str:
     path = SRC / "observability" / "latency.py"
-    # `uuid` 是 2026-10-06 加的:账本自己生成 `request_id`(不靠调用方记得传)。
+    # `uuid` 是 加的:账本自己生成 `request_id`(不靠调用方记得传)。
     # 它仍是**标准库**,不违反这条检查的本意(「账本不认识领域类型、不许碰 domain/adapters」);
     # 白名单是逐项过审的,所以这里显式加一项而不是放宽成"标准库都行"。
     allowed = {"__future__", "time", "dataclasses", "uuid"}

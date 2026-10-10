@@ -388,12 +388,12 @@ def _app_has_gpu() -> bool:
 
 @check("静态元数据：direct-URL 依赖声明了元数据，且 uv.lock 的 [manifest] 段带着它（解析期不去 github）")
 def _static_metadata() -> str:
-    """2026-10-07 加。完整背景见 `STATUS.md` §0.3 第 38 条与 `pyproject.toml` 那段注释。
+    """加。完整背景见 `STATUS.md` §0.3 第 38 条与 `pyproject.toml` 那段注释。
 
     `en-core-web-sm` 的 wheel 只有 GitHub 一个来源，而 uv **即使没选中那个 extra** 也要它的
     元数据来校验锁 —— 取一次实测：宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次
     重试 → **46s 就失败**。于是 `docker build` 与**日常 `uv run project-rag-api`** 会随机死在这一步
-    （2026-10-07 一天内各一次）。修法两半，缺一不可：
+    （一天内各一次）。修法两半，缺一不可：
 
     ① `pyproject.toml` 的 `[tool.uv] dependency-metadata` **静态声明**它的元数据
        （wheel 的 METADATA 里只有 Name/Version，如实声明即可）；
@@ -451,7 +451,7 @@ def _static_metadata() -> str:
 
 @check("Dockerfile 拷齐了 pyproject 声明的 readme / license 文件（缺了要到构建最后一层才报错）")
 def _build_context_files() -> str:
-    """2026-10-07 加（开源化第 1 批）。给 pyproject 补 `readme` 与 `license-files` 之后，
+    """加（开源化第 1 批）。给 pyproject 补 `readme` 与 `license-files` 之后，
     **镜像构建当场失败**：hatchling 在 `uv sync --locked --no-dev`（装项目本体那一步）要读这两个
     文件，而 Dockerfile 只 COPY 了 pyproject/uv.lock/src/config，于是构建死在最后一层：
 
@@ -490,7 +490,7 @@ def _build_context_files() -> str:
 
 @check("app 的推理设备与 GPU 预约一致（写 cuda 却没申请 GPU → 预热静默失败、/health 照样绿）")
 def _device_matches_gpu() -> str:
-    """2026-10-07 真机踩到的：compose 里 `RAG_EMBEDDING__DEVICE: cuda` 而服务没有 GPU 预约。
+    """真机踩到的：compose 里 `RAG_EMBEDDING__DEVICE: cuda` 而服务没有 GPU 预约。
 
     后果**不是**启动失败（所以没人发现），而是:① 启动预热静默失败,日志里一行 WARNING
     "Found no NVIDIA driver on your system（不影响启动,首个请求会自己补做）";
@@ -514,7 +514,7 @@ def _device_matches_gpu() -> str:
 # ── 四、依赖档位：构建期不许碰 GitHub ─────────────────────────────────────────
 @check("运行时依赖里没有 unstructured 那一档（它不进镜像）")
 def _optional_not_runtime() -> str:
-    """**别把这条的标题读成「构建期不必访问 GitHub」** —— 2026-10-07 真机构建证明那是错的:
+    """**别把这条的标题读成「构建期不必访问 GitHub」** —— 真机构建证明那是错的:
     即使 `--no-dev`、即使没开这个 extra,`uv sync --locked` 仍会去 github 取
     `en-core-web-sm` 的**元数据**来校验锁(容器里实测 186s)。这条只管「它不进镜像」;
     「构建期要访问哪些网络」由 Dockerfile 的 `UV_HTTP_TIMEOUT` 那段注释负责说清。"""
@@ -574,7 +574,7 @@ def _lock_consistent() -> str:
             f"requires-dist 的 extra 标记不对：{markers}（应为三个都是 extra == 'unstructured'）"
         )
     # provides-extras 要与 pyproject 里**实际的档位集合**一致(集合,不是写死一个元素的列表):
-    # 2026-10-06 加了 `desktop` 那一档(M7.4 的桌面壳),写死的列表当场变红 ——
+    # 加了 `desktop` 那一档(M7.4 的桌面壳),写死的列表当场变红 ——
     # 而真正要钉的是"锁与 pyproject 不漂",不是"只有一个档"。
     declared_extras = set(_pyproject().get("project", {}).get("optional-dependencies", {}))
     locked_extras = set(root.get("metadata", {}).get("provides-extras") or [])
@@ -630,7 +630,7 @@ def _no_extra_registries() -> str:
     if directives:
         raise AssertionError(
             f"`# syntax=` 会让 BuildKit 去 registry 拉 frontend 镜像 —— 那是整个构建的**第一个**"
-            f"网络请求，国内网络 / 代理一坏就死在这一行（2026-09-30 实测报错见 Dockerfile 头部）：{directives}"
+            f"网络请求，国内网络 / 代理一坏就死在这一行（实测报错见 Dockerfile 头部）：{directives}"
         )
     leaked = [line for line in _logical_lines() if "ghcr.io" in line]
     if leaked:
@@ -750,7 +750,7 @@ def _port_layering() -> str:
             f"非端口数字白名单 {sorted(_NON_PORT_NUMBERS)}）—— 注释与代码分家就是这么开始的"
         )
     config_port = int(_yaml(CONFIG_YAML)["api"]["port"])
-    # 2026-10-08 作者定了这套分工：**仓库里的宿主配置 = 代码后端端口**（裸 `uv run project-rag-api`
+    # 作者定了这套分工：**仓库里的宿主配置 = 代码后端端口**（裸 `uv run project-rag-api`
     # 与 `./scripts/dev.sh serve` 读的是同一个值），容器则靠镜像里的 ENV 盖住它。
     # 两半都要钉住 —— 只钉一半，另一半就能悄悄漂回「两个后端抢一个口」。
     if config_port != dev:
@@ -766,7 +766,7 @@ def _port_layering() -> str:
             "compose 的映射与探活全落空"
         )
     # 文档里的数字也要跟代码核对：API.md 的配置表曾经把默认值写成 18080 而代码是 8080
-    # （2026-10-08 之后两者都是 18080），与注释漂移是同一个形状 ——
+    # （之后两者都是 18080），与注释漂移是同一个形状 ——
     # 「文档说的端口」和「代码跑的端口」必须有一处对得上。
     api_md = API_MD.read_text(encoding="utf-8")
     documented = re.search(
@@ -909,7 +909,7 @@ def main() -> int:
         "M6.4 部署契约：compose / Dockerfile / 依赖档位三方自洽 + 宿主入口的端口分层",
         notes=(
             "说明：这些检查证明的是「配置自洽」，**不是**「镜像能构建」。"
-            "后者 2026-10-07 已在真机上跑过一次（`docker compose build app` + `up -d app`，"
+            "后者 已在真机上跑过一次（`docker compose build app` + `up -d app`，"
             "宿主 8080 实测，见 STATUS.md §7.3）—— 但那是**那台机器那一次**的结果，"
             "换机器/换网络仍要自己跑一遍 `docker compose up -d --build`。",
         ),

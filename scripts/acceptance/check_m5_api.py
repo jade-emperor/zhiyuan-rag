@@ -368,7 +368,7 @@ def _() -> str:
 
 @check("命名空间：业务接口一律在 /api/v1 下（老 /api/* 一条不留，也不留别名）")
 def _() -> str:
-    """P0-3b-5-② 的统一迁移：`/api/*` → `/api/v1/*`（2026-10-06），metric 挪进 `admin`。
+    """P0-3b-5-② 的统一迁移：`/api/*` → `/api/v1/*`，metric 挪进 `admin`。
 
     **为什么要一条检查盯着**：漏一个老式路径进去，前端的 TS 客户端（从 OpenAPI 生成，
     见 `deferred.md` 第 55 条）就会有两个前缀；而**留别名更糟** —— 两套路径是两个真值来源，
@@ -827,7 +827,7 @@ def _() -> str:
 def _() -> str:
     """静态入口的三条性质,判据全落在**用户真的会输的那个 URL** 上(STATUS.md §0.3 第 32 条)。
 
-    2026-10-07 之前这里断言的是「`/static/index.html` 能用、页面里能看到 `/api/v1/stream`
+    之前这里断言的是「`/static/index.html` 能用、页面里能看到 `/api/v1/stream`
     与 `?token=`」—— 那份内置调试页已经删掉(见 `app.py` 根路由的说明),于是:
     「页面走的是服务端那条 WS」改由 `check_m7_frontend` 的**前端清单↔后端路由表**那条管
     (读 `endpoints.ts`,比在压缩过的产物里搜字符串结实);这里只留静态挂载本身的性质。
@@ -852,7 +852,7 @@ def _() -> str:
         got = client.get(f"/static/app/{asset}")
         if got.status_code != 200:
             raise AssertionError(f"产物引用的 {asset} 取不到:{got.status_code}(页面会白屏)")
-    # 只剩一份界面:旧的内置调试页 2026-10-07 删了。两份 UI = 两套要跟着后端改的东西,
+    # 只剩一份界面:旧的内置调试页 删了。两份 UI = 两套要跟着后端改的东西,
     # 而其中一套没人日常打开 —— 它漂了也不会有人发现。这条防止它被"顺手"加回来。
     gone = client.get("/static/index.html")
     if gone.status_code != 404:

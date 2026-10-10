@@ -129,7 +129,7 @@ data/
 - 语料按**标题层级**切父块、父块再切子块；标题层级丢了父块就会碎，所以 Markdown 的结构别省
   （Word 与 PDF 那边，标题来自文档自己的样式 / 书签，不用另做）。
 
-### 6. 三处一次性初始化（都幂等，可重跑）
+### 6. 初始化与集合管理（都幂等，可重跑）
 
 **6.1 建 FAQ 表并灌数据**
 
@@ -196,28 +196,6 @@ uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢�
 切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
 **往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
 
-**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
-
-```bash
-uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
-uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
-uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
-```
-
-切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
-**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
-
-**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
-
-```bash
-uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
-uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
-uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
-```
-
-切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
-**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
-
 ### 7. 跑起来
 
 ```bash
@@ -235,9 +213,19 @@ uv run project-rag-api                                      # HTTP + WebSocket �
 uv run project-rag <子命令> --help                           # 每个子命令的参数见这里
 ```
 
-> **FAQ 命中要求「近乎一字不差」**（阈值 `faq.threshold: 0.85`，口径是「top1 原始分 ÷ 该条问自己
+浏览器打开 **`http://127.0.0.1:18080/`**（307 → `/static/app/`）就是那份 Vue 界面：上面这些能力在界面里
+是「对话 / 知识库 / 可观测」三页。账号没有注册入口，先建一个：
+
+```bash
+uv run project-rag user add -u 你的名字 --role admin     # 唯一的建号入口；员工用 --role employee
+```
+
+> **FAQ 命中要求「近乎一字不差」**（口径是「top1 原始分 ÷ 该条问自己
 > 的分」）：把库里的原句照抄会命中并打印 `FAQ 直答(标准答案):1.0000`；换个说法通常落到知识库通道
 > —— 这是刻意的分流，改写问法交给 RAG，标准答案只留给原句。
+> 阈值 `faq.threshold` 是**部署旋钮**（代码默认 `0.85`，`config/config.yaml` 里现在是 `0.95`）：
+> 它必须落在"实测可用区间"里 —— 调低会让无关问法误命中 FAQ 通道，调高会让加了礼貌语的原句失效，
+> 验收脚本 `check_p0_4_ab.py` 会用同一套探针量一遍区间再断言（区间与探针口径写在那个脚本的 docstring 里）。
 
 ### 8. 把服务装进容器（compose 里已经编好了）
 
@@ -261,7 +249,7 @@ curl http://localhost:8080/health
 - **只想起中间件**（在宿主上 `uv run` 开发）：`docker compose up -d standalone mysql redis`。
 - **模型与语料挂卷、不进镜像**：`./models` 与 `./data`。配置里的相对路径是按**项目根**解析的，
   所以容器里的路径与宿主一致（`/app/models/bge-m3`、`/app/data/corpus/...`）。
-- **容器用 GPU**：`docker-compose.yaml` 的 app 服务里这两行**已经打开**（2026-10-07）：
+- **容器用 GPU**：`docker-compose.yaml` 的 app 服务里这两行**已经打开**：
   ```yaml
       gpus: all                        # 把宿主 GPU 交给容器（等价 deploy.resources.reservations.devices）
       environment:
@@ -273,7 +261,8 @@ curl http://localhost:8080/health
   后果是**预热静默失败 + `/health` 照样绿**，直到第一次真提问才炸（`docs/STATUS.md` §0.3 第 39 条），
   契约 `check_m6_deploy.py`「推理设备与 GPU 预约一致」+ 反向 RT-18 就盯着这个配对。
   实测收益（真容器、真模型）：预热 **18240ms（CPU）→ 7757ms（GPU）**；嵌入 8 条 **CPU 1164ms → GPU 38.2ms**，重排 8 候选 **CPU 527.7ms → GPU 30.7ms**（开 fp16 再快一倍）。
-  想开 fp16 再加 `RAG_EMBEDDING__USE_F16=true`（`embedding.use_f16` 同时管嵌入与重排）。
+  想开 fp16 用 `embedding.use_f16`（嵌入）与 `embedding.rerank_use_f16`（重排）**两个开关**：
+  重排实测 98 → 31ms（3.2×）、嵌入 8 条 22.5 → 9.2ms（2.4×），两个默认都是 `false`。
   ⚠️ **别用自己 shell 里的 `ls /dev/dxg` / `nvidia-smi` 判断"宿主能不能用 GPU"** ——
   这个开发沙箱的 `/dev` 是过滤过的 tmpfs（只有 `null/zero/random/tty/pts…`，**没有 `dxg` 节点**），
   在里面看到的口径一概不算数；容器这条路走 dockerd 的 **nvidia runtime**，不受沙箱影响。
@@ -290,7 +279,7 @@ curl http://localhost:8080/health
 - 镜像偏大：`uv.lock` 里的 torch 是 CUDA 版，会拖进 `nvidia-*`（本地 `.venv` 实测 6.7G，
   其中 nvidia 3.2G + triton 0.9G）。CPU-only 的瘦身办法写在 `Dockerfile` 末尾注释里，
   **没在真机验证过**，验过再改默认。
-- **那个 `en-core-web-sm` 已经不会再让构建/启动随机失败了**（2026-10-07 两轮实测 + 根治）：
+- **那个 `en-core-web-sm` 已经不会再让构建/启动随机失败了**（两轮实测 + 根治）：
   它在可选依赖档 `unstructured` 里、运行时用不到，但过去 `uv sync --locked` 仍会去 github 取它的
   **元数据**来校验锁 —— 取一次实测宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次重试
   → **46s 就失败**。于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步
@@ -301,7 +290,7 @@ curl http://localhost:8080/health
   进缓存后不再下），这一次可能被慢网络拖死。契约：`check_m6_deploy.py`「静态元数据」+ 反向 RT-19。
   想连这一次都省掉：把 wheel 放进仓库、`[tool.uv.sources]` 指本地文件（12MB 入库的取舍，
   `Dockerfile` 末尾第 1 条另有一条 `uv export` 的路）。
-- **国内网络两道坎**（2026-09-30 真机踩过，报错原文在 `Dockerfile` 头部）：
+- **国内网络两道坎**（真机踩过，报错原文在 `Dockerfile` 头部）：
   ① **别给 `Dockerfile` 加 `# syntax=`** —— 那会让 BuildKit 先去 registry 拉一个 frontend 镜像，
   它是整个构建的第一个网络请求；② Docker Desktop 的**手工代理**（Settings → Resources → Proxies）
   如果指着本机的 Clash/V2Ray，代理没开时连 registry mirror 都连不上
@@ -385,10 +374,28 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 | FAQ 缓存 | Redis 短路 + TTL + 装配期/调用期双重降级；兜底答案也缓存 | `adapters/cache_redis.py` / `application/answer_faq.py` |
 | 多轮会话 | `conversations` 表 + 最近 5 轮裁剪（写入与裁剪同事务）+ 参数化查询 | `adapters/conversation_mysql.py` |
 | 流式帧协议 | `sources` / `token` / `done` 三类帧；**非流式入口就是流式的收拢器**（逐字一致） | `application/streaming.py` |
-| HTTP / WebSocket | 9 个端点（问答、会话增删查、来源、健康检查、静态挂载）+ 问候拦截 + CORS | `api/app.py` |
+| HTTP / WebSocket | 16 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、管理报表）+ `/health` 与前端静态入口 | `api/app.py` |
+| 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、`admin` / `employee` 两种角色；管理接口各自 `require_admin`，前端只是"不给点" | `application/security.py` / `api/app.py` |
+| 文档治理 | 上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 删除（连带删向量与原文件）；登记表与向量库可对账 | `application/documents.py` |
+| 限流 | Redis 滑动窗口（query 60/min、upload 10/min、login 10/min），429 带 `Retry-After` 与可执行话术；Redis 故障降级放行且只告警一次 | `adapters/ratelimit_redis.py` |
+| 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 可观测三页，hash 路由）；**能力接口是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
+| 桌面壳 | `project-rag-desktop` 一个窗口套在这份产物上；本地模式用回环 HTTP 托管随包产物、`--remote` 直接开后端那份界面 | `src/project_rag/desktop.py` |
 | 延迟观测 | 一次回答一行账：检索六段 + TTFT + 吐字速率 + **思考三字段** | `observability/latency.py` |
 | 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（本地） |
 | 验收体系 | 每个能力配一份可执行契约，PASS/FAIL/SKIP 三态；另有反向测试证明检查真的会红 | `scripts/acceptance/`（本地） |
+
+### 界面与角色（一份 Vue 单页应用）
+
+| 页 | 谁能看 | 做什么 |
+|---|---|---|
+| **对话** | 登录即可 | 提问（WS 逐字流式）、引用与页码、左侧会话目录、右侧检索参数面板（知识库 / 检索方式 / 两路权重 / 重排 / 模型） |
+| **知识库** | `admin` | 上传（后缀与大小上限来自 `capabilities`）→ 状态轮询 → 预览父块 → 两步确认删除（连带删向量） |
+| **可观测** | `admin` | 延迟报表：六个 KPI（**比率都带分子分母**）、分段 p50/p95/p99（样本不够画 `—`，**不折算成 0**）、最慢榜（标冷启动）、五个时间窗口 |
+
+三条与后端对齐的规矩：**能力不写死在前端**（后缀表 / 检索方式 / 上限 / 模型名一律来自
+`GET /api/v1/capabilities`）；**页面唯一的环境就是"一个后端地址"**（左上角可改、会被记住 —— 桌面壳
+与"连另一台后端"都靠它）；**界面藏起来的不等于权限**（每个管理接口在后端各自 `require_admin`，
+契约里有一条全表扫描盯着）。
 
 ### 慢在哪：一行日志
 
@@ -400,7 +407,7 @@ grep -h " | latency " logs/app.log | tail -20
 #   tps=156.4 total_ms=7077.9 refused=false truncated=false aborted=false
 ```
 
-> **这一行里的 `bm25_ms` 已经是"旧数字"了**（P0-1，2026-10-06）：BM25 那一路原本**每查询**都向
+> **这一行里的 `bm25_ms` 已经是"旧数字"了**（P0-1，）：BM25 那一路原本**每查询**都向
 > Milvus 要一次语料指纹（3938 块实测 **397.6ms**，而真正的 BM25 打分只要 ~1ms），现在指纹先进
 > Redis、未命中才回源。真环境同一进程连查 4 次的对照：**2016 / 3.5 / 2.2 / 1.9 ms**（旧实现
 > 1517 / 397.2 / 398.2 / 200.8）→ 稳态 **~400ms → ~2ms**。上面这条日志是加缓存之前留下的。
@@ -444,7 +451,8 @@ src/project_rag/
 ├── application/     用例：合流路由、RAG 检索与生成、FAQ、缓存、帧协议、切分入库、问候
 ├── observability/   日志装配 + 延迟账本
 ├── cli/             命令行入口与组合根（Deps：全是惰性工厂）
-└── api/             FastAPI 接口层 + 前端产物（static/app/ 由 web/ 构建进来）
+├── api/             FastAPI 接口层 + 前端产物（static/app/ 由 web/ 构建进来）
+└── desktop.py       桌面壳（只开窗：本地回环托管产物，或 --remote 直接开后端那份）
 config/config.yaml   全部可调项（检索旋钮、模型路径、设备、思考档位、阈值、表名）
 web/                 前端工程（Vite+Vue3+TS）：`npm run build` 把产物写进 src/project_rag/api/static/app/
 docker-compose.yaml  中间件：Milvus(etcd+minio) / MySQL / Redis / Attu ＋ `app`(服务本体)
@@ -456,18 +464,20 @@ API.md               HTTP / WebSocket / CLI 接口文档
 
 - **还没接的格式**：HTML / Excel / 扫描件 OCR，以及页码、工作表这类元数据到引用清单的透传；
   真要做时先 `uv sync --extra unstructured`（那一档默认不装，见 §1）。
-- **镜像已在真机构建并跑起来过**（2026-10-07，之前"开发环境里没有 `docker` 命令"那条已作废）：
+- **镜像已在真机构建并跑起来过**（之前"开发环境里没有 `docker` 命令"那条已作废）：
   `docker compose up -d --build` 构建成功、app 变 healthy、宿主 8080 上打开的就是仓库里这份
   Vue 前端（容器内预热 7649ms、`/static/app/` 200、旧调试页 404）。
   **体积 ~11G 的成因已量清**：venv 7.0G 里 `nvidia` 3.2G + `torch` 1.2G + `triton` 0.9G = 5.3G 是 CUDA 相关；
   想要瘦身版用 `docker build --build-arg TORCH_BACKEND=cpu`（代价：容器里不能再用 GPU；
   ⚠️ 这条路本机**没验成** —— 它要从 `download.pytorch.org` 取 torch/triton，实测卡住 15 分钟无进展，
   换到能连官方源的环境再试，见 `Dockerfile` 的 `ARG TORCH_BACKEND` 那段）。
-  桌面壳（pywebview 窗口 / 打包）那两件仍是纸面验收。
+  桌面壳的**可验证那一半**（产物与引用的资源、回环服务真能发出页面与 JS、`?backend=` 被记住并抹掉）
+  有契约与浏览器实测钉着；**开窗那一帧**要图形界面、**打包成可执行文件**（PyInstaller / AppImage / .dmg）
+  要额外的打包链路，这两件目前都没验过（如实写在这里，别读成"已经能用"）。
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
   「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
 - 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 23 套契约 + 14 份反向 runner，
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 23 套契约 + 15 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---
@@ -497,5 +507,5 @@ API.md               HTTP / WebSocket / CLI 接口文档
 2. **`web/node_modules` 不入库**：它是 `npm ci` 的产物（和 `.venv` 一个性质），而且里面装着
    **平台相关的二进制**（esbuild / rollup 的 linux-x64 构建）。真值来源是
    `web/package.json` + `web/package-lock.json` —— 有这两个，任何机器都能还原出一样的依赖树。
-   （这段是 2026-10-07 开源化时补的：它在 `.gitignore` 里写着"别提交"，但文件比那条规则更早进仓库，
+   （这段是 开源化时补的：它在 `.gitignore` 里写着"别提交"，但文件比那条规则更早进仓库，
    忽略规则**不会**自动取消已跟踪的文件，所以一直躺在版本库里。）

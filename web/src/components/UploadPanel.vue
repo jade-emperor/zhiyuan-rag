@@ -9,6 +9,10 @@
  * 2. **客户端也先拦一次**:后缀不在白名单、或超过大小上限,当场说清楚,
  *    不发那一趟(但**拦不住的仍然以后端为准** —— 客户端的检查是体验,不是安全边界);
  * 3. **拖放与点选走同一条路**:两条路各自实现,迟早有一条忘了校验。
+ *
+ * 还一条话术上的规矩:**白名单是空的**时不许说「不支持的类型」—— 那是"还没读到
+ * capabilities"(能力自述没取到),与"后端不认这个后缀"是两件事。以前混成一句话,
+ * 用户看到的是「不支持的类型 .docx —— 这个后端只吃 」(后面空着),被指到错的方向。
  */
 import { computed, ref } from 'vue'
 
@@ -45,6 +49,9 @@ function onDrop(event: DragEvent): void {
 function reject(file: File): string | null {
   const dot = file.name.lastIndexOf('.')
   const suffix = dot >= 0 ? file.name.slice(dot).toLowerCase() : ''
+  if (suffixes.value.length === 0) {
+    return '还没读到后端能力(capabilities)—— 先看左上角「后端」是否连通,再重进这一页'
+  }
   if (!suffixes.value.includes(suffix)) {
     return `不支持的类型 ${suffix || '(无后缀)'} —— 这个后端只吃 ${suffixes.value.join(' / ')}`
   }

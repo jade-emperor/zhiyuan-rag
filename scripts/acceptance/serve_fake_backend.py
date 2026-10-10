@@ -99,21 +99,34 @@ class FakeAuthStore:
         return self.owners.get(session_id)
 
 
+def _ts(days_ago: int, hour: int, minute: int) -> str:
+    """夹具时间戳：**相对当下算**，不写死日期（不把任何人的时间线写进仓库）。
+
+    各自的小时/分钟与先后关系要保住 —— 界面按 `updated_at` 倒序展示，顺序本身是被看的东西。
+    """
+    from datetime import datetime, timedelta
+
+    moment = datetime.now() - timedelta(days=days_ago)
+    return moment.replace(hour=hour, minute=minute, second=0, microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+
+
 SESSIONS = {
     "u-admin": [
         SessionSummary(
             session_id="11111111-1111-1111-1111-111111111111",
             title="每周加班最多多长时间",
             rounds=3,
-            created_at="2026-10-06T09:00:00",
-            updated_at="2026-10-06T09:12:00",
+            created_at=_ts(1, 9, 0),
+            updated_at=_ts(1, 9, 12),
         ),
         SessionSummary(
             session_id="22222222-2222-2222-2222-222222222222",
             title="差旅报销标准是多少",
             rounds=1,
-            created_at="2026-10-05T14:00:00",
-            updated_at="2026-10-05T14:03:00",
+            created_at=_ts(2, 14, 0),
+            updated_at=_ts(2, 14, 3),
         ),
     ],
     "u-employee": [
@@ -121,8 +134,8 @@ SESSIONS = {
             session_id="33333333-3333-3333-3333-333333333333",
             title="年假怎么申请",
             rounds=2,
-            created_at="2026-10-06T08:00:00",
-            updated_at="2026-10-06T08:05:00",
+            created_at=_ts(1, 8, 0),
+            updated_at=_ts(1, 8, 5),
         )
     ],
 }
@@ -225,7 +238,7 @@ def _seed_documents() -> None:
         status="processed",
         chunks=2,
         size_bytes=20480,
-        created_at="2026-10-06T09:00:00",
+        created_at=_ts(3, 9, 0),
     )
     DOCS["员工手册.md"] = DocRecord(
         document_id="员工手册.md",
@@ -234,7 +247,7 @@ def _seed_documents() -> None:
         status="processed",
         chunks=1,
         size_bytes=4096,
-        created_at="2026-10-05T16:20:00",
+        created_at=_ts(2, 16, 20),
     )
     DOCS["reimburse.docx"] = DocRecord(
         document_id="reimburse.docx",
@@ -243,7 +256,7 @@ def _seed_documents() -> None:
         status="processing",
         chunks=0,
         size_bytes=8192,
-        created_at="2026-10-06T09:30:00",
+        created_at=_ts(1, 9, 30),
     )
 
 

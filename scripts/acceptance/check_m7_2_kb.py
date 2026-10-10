@@ -131,7 +131,7 @@ def _record(document_id: str = "handbook.pdf", status: DocStatus = "processed"):
         status=status,
         chunks=3,
         size_bytes=1234,
-        created_at="2026-10-06T10:00:00",
+        created_at="<ISO 时间>",
     )
 
 

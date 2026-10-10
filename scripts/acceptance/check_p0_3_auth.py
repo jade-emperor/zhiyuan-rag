@@ -504,7 +504,7 @@ def _document_endpoints() -> str:
 
     client, store = _seeded_client()
     boss, worker = _login(client, "boss"), _login(client, "worker")
-    fake_docs = _RecordingDocs(DocRecord("d1", "demo", "手册.pdf", "processed", 15, 2048, "2026-02-08T10:00:00"))
+    fake_docs = _RecordingDocs(DocRecord("d1", "demo", "手册.pdf", "processed", 15, 2048, "<ISO 时间>"))
     deps = None
     from project_rag.cli.deps import Deps
     from project_rag.api.app import create_app
@@ -680,7 +680,7 @@ def _reconcile_reports() -> str:
     from project_rag.domain.documents import DocRecord, DocStatus
 
     def rec(doc_id: str, status: DocStatus) -> DocRecord:
-        return DocRecord(doc_id, "uploads", f"{doc_id}.md", status, 0, 10, "2026-10-06T00:00:00")
+        return DocRecord(doc_id, "uploads", f"{doc_id}.md", status, 0, 10, "<ISO 时间>")
 
     # ① 干净:登记两份、库里两份都有块
     clean = reconcile(
@@ -716,7 +716,7 @@ def _backfill_shape() -> str:
 
     rows = backfill_records(
         {"bagu_ai": ("bagu_ai", 677), "lecture/01.md": ("doc", 11)},
-        created_at="2026-10-06T12:00:00",
+        created_at="<ISO 时间>",
     )
     if [r.document_id for r in rows] != ["bagu_ai", "lecture/01.md"]:
         raise AssertionError(f"该按 doc_id 升序造行,实际 {[r.document_id for r in rows]}")
@@ -779,7 +779,7 @@ def _cleanup_entry() -> str:
     # ④ 缺块行：同样只删点名的
     row = DocRecord(
         document_id="gone.md", source="uploads", filename="gone.md", status="processed",
-        chunks=0, size_bytes=0, created_at="2026-10-06T00:00:00",
+        chunks=0, size_bytes=0, created_at="<ISO 时间>",
     )
     docs = _RecordingDocs(record=row)
     rows_removed = forget_missing(docs, ["gone.md"])
@@ -851,7 +851,7 @@ def _doctor_cli() -> str:
         return DocRecord(
             document_id=document_id, source="uploads", filename=document_id,
             status="processed", chunks=chunks, size_bytes=0,
-            created_at="2026-10-06T00:00:00",
+            created_at="<ISO 时间>",
         )
 
     docs = _TwoRows(_row("a.md", chunks=1), _row("gone.md", chunks=0))
