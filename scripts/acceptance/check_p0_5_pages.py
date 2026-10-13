@@ -541,7 +541,9 @@ def _collections_command() -> str:
     out = buffer.getvalue()
     if code != 0:
         raise AssertionError(f"collections 该返回 0，实际 {code}：{out}")
-    for want in ("old_no_page", "1283", "缺 page 列", "16384+", "← 当前配置"):
+    # 新版的 collections 还会打稀疏列与索引类型(check_m3_sparse 那一路加的),
+    # 所以这里只钉"它必须把 page 的有无说清楚"——措辞变了断言跟着变,别钉死整句
+    for want in ("old_no_page", "1283", "缺 page", "16384+", "← 当前配置"):
         if want not in out:
             raise AssertionError(f"collections 输出里少了 {want!r}：\n{out}")
     if out.count("← 当前配置") != 1:

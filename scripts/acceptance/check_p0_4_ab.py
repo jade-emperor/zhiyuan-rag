@@ -184,22 +184,26 @@ def _faq_threshold() -> str:
             f"A 组（一字不差）该恒为 1.000,实测最低 {min(exact):.3f} —— "
             "归一化口径（top1 ÷ 该条问自己的分）坏了,分数不再可比"
         )
-    low, high = max(noise), min(polite)
-    if low >= high:
-        raise AssertionError(
-            f"B、C 两组重叠（无关问法最高 {low:.3f} ≥ 礼貌语最低 {high:.3f}）—— "
-            "不存在能同时放行礼貌语、拦住无关问法的阈值;先查 matcher 的分母"
-        )
+    # **结构上分得开**才算过：一字不差全满分、礼貌语全部越过阈值、无关问法全部在阈值之下。
+    # 只看"区间非空"这一条的话，三道闸门（上界 + 两个覆盖率）把噪声压成 0 之后就变得太平了 ——
+    # 闸门本身坏掉（比如上界失效、覆盖率不看）时噪声会重新抬头，这里必须能红。
     configured = settings.faq.threshold
-    if not low < configured <= high:
+    bad_polite = [score for score in polite if score < configured]
+    if bad_polite:
         raise AssertionError(
-            f"faq.threshold={configured} 落在可用区间 ({low:.3f}, {high:.3f}] 之外 —— "
-            f"{'调得太低:无关问法会误命中 FAQ 通道' if configured <= low else '调得太高:礼貌语改写会失效'}；"
-            "要改先跑 `uv run python scripts/acceptance/calibrate_threshold.py` 重标定"
+            f"{len(bad_polite)}/{len(polite)} 条礼貌语改写没越过阈值（最低 {min(bad_polite):.3f} < "
+            f"{configured}）—— 三道闸门（上界/提问覆盖率/条目覆盖率）是不是拦多了？"
+            "先跑 `uv run python scripts/acceptance/calibrate_threshold.py` 看是哪一组掉下来的"
         )
+    bad_noise = [(probe, score) for probe, score in zip(NOISE_PROBES, noise) if score >= configured]
+    if bad_noise:
+        raise AssertionError(
+            f"无关问法被 FAQ 通道答掉了：{bad_noise} —— 阈值调低了，或者三道闸门没生效"
+        )
+    low, high = max(noise), min(polite)
     return (
-        f"{len(entries)} 条语料:可用区间 ({low:.3f}, {high:.3f}]、余量 {high - low:.3f};"
-        f"阈值 {configured} 在区间内（A 组全 1.000）"
+        f"{len(entries)} 条语料:一字不差全 1.000、礼貌语 {len(polite)}/{len(polite)} 全越过阈值 "
+        f"{configured}、无关问法最高 {low:.3f}（全部拦下）；余量 {high - configured:.3f}"
     )
 
 

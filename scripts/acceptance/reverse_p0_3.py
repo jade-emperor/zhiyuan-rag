@@ -154,11 +154,13 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "WebSocket：带令牌但用别人的会话",
     ),
     (
-        "RT-5  require_admin 不拦（员工也能看报表）",
+        # P0-6:报表从 require_admin 挪到了 require_reports(运维也要能看),
+        # 所以这条坏版本改的是**新的那道门**,needle 也跟着新的检查名走。
+        "RT-5  require_reports 不拦（员工也能看报表）",
         "src/project_rag/api/auth.py",
-        """        if user is not None and not user.is_admin:""",
+        """        if user is not None and not user.can_view_reports:""",
         """        if False:""",
-        "角色：报表只有管理员能看",
+        "角色：报表是运维与管理员的",
     ),
 ]
 

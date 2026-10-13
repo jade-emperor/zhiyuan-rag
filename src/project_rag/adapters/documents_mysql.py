@@ -91,6 +91,38 @@ class MySQLDocumentStore(DocumentStore):
         """输入:无。行为:按 created_at 倒序取全部。输出:记录序列。"""
         return self._query("ORDER BY created_at DESC", ())
 
+    def upsert(self, record: DocRecord) -> None:
+        """输入:登记信息。行为:整行写入(有就覆盖,没有就插入)。输出:无。
+
+        ``created_at`` **不在 UPDATE 列表里**:它记的是"这份文档第一次出现的时间",
+        重灌不是第一次来(见端口 docstring)。其余字段按本次的真实结果覆盖 ——
+        尤其是 ``size_bytes``:它记 0(当年没记过)时"文件改没改"永远判不出来,
+        所以写入方必须把真实大小交上来。
+        """
+        conn = self._connect(autocommit=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"INSERT INTO {self._table} (document_id, source, filename, status, chunks,"
+                    " size_bytes, created_at, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                    " ON DUPLICATE KEY UPDATE source = VALUES(source),"
+                    " filename = VALUES(filename), status = VALUES(status),"
+                    " chunks = VALUES(chunks), size_bytes = VALUES(size_bytes),"
+                    " error = VALUES(error)",
+                    (
+                        record.document_id,
+                        record.source,
+                        record.filename,
+                        record.status,
+                        record.chunks,
+                        record.size_bytes,
+                        record.created_at,
+                        record.error,
+                    ),
+                )
+        finally:
+            conn.close()
+
     def get(self, document_id: str) -> DocRecord | None:
         """输入:文档 ID。行为:取一行。输出:记录或 None。"""
         rows = self._query("WHERE document_id = %s", (document_id,))

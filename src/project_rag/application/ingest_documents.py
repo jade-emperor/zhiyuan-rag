@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from project_rag.domain import Chunk, ChunkGroup, Document, page_of
 from project_rag.observability import get_logger
-from project_rag.ports import Embedder, TextChunker, VectorStore
+from project_rag.ports import Embedder, SparseEncoder, SparseStats, TextChunker, VectorStore
 
 _logger = get_logger("application.ingest_documents")
 
@@ -56,6 +56,10 @@ class IngestReport:
     removed: int  # 写之前清掉的旧块数(重新 ingest 时不为 0)
     batches: int  # 发了几次嵌入调用
     in_store: int  # 最后一次 upsert 后集合里的子块总数(0 = 什么都没写)
+    # 稀疏向量那半边的读数(没接编码器时是 0):词表大小与平均块长 ——
+    # 它们决定"要不要调 chunk_size / 换 k1,b",所以跟着报告一起出来,而不是只进日志。
+    sparse_vocabulary: int = 0
+    sparse_avg_len: float = 0.0
 
 
 def _page_of_child(
@@ -129,20 +133,45 @@ def ingest_documents(
     embedder: Embedder,
     store: VectorStore,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    sparse_encoder: SparseEncoder | None = None,
+    corpus_texts: Sequence[str] | None = None,
 ) -> IngestReport:
-    """输入:文档 + 切分器 + 嵌入器 + 向量库 + 批大小。
+    """输入:文档 + 切分器 + 嵌入器 + 向量库 + 批大小 + 可选的稀疏编码器与语料口径。
 
-    行为:切块 → **清掉这批文档的旧块** → 分批嵌入 → upsert(按 chunk_id 幂等)。
-    那一步清理不是可有可无:chunk_id 里含内容哈希,改了内容就是新 id,
-    upsert 覆盖不到旧块,不清就会新旧并存,而过期内容往往还排在前面。
+    行为:切块 → **清掉这批文档的旧块** → 分批嵌入（有编码器时同时编码稀疏向量）
+    → upsert（按 chunk_id 幂等）。那一步清理不是可有可无:chunk_id 里含内容哈希,
+    改了内容就是新 id,upsert 覆盖不到旧块,不清就会新旧并存,而过期内容往往还排在前面。
 
     输出:统计报告。往库里写之前先校验「向量条数 == 本批块数」——
     顺序对不上就宁可报错,也不要让向量和文本错位落库(那种错查起来极贵)。
+
+    ``sparse_encoder`` 给不给,取决于集合有没有稀疏列(``keyword.backend=milvus`` 那一档);
+    给了就**先 fit 再编码** —— BM25 的 idf 是**全库**属性,而 ``corpus_texts`` 就是"全库"
+    的口径:``None`` = 本次这批文档就是全库(CLI 整份重灌);上传单份文档时传已有语料的正文
+    (见 ``application/documents.py``),否则新文档的权重会按"全世界只有这一篇"来算,
+    在检索里被系统性压低(静默的排序错误,不报错)。
     """
     if batch_size <= 0:
         raise ValueError(f"batch_size 必须为正,收到 {batch_size}")
 
     chunks = chunk_documents(documents, chunker)
+
+    stats: SparseStats | None = None
+    if sparse_encoder is not None:
+        # **预检放在最贵的两步之前**(全库统计 + 嵌入):这个库接不了稀疏向量时,
+        # 现在就说清楚 —— 否则要等第一批 upsert 才报错,而那时嵌入的钱已经花了。
+        if not store.has_sparse_column():
+            raise RuntimeError(
+                "这个集合接不了稀疏向量(没有 sparse_vector 列)—— 现在写进去,稀疏权重会被"
+                "静默丢掉。多半是**配置与集合不是同一档**:集合是 `keyword.backend=memory` 那档建的"
+                "(schema 建集合那一刻定格,删了重建也一样)。三条路:"
+                "① 想用稀疏向量 → 把 config 的 `keyword.backend` 改成 `milvus`,"
+                "再换一个新集合名(或 drop 掉这个)重新 ingest;"
+                "② 想保持 memory → 别带稀疏编码器(这一条正常由 cli/deps.py 保证);"
+                "③ 先 `project-rag collections` 看一眼那个集合有没有稀疏列。"
+            )
+        fit_texts = [chunk.text for chunk in chunks] if corpus_texts is None else list(corpus_texts)
+        stats = sparse_encoder.fit(fit_texts)
 
     # 先清这批文档的历史块。按 doc_id 而不是按 source:同一个 source 下
     # 通常有多份文档,按 source 清会把没在这次 ingest 名单里的文档一起误删。
@@ -155,13 +184,15 @@ def ingest_documents(
     batches = 0
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
-        embeddings = embedder.embed([chunk.text for chunk in batch])
+        texts = [chunk.text for chunk in batch]
+        embeddings = embedder.embed(texts)
         if len(embeddings) != len(batch):
             raise RuntimeError(
                 f"嵌入器返回 {len(embeddings)} 条向量,但这一批有 {len(batch)} 块 —— "
                 "顺序对不上就不能写库"
             )
-        in_store = store.upsert(batch, embeddings)
+        sparse = sparse_encoder.encode_documents(texts) if sparse_encoder is not None else None
+        in_store = store.upsert(batch, embeddings, sparse=sparse)
         batches += 1
 
     report = IngestReport(
@@ -170,13 +201,20 @@ def ingest_documents(
         removed=removed,
         batches=batches,
         in_store=in_store,
+        sparse_vocabulary=0 if stats is None else stats.vocabulary,
+        sparse_avg_len=0.0 if stats is None else stats.avg_len,
     )
     _logger.info(
-        "ingest 完成:文档 %d 份 → %d 块(清旧 %d 块)→ %d 批 → 库内 %d 块",
+        "ingest 完成:文档 %d 份 → %d 块(清旧 %d 块)→ %d 批 → 库内 %d 块%s",
         report.documents,
         report.chunks,
         report.removed,
         report.batches,
         report.in_store,
+        (
+            ""
+            if stats is None
+            else f";稀疏向量按全库 {stats.n_docs} 块统计(平均 {stats.avg_len:.1f} 词)"
+        ),
     )
     return report

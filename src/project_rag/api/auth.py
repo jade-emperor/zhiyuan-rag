@@ -189,3 +189,33 @@ class Authenticator:
                 status_code=status.HTTP_403_FORBIDDEN, detail="这个操作需要管理员角色"
             )
         return user
+
+    @staticmethod
+    def require_reports(user: User | None) -> User | None:
+        """输入:当前用户。行为:不能看报表就 403(运维与管理员能)。输出:该用户。
+
+        **报表不是"管理员专属"**:运维这个角色存在的意义就是看报表(延迟 + 消耗),
+        而管理员什么都能看。判断走 ``User.can_view_reports`` —— 角色集合只在
+        ``domain/auth.py`` 写一份,这里不出现 ``role == "ops"`` 这种字符串比较。
+        """
+        if user is not None and not user.can_view_reports:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="这个操作需要运维或管理员角色(员工只能检索与问答)",
+            )
+        return user
+
+    @staticmethod
+    def require_knowledge(user: User | None) -> User | None:
+        """输入:当前用户。行为:不能用知识库就 403(员工与管理员能)。输出:该用户。
+
+        运维被挡在这里是有意的:**他能看到"这套系统花了多少钱、多慢",但看不到语料内容**。
+        两者混在一个角色里,等于给运维开了知识库的全部读权限 —— 而"运维"这个角色
+        在多数组织里并不是内容岗。
+        """
+        if user is not None and not user.can_use_knowledge:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="这个操作需要员工或管理员角色(运维只能看报表)",
+            )
+        return user

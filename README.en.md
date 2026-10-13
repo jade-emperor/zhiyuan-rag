@@ -10,7 +10,7 @@ place that touches third-party SDKs, `domain/` uses the standard library only. S
 vendor, the vector store or the cache means changing one adapter file.
 
 > 中文说明（更详细）见 [`README.md`](README.md)。维护者的决策与状态文档（`docs/`）**不随本仓库发布**；
-> 本仓库里可验证的东西是 `scripts/acceptance/` 的 23 份契约 + 15 份反向测试。
+> 本仓库里可验证的东西是 `scripts/acceptance/` 的 26 份契约 + 17 份反向测试。
 
 ## Try it in 5 minutes (no model download)
 
@@ -38,7 +38,7 @@ Ask two questions to see both channels:
 uv sync                                                   # Python 3.13, pinned by uv.lock
 cp .env.example .env                                      # fill in the 3 required secrets
 mkdir -p logs data/uploads                                # the two dirs the container writes to
-uv run project-rag user add -u <name> --role admin         # there is no sign-up endpoint
+uv run project-rag user add -u <name> --role admin         # no sign-up endpoint; --role employee / ops
 docker compose up -d standalone mysql redis                # Milvus + MySQL + Redis
 uv run python scripts/tools/fetch_models.py --with-reranker   # 4.4 GB (BGE-M3 + reranker)
 uv run project-rag ingest --path data/corpus/<your_corpus>    # md / txt / docx / pptx / pdf
@@ -56,27 +56,29 @@ Or the whole thing in containers: `docker compose up -d --build` (host port 8080
 `gpus: all` + `RAG_EMBEDDING__DEVICE=cuda`, see `docker-compose.yaml`).
 
 Open `http://127.0.0.1:18080/` (307 → `/static/app/`) for the SPA: **chat** for any signed-in user,
-**knowledge base** and **metrics** for admins. The page's only configuration is *one backend URL*
+**knowledge base**, and **reports** (latency + token cost) for the ops and admin roles; admins also get
+**accounts & permissions** (create/delete accounts, groups, per-document visibility). The page's only configuration is *one backend URL*
 (editable in the header, remembered) — the desktop shell relies on exactly that.
 
 ## What's inside
 
 | Area | Highlights |
 |---|---|
-| Retrieval | BGE-M3 dense vectors (Milvus) + in-process BM25, fused with RRF (or weighted), optional CrossEncoder rerank; FAQ channel gated by a calibrated similarity threshold (code default `0.85`, `config.yaml` ships `0.95` — the value must stay inside a measured interval, asserted by a contract) |
+| Retrieval | BGE-M3 dense vectors (Milvus) + BM25 keywords — either in-process or as **sparse vectors inside Milvus** (`keyword.backend`), fused with RRF (or weighted), optional CrossEncoder rerank; FAQ channel gated by a calibrated similarity threshold (code default `0.85`, `config.yaml` ships `0.95` — the value must stay inside a measured interval, asserted by a contract) |
 | Answers | Streaming over WebSocket (`sources` / `token` / `done` frames), citations with page numbers, explicit refusal when retrieval is empty (**no LLM call at all**) |
-| API | 16 business endpoints under `/api/v1/*`, capability self-description (`/capabilities` — the frontend hard-codes nothing), Bearer auth + roles, document governance (upload → async ingest → preview → delete), admin latency reports, Redis sliding-window rate limiting with a friendly fallback message |
-| Frontend | Vue 3 + TS SPA (chat / knowledge base / metrics views), hash router, artifact committed so the Python side and the image need no Node |
+| API | 27 business endpoints under `/api/v1/*`, capability self-description (`/capabilities` — the frontend hard-codes nothing), Bearer auth + three roles (employee / ops / admin), document governance (upload → async ingest → preview → delete → per-document ACL), latency + token-cost reports, account & group management, Redis sliding-window rate limiting with a friendly fallback message |
+| Frontend | Vue 3 + TS SPA (chat / knowledge base / reports / accounts views; tabs rendered from the capabilities reported by `/auth/me`), hash router, artifact committed so the Python side and the image need no Node |
 | Desktop | `project-rag-desktop`: a native window (pywebview) around the same artifact — local mode serves it over loopback HTTP, `--remote URL` opens the backend-hosted copy |
+| Index knobs | `milvus.index.type` = `FLAT` (exact, default) or `IVF_FLAT` (+`nlist`/`nprobe`); switching rebuilds the index in place (`project-rag collections --reindex --yes`). Measured: at 3.9k chunks both are 5.5 ms with recall 1.000; at 20k synthetic vectors IVF_FLAT is 3.8× faster. `keyword.backend=milvus` moves BM25 into the collection as sparse vectors (schema-level: needs a re-ingest) |
 | Ops | One log line with 26 fields per request (TTFT, six retrieval segments, cold/warm, refusal/truncation), ledger in MySQL, healthcheck, non-root container |
-| Engineering | 23 executable contracts + 15 reverse-test runners (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
+| Engineering | 25 executable contracts + 16 reverse-test runners (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
 
 ## Repository layout
 
 ```text
 src/project_rag/     domain / ports / adapters / application / observability / cli / api
 web/                 Vue 3 + Vite frontend (build output goes into src/project_rag/api/static/app/)
-scripts/acceptance/  23 contracts + 15 reverse runners + fake ports (published: it's how we verify)
+scripts/acceptance/  25 contracts + 16 reverse runners + fake ports (published: it's how we verify)
 scripts/tools/       offline tools: fetch models, load FAQ CSV, build eval sets, run RAGAS
 demo/                self-written bagu-style interview Q&A for the 5-minute demo (no third-party content)
 config/config.yaml   every knob (retrieval, models, device, thresholds, rate limits)
@@ -89,7 +91,7 @@ CHANGELOG.md         Keep a Changelog + semver
 ## Verification
 
 ```bash
-./scripts/dev.sh ci        # pyright + 16 contracts + 15 reverse runners, no containers needed (~10 min)
+./scripts/dev.sh ci        # pyright + 17 contracts + 16 reverse runners, no containers needed (~10 min)
 ./scripts/dev.sh all       # + the checks that need real middleware / corpus / a real provider key
 ```
 

@@ -170,6 +170,8 @@ class FakeVectorStore:
         self.delay = delay
         self.loads = 0
         self.searches: list[tuple[int, str | None]] = []
+        self.sparse_searches: list[tuple[dict, int, str | None]] = []
+        self.upserted_sparse: list[dict] | None = None
 
     def search(self, query_embedding, *, k, source=None):
         self.searches.append((k, source))
@@ -177,11 +179,26 @@ class FakeVectorStore:
             time.sleep(self.delay)
         return list(self.hits)
 
-    def upsert(self, chunks, embeddings) -> int:
+    def search_sparse(self, query_sparse, *, k, source=None):
+        """稀疏那一路:假件按"命中就是全部 hits"给,顺序不变(真实排序由适配器负责)。"""
+        self.sparse_searches.append((dict(query_sparse), k, source))
+        return list(self.hits)
+
+    def upsert(self, chunks, embeddings, *, sparse=None) -> int:
+        # sparse 记下来:检查要断言"该带稀疏向量的那一路真的带上了"(见 check_m3_sparse)
+        self.upserted_sparse = None if sparse is None else [dict(item) for item in sparse]
         return len(chunks)
 
     def delete_by_doc_id(self, doc_id: str) -> int:
         return 0
+
+    def has_sparse_column(self) -> bool:
+        """假件按「能接」回答:它没有 schema 这一层(要验「没有那一列」的子类覆盖它)。
+
+        返回类型写死成 ``bool``:不写的话 pyright 会推断成 ``Literal[True]``,
+        子类返回 False 时就报"不兼容的覆写"。
+        """
+        return True
 
     def load_all(self):
         self.loads += 1
@@ -190,6 +207,13 @@ class FakeVectorStore:
     def fingerprint(self):
         # 与真适配器同口径:子块 id + 父块 id 排序后的指纹(BM25 靠它判断"语料变没变")
         return sorted(f"{hit.chunk.chunk_id}\x1f{hit.chunk.parent_id}" for hit in self.hits)
+
+    def chunk_counts(self):
+        """按 doc_id 数一遍(与真适配器同口径):知识库清单用它回答"这份现在搜不搜得到"。"""
+        counts: dict[str, int] = {}
+        for hit in self.hits:
+            counts[hit.chunk.doc_id] = counts.get(hit.chunk.doc_id, 0) + 1
+        return counts
 
     def delete_by_source(self, source: str) -> int:
         return 0
@@ -213,6 +237,10 @@ class SearchOnlyVectorStore:
         self.searches.append((k, source))
         return list(self.hits)
 
+    def search_sparse(self, query_sparse, *, k, source=None):
+        """同 ``search``:只读那一路的第二种检索,不是写库,所以这里给。"""
+        return list(self.hits)
+
 
 class FakeLLM:
     """假 LLM:**调用即发生**(``stream`` 是普通函数,返回现成的迭代器)。
@@ -221,6 +249,8 @@ class FakeLLM:
     而好几条检查正是靠 ``calls`` 区分这两件事。
 
     ``pieces`` 是逐帧吐的正文;``reply`` 是"整段当一帧"(两者给一个,``reply`` 优先)。
+    ``usage`` 是"provider 在收尾帧上回报的用量"(P0-7):给 ``(模型, 输入, 输出)``
+    就挂在 ``last=True`` 那一帧上 —— 与真适配器的形状一致(见 ``llm_deepseek._usage_of``)。
     """
 
     def __init__(
@@ -229,12 +259,14 @@ class FakeLLM:
         *,
         reply: str | None = None,
         finish_reason: str = "stop",
+        usage: tuple[str, int, int] | None = None,
     ) -> None:
         # ``reply`` 是**可写属性**:有的检查构造完还要换一句(``llm.reply = "..."``),
         # 因为那一轮要区分「模型兜底的话」与「知识库的话」。给了 reply 就不再吐 pieces。
         self.reply = reply
         self.pieces = tuple(pieces) if reply is None else ()
         self.finish_reason = finish_reason
+        self.usage = usage
         self.calls = 0
         self.seen: list[tuple[str, str]] = []
 
@@ -248,15 +280,27 @@ class FakeLLM:
         return [content for role, content in self.seen if role == "user"]
 
     def frames(self):
-        from project_rag.domain import LlmDelta
+        from project_rag.domain import LlmDelta, LlmUsage
 
         if self.reply is not None:
             yield LlmDelta(text=self.reply)
         else:
             for piece in self.pieces:
                 yield LlmDelta(text=piece)
-        # 收尾帧:M5.3a 起端口吐的是帧,结束原因在这一帧上
-        yield LlmDelta(finish_reason=self.finish_reason, last=True)
+        # 收尾帧:M5.3a 起端口吐的是帧,结束原因在这一帧上;
+        # P0-7 起用量也挂在这一帧(与真适配器同一个约定:收尾帧带 finish_reason + usage)
+        model, input_tokens, output_tokens = self.usage or ("", 0, 0)
+        yield LlmDelta(
+            finish_reason=self.finish_reason,
+            last=True,
+            usage=(
+                None
+                if self.usage is None
+                else LlmUsage(
+                    model=model, input_tokens=input_tokens, output_tokens=output_tokens
+                )
+            ),
+        )
 
     def stream(self, messages):
         self.calls += 1
@@ -286,6 +330,7 @@ class PacedFakeLLM:
         think_gap: float = 0.0,
         gap: float = 0.0,
         finish_reason: str = "stop",
+        usage: tuple[str, int, int] | None = None,
     ) -> None:
         self.pieces = tuple(pieces)
         self.think_pieces = tuple(think_pieces)
@@ -293,11 +338,13 @@ class PacedFakeLLM:
         self.think_gap = think_gap
         self.gap = gap
         self.finish_reason = finish_reason
+        # 与 FakeLLM 同一个约定:``(模型, 输入, 输出)`` 挂在收尾帧上(见 domain.LlmUsage)
+        self.usage = usage
         self.calls = 0
         self.produced = 0
 
     def stream(self, messages):
-        from project_rag.domain import LlmDelta
+        from project_rag.domain import LlmDelta, LlmUsage
 
         self.calls += 1
         if self.first_delay:
@@ -313,4 +360,15 @@ class PacedFakeLLM:
                 time.sleep(self.gap)
             self.produced += 1
             yield LlmDelta(text=piece)
-        yield LlmDelta(finish_reason=self.finish_reason, last=True)
+        model, input_tokens, output_tokens = self.usage or ("", 0, 0)
+        yield LlmDelta(
+            finish_reason=self.finish_reason,
+            last=True,
+            usage=(
+                None
+                if self.usage is None
+                else LlmUsage(
+                    model=model, input_tokens=input_tokens, output_tokens=output_tokens
+                )
+            ),
+        )

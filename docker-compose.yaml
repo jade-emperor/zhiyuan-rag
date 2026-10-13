@@ -167,7 +167,8 @@ services:
       RAG_MYSQL__PORT: "3306"
       RAG_REDIS__HOST: redis
       RAG_REDIS__PORT: "6379"
-      RAG_EMBEDDING__DEVICE: cuda      # 与上面的 gpus 成对,别单独删
+      RAG_EMBEDDING__DEVICE: cuda      # 与上面的 gpus 成对,别单独删;宿主侧脚本在 agent 沙箱里
+                                        # 看不见 GPU(见 AGENTS.md),别据此判定"这台机器没有 GPU"
     ports:
       - "8080:8080"                     # 宿主 8080 被占就改左边;右边是容器内端口,不能改
                                         # 宿主上的**代码后端**是另一个口(18080,见 config/config.yaml)——

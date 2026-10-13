@@ -7,6 +7,7 @@ ChatMessage 在(会话历史、上下文拼装、评估用例都要用它),所�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -52,6 +53,51 @@ class ConversationTurn:
 
 
 @dataclass(frozen=True, slots=True)
+class LlmUsage:
+    """一次模型调用**烧掉的 token 数**(provider 说的,不是我们数的)。
+
+    **为什么必须由 provider 给、不许自己按字数估**:算钱要的是计费口径的 token
+    (分词器切出来的、含思考内容的、含缓存命中的那一套),它和"答案有多少字"没关系;
+    自己估出来的数字会**看起来很合理**,然后每个月和账单对不上 —— 那种错没人查得出来。
+
+    ``model`` 是**provider 回报的模型名**(拿不到时适配器填配置里的名字):
+    单价是按模型配的(见 ``config.CostConfig``),用一个猜的名字去查表等于编一个价格。
+
+    ``input_tokens`` / ``output_tokens`` 给 ``None`` 与给 ``0`` 是两件事:
+    ``None`` = 这个 provider/这条路径**没告诉我们**(报表要如实说"没量到"),
+    ``0`` = 真的一个都没用(空回答)。折成 0 会让"没量到"和"没花钱"看不出区别。
+    """
+
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    # 输入 token 里**命中缓存**的那部分(provider 的 prompt cache)。
+    # **单价与未命中的差着 50 倍**(0.02 vs 1 元/百万),所以这个数不报就等于把账单算错一个量级。
+    #
+    # 三个值的含义必须分清:
+    #   ``None`` = provider 没回报缓存明细 → 报表如实说"按未命中价计(偏保守)";
+    #   ``0``    = 报了,这一轮一个都没命中;
+    #   ``>0``   = 命中了这么多(它**包含在** input_tokens 里,不是额外的)。
+    cached_input_tokens: int | None = None
+
+    @property
+    def total_tokens(self) -> int | None:
+        """输入:无。行为:把两个数加起来。输出:总数;两个都没量到给 None。"""
+        if self.input_tokens is None and self.output_tokens is None:
+            return None
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
+
+    @property
+    def uncached_input_tokens(self) -> int | None:
+        """输入:无。行为:算未命中的输入 token。输出:数;缺任一端给 None(不拿 0 顶)。"""
+        if self.input_tokens is None or self.cached_input_tokens is None:
+            return None
+        # 夹到 >=0:provider 偶尔把缓存命中数报得比输入总数还大(见过的真实形状),
+        # 负的"未命中"会让金额变成负数 —— 那种数没人看得懂,不如夹到 0。
+        return max(self.input_tokens - self.cached_input_tokens, 0)
+
+
+@dataclass(frozen=True, slots=True)
 class LlmDelta:
     """模型流式输出的一小段:增量文本 + 这一帧带来的结束原因。
 
@@ -73,6 +119,10 @@ class LlmDelta:
     reasoning_text: str = ""
     finish_reason: str | None = None
     last: bool = False
+    # 用量**只挂在收尾帧上**(provider 就是在最后才给它的):消费方不需要为它写逐帧累加,
+    # 只要在 ``delta.last`` 那一帧顺手看一眼(见 application/answer_rag.py)。
+    # 中间帧上是 None —— 「Provider 到这儿还没说」与「说了 0」因此分得开。
+    usage: LlmUsage | None = None
 
     @property
     def reasoning(self) -> bool:
@@ -100,7 +150,16 @@ class FaqEntry:
 
 @dataclass(frozen=True, slots=True)
 class FaqMatch:
-    """问答对和和对应的匹配分数"""
+    """问答对和和对应的匹配分数。
+
+    ``score`` = ``top1 原始 BM25 分 ÷ 这条问自己的原始分``，**夹到 0~1**：
+    一字不差**恒为 1.000**（分子分母同源，与语料规模无关）；过不了命中口径那两道覆盖率闸门
+    （提问覆盖率 / 条目覆盖率）时记 **0.0**（= 没命中，调用方走兜底）。
+
+    也就是说：**0 = "不算命中"，1.000 = "近乎一字不差"**。判"该不该答"不靠分数的大小 ——
+    夹取之后"提问里夹带了别的词"这类信息在分数上看不出来，是**覆盖率**在拦它
+    （推导与实测见 ``adapters/matcher_bm25.py``）。
+    """
 
     entry: FaqEntry
     score: float
@@ -166,12 +225,22 @@ class Chunk:
 class Embedding:
     """一条文本的稠密向量(已 L2 归一化,所以内积就等于余弦)。
 
-    **刻意只留稠密**:关键字检索由 BM25 走独立一路(进程内),不用嵌入模型的稀疏向量 ——
-    学习型稀疏与 BM25 都是词面匹配,两路重叠度高,留着只会让融合多一路、评估多一维,
-    还要多维护一个稀疏索引。少一路,而且每一路都说得清。
+    **刻意只留稠密**:关键字检索由词面权重走独立一路,它带自己的稀疏向量
+    (见下面的 ``SparseVector``),不塞进这里 —— 两条路各有各的索引,混在一个类型里
+    会让"哪一路没数据"变得看不出来。
     """
 
     dense: tuple[float, ...]
+
+
+# 稀疏向量:维度 → 权重(词面那一路用;查询侧只放出现过的词,权重 1,
+# idf 与长度归一都烘在文档侧的权重里 —— 这样**查询侧不需要语料统计**,
+# 见 adapters/bm25_sparse.py 的推导)。
+#
+# **空向量是合法的领域值**(一个词都没编码出来:整块标点、或者查询只有标点)。
+# 但 Milvus 拒收「空稀疏行」(`empty sparse float vector row`),所以"保证非空"这件事
+# 归写入侧(那边用保留维度 0 兜底),不归领域类型。
+SparseVector = Mapping[int, float]
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,3 +416,14 @@ class RetrievalOptions:
     # 更短更聚焦,但那个对应关系就断了。**默认保持 parent** —— 换默认要等 `ab_retrieval.py`
     # 的读数(见 STATUS §7 P0-4);这个旋钮现在只给 A/B 用,还没进 YAML。
     rerank_input: Literal["parent", "child"] = "parent"
+
+    # 「这些文档这一次**不许**被检索到」 —— 可见范围在检索这一侧的落地(见 application/access.py)。
+    #
+    # **为什么是"禁止名单"而不是"允许名单"**:可见范围的口径是"规则只用来收窄"
+    # (没配规则的文档人人可见),所以对绝大多数人来说,能看的文档 = 全部 − 少数几份被限制的。
+    # 用允许名单就得把全部 doc_id 都传下来(几百份文档 → 一个超长表达式 + 每次查询都白传),
+    # 而禁止名单通常只有几条。
+    #
+    # **空元组 = 不限制**(不是"什么都看不到")。这一点必须记牢:把空表当成"全禁"
+    # 会让一次"没查出规则"的数据库抖动变成整个知识库搜不到东西(而且不报错)。
+    denied_docs: tuple[str, ...] = ()

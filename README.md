@@ -184,11 +184,15 @@ uv run project-rag ingest --path "$CORPUS"             # 真写 Milvus（幂等�
 ```
 
 集合不存在会自动建；`--batch-size` 控制每次嵌入的块数（CPU 上大一点更划算）。
+**灌完它会把这一批登记回来**（状态 / 块数 / 磁盘字节数），所以知识库页上立刻看得到它们 ——
+以前 `ingest` 不写登记表，后端灌的语料在界面上永远是「未登记」。
 
 **6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
 
 ```bash
-uv run project-rag collections                          # 有哪些集合、各多少块、有没有 page 列、当前配置指向哪个
+uv run project-rag collections                          # 有哪些集合、块数 / page 列 / 稀疏列 / 索引类型 / 当前指向哪个
+uv run project-rag collections --reindex --yes           # 按 milvus.index.* 重建索引（FLAT ⇄ IVF_FLAT，数据不动）
+uv run project-rag sparse --yes                          # 按当前语料重算稀疏向量（keyword.backend=milvus 那一档）
 uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
 uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
 ```
@@ -206,7 +210,7 @@ uv run project-rag qa   -q "mac电脑 打不开乌班图 虚拟机"     # 合流
 uv run project-rag qa   -q "装饰器有什么用？"               # 同一入口，FAQ 未命中时走知识库
 uv run project-rag qa   -q "它有什么用？" --session u1       # 多轮：最近几轮历史进提示词，这一轮也记下来
 uv run project-rag qa   -q "装饰器有什么用？" --stream       # 逐字流式打印（边生成边出）
-uv run project-rag search -q "课程版本" --route bm25         # 只跑关键字那一路（不加载嵌入模型，最快）
+uv run project-rag search -q "装饰器" --route bm25           # 只跑关键字那一路（不加载嵌入模型，最快）
 uv run project-rag-api                                      # HTTP + WebSocket 服务（config.yaml 的 0.0.0.0:18080）
 ./scripts/dev.sh serve                                      # 同一件事的短命令（18080）+ 端口占用守卫
 
@@ -214,16 +218,19 @@ uv run project-rag <子命令> --help                           # 每个子命�
 ```
 
 浏览器打开 **`http://127.0.0.1:18080/`**（307 → `/static/app/`）就是那份 Vue 界面：上面这些能力在界面里
-是「对话 / 知识库 / 可观测」三页。账号没有注册入口，先建一个：
+是「对话 / 知识库 / 报表 / 账号与权限」四页（按角色显示：运维只看到「报表」，员工看到「对话 + 知识库」）。
+账号没有注册入口，先建一个：
 
 ```bash
-uv run project-rag user add -u 你的名字 --role admin     # 唯一的建号入口；员工用 --role employee
+uv run project-rag user add -u 你的名字 --role admin     # 命令行建号；员工 --role employee、运维 --role ops
+# 之后也可以由管理员在界面「账号与权限」页建号 / 删号 / 分组(见下面「界面与角色」)
 ```
 
 > **FAQ 命中要求「近乎一字不差」**（口径是「top1 原始分 ÷ 该条问自己
 > 的分」）：把库里的原句照抄会命中并打印 `FAQ 直答(标准答案):1.0000`；换个说法通常落到知识库通道
 > —— 这是刻意的分流，改写问法交给 RAG，标准答案只留给原句。
-> 阈值 `faq.threshold` 是**部署旋钮**（代码默认 `0.85`，`config/config.yaml` 里现在是 `0.95`）：
+> 阈值 `faq.threshold` 是**部署旋钮**（代码默认 `0.85`，改 `config/config.yaml` 的 `faq.threshold`；
+> 别在文档里抄生效值 —— 它会变，想知道它现在落在可用区间的哪里就跑 `uv run python scripts/acceptance/calibrate_threshold.py`）：
 > 它必须落在"实测可用区间"里 —— 调低会让无关问法误命中 FAQ 通道，调高会让加了礼貌语的原句失效，
 > 验收脚本 `check_p0_4_ab.py` 会用同一套探针量一遍区间再断言（区间与探针口径写在那个脚本的 docstring 里）。
 
@@ -247,6 +254,21 @@ curl http://localhost:8080/health
   一个进程同时发页面和接口），`5173` = vite 开发服务器（只发页面）。当前谁占着：`./scripts/dev.sh ports`。
   **两个后端可以同时跑**（会话/向量/限流配额都在中间件里，同源不撕裂），代价是模型显存各占一份。
 - **只想起中间件**（在宿主上 `uv run` 开发）：`docker compose up -d standalone mysql redis`。
+- **⚠️「启动」有三个入口，起的服务集合不一样 —— 前端在不在，先看你在哪个入口**：
+
+  | 入口 | 起了什么 | 前端在 |
+  |---|---|---|
+  | `./scripts/dev.sh up` | 只起中间件三件（standalone / mysql / redis） | **没有前端** |
+  | `docker compose up -d` | compose 里全部服务（含 `app`，也含 Attu 那个 Milvus 管理界面） | `http://localhost:8080/` |
+  | `./scripts/dev.sh app` | 中间件 + `app` 容器（等价于只把容器那份补起来） | `http://localhost:8080/`（镜像里的那份） |
+  | `./scripts/dev.sh serve` | 什么容器都不起，只跑工作区源码 | `http://localhost:18080/`（你正在改的那份） |
+
+  这就是"有时候启动 docker 会自动起前端、有时候不会"的全部原因 —— 不是随机，是入口不同。
+  **谁现在在发前端、发的是哪一份**：`./scripts/dev.sh status`（它会把容器/镜像里的产物摘要与工作区
+  的并排打出来）。
+- **镜像里的前端是"构建那一刻"的**：`npm run build` 只改工作区，容器照旧发旧产物（于是会出现
+  "前端在，但不是我刚改的那份"）。改完 `web/` 要让容器跟上，只有一条路：
+  `./scripts/dev.sh app --build`（先构建前端、再重建镜像、再起容器 —— 顺序在契约里钉着）。
 - **模型与语料挂卷、不进镜像**：`./models` 与 `./data`。配置里的相对路径是按**项目根**解析的，
   所以容器里的路径与宿主一致（`/app/models/bge-m3`、`/app/data/corpus/...`）。
 - **容器用 GPU**：`docker-compose.yaml` 的 app 服务里这两行**已经打开**：
@@ -286,10 +308,15 @@ curl http://localhost:8080/health
   （同一天各一次）。根治是**静态声明它的元数据**：那个 wheel 的 METADATA 里只有 `Name`/`Version`
   （纯数据包，没有一条 `Requires-Dist`），所以 `pyproject.toml` 写了 `[tool.uv] dependency-metadata`，
   `uv lock` 又把它带进 `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked` 校验**零网络**（实测 0 秒）。
+  ⚠️ **但这只对带 `--locked` / `--frozen` / `--offline` 的调用成立**：不带这些开关的**普通 `uv run`**
+  在**冷缓存**（`uv cache clean`、换机器、新克隆、容器首次构建）下**仍会去 GitHub 取那个 wheel**，
+  实测日志是 `No cache entry for: …/en_core_web_sm-3.8.0-py3-none-any.whl` → 3 次重试 → 超时
+  （就是那句 `Failed to generate package metadata`）。所以日常跑命令用 `uv run --frozen …`
+  （或 `export UV_FROZEN=1`），要装东西的那一次才需要网络。
   还留着 `UV_HTTP_TIMEOUT=300` 兜底：首次 sync 时 uv 仍要下载一次那个 wheel 做**哈希校验**（12MB，
   进缓存后不再下），这一次可能被慢网络拖死。契约：`check_m6_deploy.py`「静态元数据」+ 反向 RT-19。
   想连这一次都省掉：把 wheel 放进仓库、`[tool.uv.sources]` 指本地文件（12MB 入库的取舍，
-  `Dockerfile` 末尾第 1 条另有一条 `uv export` 的路）。
+  `Dockerfile` 末尾第 1 条另有一条 `uv export` 的路）——**那才是唯一不依赖"某台机器上的缓存"的做法**。
 - **国内网络两道坎**（真机踩过，报错原文在 `Dockerfile` 头部）：
   ① **别给 `Dockerfile` 加 `# syntax=`** —— 那会让 BuildKit 先去 registry 拉一个 frontend 镜像，
   它是整个构建的第一个网络请求；② Docker Desktop 的**手工代理**（Settings → Resources → Proxies）
@@ -332,7 +359,7 @@ embedding 用本地 BGE-M3（不需要 OpenAI key）。
 
 | 通道 | 数据来源 | 命中条件 | 代价 | 入口 |
 |---|---|---|---|---|
-| **FAQ** | MySQL 里人工维护的问答对 | BM25 置信度 ≥ `faq.threshold`（默认 0.85，近乎一字不差） | 一次全表读 + 一次分词匹配，毫秒级 | `faq` / `qa` |
+| **FAQ** | MySQL 里人工维护的问答对 | BM25 置信度（0~1）≥ `faq.threshold` **且**提问/条目覆盖率都过门槛（默认 0.85 / 0.5 / 0.8） | 一次全表读 + 一次分词匹配，毫秒级 | `faq` / `qa` |
 | **知识库** | Milvus 里的语料子块 | 向量 + 关键字两路召回 → 融合 → 折叠父块 → 重排 | 嵌入 + 检索 + 重排 + 生成 | `rag` / `qa` |
 | **裸模型** | 无 | 不检索，直接问模型 | 一次生成 | `chat`、`faq` 未命中时的兜底 |
 
@@ -357,6 +384,51 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 正文，引用清单上的分数才能逐字核对）；结束原因（`finish_reason`）一路透传到用户 ——
 半截答案**照原样返回但会提示「被截断」**，不悄悄换成拒答话术。
 
+### 索引与关键字那一路：两个旋钮
+
+**稠密索引**（`milvus.index.type`）在 `FLAT`（暴力精确）与 `IVF_FLAT`（分簇近似）之间选。
+索引是**建集合那一刻定格**的 —— 改配置不会自动重排已有索引，换完要跑一次
+`project-rag collections --reindex --yes`（数据不动，只重建索引；重建期间这一路检索不可用）。
+实测（真语料 3938 块 / dim=1024 / 30 条加噪查询；读一致性取 `bounded`，否则那 400ms 会盖住索引差异）：
+
+| 规模 | FLAT | IVF_FLAT | recall@5 |
+|---|---|---|---|
+| 3938 块（真语料） | 5.5ms | 5.5–6.3ms（nlist 32/128/512 × nprobe 1/4/16/128 全试过） | **1.000**（每一档都一样） |
+| 20000 块（合成向量） | 14.5ms | **3.8ms**（nlist=256 / nprobe=16） | 未单独量（IVF 是近似的，上评估集再量） |
+
+结论：**几千块这个量级索引换不出差别**（那 5ms 是 pymilvus 往返，不是扫描），所以默认 `FLAT`
+（精确、结果可断言）；**块数上万再换** `IVF_FLAT` —— 那时换来的是 3~4 倍。
+
+**关键字那一路**（`keyword.backend`）决定 BM25 的索引放在哪：
+
+| 档 | 索引在哪 | 代价 | 什么时候用 |
+|---|---|---|---|
+| `memory`（默认） | 进程内 `rank_bm25`：语料从向量库全量读出后本地建 | 每进程约 111MB 常驻 + 冷启动约 2.1s（3927 块实测） | 单进程部署（现在的形态） |
+| `milvus` | 入库时编码成 **BM25 稀疏向量**写进集合的 `sparse_vector` 列，检索走 `SPARSE_INVERTED_INDEX` | 集合必须带稀疏列 ⇒ **换档要重灌** | 多 worker / 多副本（每进程一份索引开始真的疼） |
+
+两档的**排序口径一致**（RRF 用排名、weighted 用 min-max 归一，都与分数的绝对量纲无关）。
+`milvus` 那档把 idf 与长度归一烘在**文档侧**权重里、查询侧只带「出现过的词（权重 1）」——
+于是**查询路径不需要任何语料统计**，稀疏内积恰好等于 BM25 分数（推导与边界都写在
+`src/project_rag/adapters/bm25_sparse.py` 的 docstring 里）。
+
+**换档步骤**（`memory` → `milvus`；稀疏列是 schema 级的，老集合补不上）：
+
+```bash
+# ① config.yaml：milvus.collection 换个新名字（可回滚），keyword.backend: milvus
+# ② 重灌：会按新 schema 建集合，同时写稠密与稀疏向量
+uv run project-rag ingest --path data/corpus/<你的语料目录>
+# ③ 重启 API —— 同一个 config，它就按新档检索了
+```
+
+⚠️ **`keyword.backend` 必须在"第一次写入建集合"之前改好**：schema 建集合那一刻定格，删了重建也一样 ——
+没改就会看到 `这个集合没有 sparse_vector 列(建它的时候 keyword.backend 还不是 milvus)`。
+反过来，稀疏编码器**只在 `backend: milvus` 那一档才装配**（一个旋钮同时决定 schema / 写入 / 检索三件事），
+所以 `memory` 那档的 ingest 不会白算一遍全库统计、也不会去撞那一列。
+
+调过 `keyword.bm25_k1` / `bm25_b` 之后，已有文档的权重还是旧常数烘进去的：
+`project-rag sparse --yes` 会按当前语料重算全库的稀疏向量（默认只说不做；稠密向量原样读回写回，
+不动嵌入结果）。想换回 `memory`：把 `keyword.backend` 改回去、集合指回原来的那个（数据没动过）。
+
 ### 功能清单
 
 | 能力 | 说明 | 代码 |
@@ -368,17 +440,20 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 | 中文两级切分 | 父块 1200 字 / 子块 300 字 / 重叠 50；分隔符按语义强度递归降级 | `adapters/chunker_recursive.py` |
 | 幂等入库 | 主键含内容哈希，同份输入跑两次得到同一批 id；按 `doc_id` 清旧块重灌 | `application/ingest_documents.py` |
 | 多格式入库 | 五种后缀（md/txt/docx/pptx/pdf）各一个来源适配器；命名、排序、分派只在装载层一处；没读进来的文件逐个报出 | `ports/document_source.py` / `adapters/document_loader.py` |
-| 两路召回 + 融合 | 进程内 BM25 + Milvus 稠密向量；RRF 或加权（min-max 归一化） | `application/fusion.py` / `adapters/bm25_index.py` |
+| 两路召回 + 融合 | 稠密（Milvus）+ 关键字（BM25：进程内，或编码成稀疏向量进 Milvus）；RRF 或加权（min-max 归一化） | `application/fusion.py` / `adapters/bm25_index.py` / `adapters/bm25_sparse.py` |
+| 索引与关键字后端 | `milvus.index.type`（FLAT / IVF_FLAT + nlist/nprobe）与 `keyword.backend`（memory / milvus）都是配置；换索引一条命令重建，换后端要重灌 | `adapters/milvus_store.py` / `adapters/bm25_sparse.py` |
 | 重排 | BGE-Reranker-v2-m3 对**父块正文**精排；可关（消融开关） | `adapters/reranker_bge.py` |
 | 引用与可核对 | 每条引用带来源、文档、分数、命中路径（单路/两路） | `domain/models.py` |
 | FAQ 缓存 | Redis 短路 + TTL + 装配期/调用期双重降级；兜底答案也缓存 | `adapters/cache_redis.py` / `application/answer_faq.py` |
 | 多轮会话 | `conversations` 表 + 最近 5 轮裁剪（写入与裁剪同事务）+ 参数化查询 | `adapters/conversation_mysql.py` |
 | 流式帧协议 | `sources` / `token` / `done` 三类帧；**非流式入口就是流式的收拢器**（逐字一致） | `application/streaming.py` |
-| HTTP / WebSocket | 16 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、管理报表）+ `/health` 与前端静态入口 | `api/app.py` |
-| 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、`admin` / `employee` 两种角色；管理接口各自 `require_admin`，前端只是"不给点" | `application/security.py` / `api/app.py` |
-| 文档治理 | 上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 删除（连带删向量与原文件）；登记表与向量库可对账 | `application/documents.py` |
+| HTTP / WebSocket | 27 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、管理报表）+ `/health` 与前端静态入口 | `api/app.py` |
+| 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、**三种角色**：`employee`（检索问答）/ `ops`（只看报表）/ `admin`（全部 + 管理）；"能干什么"只在 `domain/auth.py` 的三张能力表里，接口各自 `require_knowledge` / `require_reports` / `require_admin`，前端只是"不给点" | `domain/auth.py` / `application/security.py` / `api/auth.py` |
+| 账号与可见范围 | 管理员可建号 / 删号 / 改密码 / 建组（一类员工）；**文档可见范围**按"某个人"或"某个组"授权，**没配规则 = 人人可见**（规则只用来收窄）；检索、清单、预览三处同时生效 | `domain/access.py` / `application/access.py` / `adapters/access_mysql.py` |
+| 消耗报表 | provider 回报的 token 落进账本（模型 / 输入 / **命中缓存** / 输出四个字段），按 `cost.models` 的**三档 × 两时段**单价折成钱（命中 vs 未命中差 50 倍、高峰 vs 空闲差 2 倍）；**没配单价 → 报"未配置"**，**没量到 / 时段不明 / 缓存不明 → 各自单独计数**，都不显示成 0 | `application/cost.py` / `config.yaml` 的 `cost` 段 |
+| 文档治理 | 上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 删除（连带删向量与原文件，**语料源材料不动**）；知识库清单是**登记表 × 磁盘 × 向量库三处对账**的实时视图 | `application/documents.py` |
 | 限流 | Redis 滑动窗口（query 60/min、upload 10/min、login 10/min），429 带 `Retry-After` 与可执行话术；Redis 故障降级放行且只告警一次 | `adapters/ratelimit_redis.py` |
-| 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 可观测三页，hash 路由）；**能力接口是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
+| 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 报表 / 账号与权限四页，hash 路由）；**能力接口与 `/auth/me` 是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
 | 桌面壳 | `project-rag-desktop` 一个窗口套在这份产物上；本地模式用回环 HTTP 托管随包产物、`--remote` 直接开后端那份界面 | `src/project_rag/desktop.py` |
 | 延迟观测 | 一次回答一行账：检索六段 + TTFT + 吐字速率 + **思考三字段** | `observability/latency.py` |
 | 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（本地） |
@@ -388,14 +463,16 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 
 | 页 | 谁能看 | 做什么 |
 |---|---|---|
-| **对话** | 登录即可 | 提问（WS 逐字流式）、引用与页码、左侧会话目录、右侧检索参数面板（知识库 / 检索方式 / 两路权重 / 重排 / 模型） |
-| **知识库** | `admin` | 上传（后缀与大小上限来自 `capabilities`）→ 状态轮询 → 预览父块 → 两步确认删除（连带删向量） |
-| **可观测** | `admin` | 延迟报表：六个 KPI（**比率都带分子分母**）、分段 p50/p95/p99（样本不够画 `—`，**不折算成 0**）、最慢榜（标冷启动）、五个时间窗口 |
+| **对话** | `employee` / `admin` | 提问（WS 逐字流式）、引用与页码、左侧会话目录、右侧检索参数面板（知识库 / 检索方式 / 两路权重 / 重排 / 模型） |
+| **知识库** | `admin` | 上传（后缀与大小上限来自 `capabilities`）→ 状态轮询 → 预览父块 → 两步确认删除 → **权限**（这份文档给某个人 / 某一类人看）；每张卡片显示**对账后的 `state`**（一致 / 文件已变更 / 库内没有块 / 文件已不在 / 未入库），对不上的写明该怎么办；顶部一句话汇总 + 「上次刷新」时间 |
+| **报表** | `ops` / `admin` | 延迟 + **消耗**：六个 KPI（**比率都带分子分母**）、分段 p50/p95/p99（样本不够画 `—`，**不折算成 0**）、最慢榜（标冷启动）、五个时间窗口；消耗区给出模型调用次数、输入（含命中缓存）/输出 token 与金额，按**模型 × 时段**分行（未配单价 / 没量到 token / 时段不明 / 缓存不明都如实说） |
+| **账号与权限** | `admin` | 建号（员工 / 运维 / 管理员）、改密码、删号（**不能删自己、不能删最后一个管理员**）、建组并维护成员；文档给谁看在「知识库」页每张卡片的「权限」按钮上 |
 
 三条与后端对齐的规矩：**能力不写死在前端**（后缀表 / 检索方式 / 上限 / 模型名一律来自
-`GET /api/v1/capabilities`）；**页面唯一的环境就是"一个后端地址"**（左上角可改、会被记住 —— 桌面壳
-与"连另一台后端"都靠它）；**界面藏起来的不等于权限**（每个管理接口在后端各自 `require_admin`，
-契约里有一条全表扫描盯着）。
+`GET /api/v1/capabilities`；"哪个角色能看哪一页"来自 `GET /api/v1/auth/me` 报的三个能力布尔值，
+前端不比较角色字符串）；**页面唯一的环境就是"一个后端地址"**（左上角可改、会被记住 —— 桌面壳
+与"连另一台后端"都靠它）；**界面藏起来的不等于权限**（每个接口在后端各自
+`require_knowledge` / `require_reports` / `require_admin`，契约里有一条全表扫描盯着）。
 
 ### 慢在哪：一行日志
 
@@ -477,7 +554,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
   「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
 - 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 23 套契约 + 15 份反向 runner，
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 26 套契约 + 17 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---
@@ -489,7 +566,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 
 - **模型权重有各自的许可**：`BAAI/bge-m3` 与 `BAAI/bge-reranker-v2-m3` 由 ModelScope /
   HuggingFace 提供，使用时请自行确认它们的条款；**本项目不分发权重**（`models/` 不在仓库里）。
-- **语料不在仓库里**：`data/` 是课程语料与评估集，有**第三方版权**（见下）。
+- **语料不在仓库里**：`data/` 是语料与评估集，有**第三方版权**（见下）。
 - 依赖的许可见 `uv.lock` 与 `web/package-lock.json`（前端依赖只用于构建，产物已入库）。
 
 ## 仓库里有什么、没有什么
@@ -497,7 +574,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 | | 内容 |
 |---|---|
 | **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` 与离线工具 `scripts/tools/` |
-| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（课程语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原） |
+| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原） |
 
 后两条是**刻意的**，不是忘了：
 

@@ -8,11 +8,17 @@
 import { request } from './client'
 import type {
   Capabilities,
+  CostOut,
+  CreateUserOut,
+  DeletedSubjectOut,
   DeletedDocument,
   DeletedOut,
+  DocumentAclOut,
   DocumentPreview,
   DocumentRecord,
   DocumentsOut,
+  GroupOut,
+  GroupsOut,
   HistoryOut,
   LoginOut,
   Me,
@@ -21,6 +27,8 @@ import type {
   QueryResponse,
   SessionsOut,
   StreamFrame,
+  UserOut,
+  UsersOut,
 } from './types'
 
 export const API_PREFIX = '/api/v1'
@@ -122,14 +130,101 @@ export function documentPreview(
   )
 }
 
-// ── 报表(M7.3 的可观测看板)─────────────────────────────────────────────
+// ── 报表(M7.3 的可观测看板 + P0-7 的消耗)────────────────────────────────
 /**
- * 延迟报表(仅管理员)。``window`` 的白名单与 ``top`` 的上限都来自 `capabilities.metrics` ——
- * 前端不写死,否则后端改了窗口这里会拿着一个 400 的窗口名去打。
+ * 延迟报表(**运维与管理员**)。`window` 的白名单与 `top` 的上限都来自
+ * `capabilities.metrics` —— 前端不写死,否则后端改了窗口这里会拿着一个 400 的窗口名去打。
  */
 export function metrics(window: string, top = 5): Promise<MetricsOut> {
   return request<MetricsOut>(
-    `${API_PREFIX}/admin/metrics?window=${encodeURIComponent(window)}&top=${top}`,
+    `${API_PREFIX}/reports/metrics?window=${encodeURIComponent(window)}&top=${top}`,
+  )
+}
+
+/**
+ * 消耗报表(**运维与管理员**):窗口内调了几次模型、烧了多少 token、折合多少钱。
+ *
+ * 权限与延迟报表**完全一样**、窗口白名单也是同一张表 —— 两份报表要能对着看。
+ * 钱算不出来时后端如实说(`unpriced_models` / `unmetered_calls`),界面照原样显示。
+ */
+export function cost(window: string): Promise<CostOut> {
+  return request<CostOut>(`${API_PREFIX}/reports/cost?window=${encodeURIComponent(window)}`)
+}
+
+// ── 账号与可见范围(P0-6,仅管理员)───────────────────────────────────────
+/** 全部账号(用户名 / 角色 / 所属组)。**不含密码**。 */
+export function adminUsers(): Promise<UsersOut> {
+  return request<UsersOut>(`${API_PREFIX}/admin/users`)
+}
+
+/** 建一个账号。角色是 `employee` / `ops` / `admin`;密码只进不出。 */
+export function adminCreateUser(payload: {
+  username: string
+  password: string
+  role: string
+}): Promise<CreateUserOut> {
+  return request<CreateUserOut>(`${API_PREFIX}/admin/users`, { method: 'POST', body: payload })
+}
+
+/** 删一个账号(不能删自己、不能删最后一个管理员 —— 后端 400 时界面照原样显示原因)。 */
+export function adminDeleteUser(
+  userId: string,
+): Promise<DeletedSubjectOut & { user_id: string; username: string }> {
+  return request<DeletedSubjectOut & { user_id: string; username: string }>(
+    `${API_PREFIX}/admin/users/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** 替某个账号改密码。 */
+export function adminResetPassword(userId: string, password: string): Promise<UserOut> {
+  return request<UserOut>(`${API_PREFIX}/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: 'POST',
+    body: { password },
+  })
+}
+
+/** 全部组(一类员工)与各自的成员。 */
+export function adminGroups(): Promise<GroupsOut> {
+  return request<GroupsOut>(`${API_PREFIX}/admin/groups`)
+}
+
+export function adminCreateGroup(name: string): Promise<GroupOut> {
+  return request<GroupOut>(`${API_PREFIX}/admin/groups`, { method: 'POST', body: { name } })
+}
+
+export function adminDeleteGroup(
+  groupId: string,
+): Promise<DeletedSubjectOut & { group_id: string }> {
+  return request<DeletedSubjectOut & { group_id: string }>(
+    `${API_PREFIX}/admin/groups/${encodeURIComponent(groupId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** **整份**设置成员名单(声明式:勾完点保存,语义就是"这些人")。 */
+export function adminSetMembers(groupId: string, userIds: string[]): Promise<GroupOut> {
+  return request<GroupOut>(
+    `${API_PREFIX}/admin/groups/${encodeURIComponent(groupId)}/members`,
+    { method: 'PUT', body: { user_ids: userIds } },
+  )
+}
+
+/** 一份文档的可见范围(授权给了哪些人、哪些组)。 */
+export function adminDocumentAcl(documentId: string): Promise<DocumentAclOut> {
+  return request<DocumentAclOut>(
+    `${API_PREFIX}/admin/documents/${encodeURIComponent(documentId)}/acl`,
+  )
+}
+
+/** **整份**设置可见范围。两个名单都空 = 取消限制(回到人人可见)。 */
+export function adminSetDocumentAcl(
+  documentId: string,
+  payload: { user_ids: string[]; group_ids: string[] },
+): Promise<DocumentAclOut> {
+  return request<DocumentAclOut>(
+    `${API_PREFIX}/admin/documents/${encodeURIComponent(documentId)}/acl`,
+    { method: 'PUT', body: payload },
   )
 }
 

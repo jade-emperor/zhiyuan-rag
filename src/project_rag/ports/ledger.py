@@ -15,6 +15,16 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Protocol
 
+# 存储层在返回的行里附带的**墙上时间**键名(ISO-8601 文本,与 ``streaming.values()`` 的
+# 那些字段同一个形状)。取这个名字是因为账本的字段表(``latency._FIELDS``)里没有它 ——
+# 有一条契约盯着"账本自己不许定义叫这个名字的字段",否则两者会撞在一起。
+#
+# **带不带时区是有区别的**:``2026-10-13T06:00:00+00:00`` 是一个**时刻**(能判高峰/空闲),
+# 而 ``2026-10-13T06:00:00`` 只是一个**钟点** —— 同一张表里出现两种写入者(容器 UTC /
+# 宿主 CST)时,裸钟点判出来的时段会差 8 小时。存储层知道盖戳的是哪个钟就带上偏移,
+# 不知道(老账)就原样给,由报表按"判不出来"处理,不许替它猜。
+LEDGER_TS = "ts"
+
 
 class LedgerStore(Protocol):
     """延迟账本的存与取。"""
@@ -38,7 +48,17 @@ class LedgerStore(Protocol):
     def load_since(self, since: datetime) -> Sequence[Mapping[str, str]]:
         """输入:起始时刻(含)。行为:取该时刻之后写入的行,按时间升序。输出:行序列。
 
+        ``since`` 最好是**带时区的绝对时刻**(``datetime.now(UTC) - timedelta(hours=…)``);
+        给裸钟点时按**调用方进程的本地时区**解释(宿主是 CST、容器是 UTC,两边都对)。
+        存储层若存的是 UTC,由它自己换算后再比较。
+
         返回的是**原始文本值**(``-`` 原样保留):把它当 0 或者丢掉,都是口径决策,
         不该由存储层替用例层做。
+
+        **另外带上存储层盖的那个时间戳**,键名是 ``LEDGER_TS``(见下面的常量):
+        "这一次调用发生在高峰还是空闲"决定了单价(差 2 倍),而账本本体只有
+        ``time.perf_counter()``(单调时钟,没有"绝对时刻"的含义)—— 墙上时间只有存储层有。
+        没有它(或它没带时区)那一段就是"不知道时段",报表按高峰价计并如实说明
+        (见 ``application/cost.py``)。
         """
         ...

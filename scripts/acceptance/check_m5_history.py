@@ -85,6 +85,7 @@ import io
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -1052,6 +1053,113 @@ def _() -> str:
                 f"第二轮的提示词里没有第一轮：{world.llm.prompts[-1][:200]!r}"
             )
         return f"表 {table}：两轮落库、第二轮带着第一轮的历史"
+    finally:
+        _drop_table(table)
+
+
+@check("真实链路：账本带 token(含缓存命中)的行来回一趟 MySQL —— 消耗报表按三档×两时段算得出钱")
+def _() -> str:
+    """P0-7:账本是"整行 JSON + 几列索引",token 那四个字段**只进 payload**;
+    而**时段**靠存储层盖的 ``ts`` + ``ts_offset``(读回来时会附在行里)—— 这条把三件事一起验了:
+    写进去能原样读回来、读回来的时间戳**是个绝对时刻**(带时区)、报表据此判得出时段。
+
+    单价用注入的(不动配置文件):**命中 0.04 / 未命中 2 / 输出 8 元每百万**(高峰),
+    时段规则也是注入的(北京时间工作日 09–12/14–18 高峰)—— 于是这条断言与"现在是几点"无关。
+    """
+    import uuid as _uuid
+
+    from project_rag.adapters.ledger_mysql import MySQLLedgerStore
+    from project_rag.application.cost import PeriodRule, summarize_cost
+    from project_rag.config import get_settings
+    from project_rag.ports.ledger import LEDGER_TS
+
+    table = f"ledger_p0_7_{_uuid.uuid4().hex[:8]}"
+    store = MySQLLedgerStore(get_settings().mysql, table)
+    store.init_schema()
+
+    class _Tier:
+        def __init__(self, peak, off_peak=None):
+            self.peak, self.off_peak = peak, off_peak
+
+    class _Price:
+        def __init__(self):
+            self.input_cache_hit = _Tier(0.04)
+            self.input_cache_miss = _Tier(2.0)
+            self.output = _Tier(8.0)
+
+    try:
+        store.record(
+            {
+                "label": "rag",
+                "request_id": "p0-7-probe",
+                "channel": "rag",
+                "llm_ttft_ms": "900.0",
+                "llm_model": "DeepSeek-V4.1-Flash",
+                "llm_input_tokens": "1000000",
+                "llm_cached_input_tokens": "800000",
+                "llm_output_tokens": "100000",
+            }
+        )
+        rows = store.load_since(datetime.now() - timedelta(minutes=5))
+        mine = [row for row in rows if row.get("request_id") == "p0-7-probe"]
+        if len(mine) != 1:
+            raise AssertionError(f"该读回 1 行,实际 {len(mine)} 行:{rows[:3]}")
+        row = mine[0]
+        if (
+            row.get("llm_model"),
+            row.get("llm_input_tokens"),
+            row.get("llm_cached_input_tokens"),
+        ) != ("DeepSeek-V4.1-Flash", "1000000", "800000"):
+            raise AssertionError(f"token 那几列没原样回来:{row}")
+        stamp = row.get(LEDGER_TS)
+        if not stamp:
+            raise AssertionError(
+                f"读回来的行必须带存储层盖的时间戳({LEDGER_TS})—— 分时段计价全靠它:{row}"
+            )
+        moment = datetime.fromisoformat(stamp)  # 解析不了会抛,由 @check 记成 FAIL
+        if moment.tzinfo is None:
+            raise AssertionError(
+                f"时间戳必须带时区(ts_offset 那列没读出来?):{stamp!r} —— "
+                "裸钟点判不出高峰/空闲,报表只能按高峰价算"
+            )
+        # 刚写的这一行,时刻该与现在一致(±5 分钟):既验了 ts 是 UTC 存的,也验了时区换算没错
+        now = datetime.now(UTC)
+        if abs((now - moment).total_seconds()) > 300:
+            raise AssertionError(f"ts 该是刚刚(±5 分钟),实际 {stamp}(现在 {now.isoformat()})")
+
+        rule = PeriodRule.of(
+            weekdays=[1, 2, 3, 4, 5], windows=[["09:00", "12:00"], ["14:00", "18:00"]]
+        )
+        report_ = summarize_cost(
+            mine,
+            prices={"DeepSeek-V4.1-Flash": _Price()},
+            currency="CNY",
+            window="probe",
+            rule=rule,
+        )
+        # 0.8M 命中×0.04 + 0.2M 未命中×2 + 0.1M 输出×8 = 0.032 + 0.4 + 0.8 = 1.232(高峰)
+        # 同一笔落在空闲时段就是 0.616 —— 到底哪个,取决于**跑这条检查时的北京时间**,
+        # 所以两种都接受,但必须**判得有依据**(不能是"时区不明按高峰算"蒙出来的)。
+        if report_.total_cost not in (1.232, 0.616):
+            raise AssertionError(
+                f"真库读回来的行该算出 1.232(高峰)或 0.616(空闲)元,实际 {report_.total_cost}"
+            )
+        if report_.metered_calls != 1 or report_.cache_unknown_calls:
+            raise AssertionError(f"该 1 次调用、缓存明细齐全:{report_}")
+        if report_.zone_unknown_calls or report_.calendar_unknown_calls:
+            raise AssertionError(
+                f"真库盖的戳该判得出时段(时区/日历都不该缺):"
+                f"{report_.zone_unknown_calls}/{report_.calendar_unknown_calls}"
+            )
+        period = report_.lines[0].period
+        # 判出来的时段必须与"这一笔实际发生的北京时间"一致(自己按同一条规则手算一遍)
+        want = rule.classify(moment)[0]
+        if period != want:
+            raise AssertionError(f"{moment.isoformat()} 该判 {want},实际 {period}")
+        return (
+            f"表 {table}:四个 token 字段 + 带时区的 ts 往返;{period} 时段算出 "
+            f"{report_.total_cost} 元"
+        )
     finally:
         _drop_table(table)
 

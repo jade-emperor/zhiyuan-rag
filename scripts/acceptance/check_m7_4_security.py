@@ -122,6 +122,9 @@ class _FakeAuth:
 
     def set_password(self, user_id, password_hash) -> None: ...
 
+    def delete_user(self, user_id: str) -> int:  # pragma: no cover - 本脚本用不到
+        return 0
+
     def list_users(self):
         return [user for user, _ in self.users.values()]
 
@@ -638,7 +641,7 @@ def _() -> str:
     calls = (
         ("post", "/api/v1/documents?filename=x.pdf"),
         ("delete", "/api/v1/documents/x.pdf"),
-        ("get", "/api/v1/admin/metrics?window=24h"),
+        ("get", "/api/v1/reports/metrics?window=24h"),
     )
     for method, path in calls:
         anon = getattr(guarded_client, method)(path)

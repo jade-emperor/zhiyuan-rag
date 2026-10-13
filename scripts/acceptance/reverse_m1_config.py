@@ -10,7 +10,7 @@
 读一致性接线、重排半精度接线）在 之前**一条反向用例都没有** —— 也就是说
 "改坏了会不会红"从来没被证明过。这份 runner 补上这一格：
 
-* RT-1/RT-4 改 `config.py` 的**类默认值**（默认值一改语义就变，这正是要拦的）；
+* RT-1/RT-4/RT-5/RT-6 改 `config.py` 的**类默认值**（默认值一改语义就变，这正是要拦的）；
 * RT-2 把 `search` 的一致性从"配置"改回"写死 strong"（那 200× 就白省了，而且没人知道）；
 * RT-3 把重排的精度开关从 `rerank_use_f16` 改回 `use_f16`（两个模型又被绑在一起，
   而这条从代码上完全看不出来 —— 只有测试能拦）。
@@ -37,14 +37,28 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
         "src/project_rag/config.py",
         'read_consistency: Literal["bounded", "eventually", "strong"] = "strong"',
         'read_consistency: Literal["bounded", "eventually", "strong"] = "bounded"',
-        "新增旋钮的类默认值",
+        "读一致性 strong、重排半精度 false",
         "check_m1_1_config.py",
     ),
     (
         "RT-2 search 不再听配置、写死 strong（400ms/次 又回来了，而且是静默的）",
         "src/project_rag/adapters/milvus_store.py",
-        "            consistency_level=self._search_consistency,",
-        "            consistency_level=_WRITE_READ_CONSISTENCY,",
+        "            filter=f'source == \"{source}\"' if source is not None else \"\",\n"
+        "            consistency_level=self._search_consistency,\n"
+        "        )\n"
+        "        return [\n"
+        "            RetrievedChunk(chunk=self._to_chunk(hit), score=float(hit[\"distance\"]))\n"
+        "            for hit in hits[0]\n"
+        "        ]\n\n"
+        "    def search_sparse(",
+        "            filter=f'source == \"{source}\"' if source is not None else \"\",\n"
+        "            consistency_level=_WRITE_READ_CONSISTENCY,\n"
+        "        )\n"
+        "        return [\n"
+        "            RetrievedChunk(chunk=self._to_chunk(hit), score=float(hit[\"distance\"]))\n"
+        "            for hit in hits[0]\n"
+        "        ]\n\n"
+        "    def search_sparse(",
         "读一致性：search 走配置档",
         "check_m3_rag.py",
     ),
@@ -61,7 +75,23 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
         "src/project_rag/config.py",
         "    rerank_use_f16: bool = False",
         "    rerank_use_f16: bool = True",
-        "新增旋钮的类默认值",
+        "读一致性 strong、重排半精度 false",
+        "check_m1_1_config.py",
+    ),
+    (
+        "RT-5 索引类型的类默认值改成 IVF_FLAT（新集合一律变近似检索）",
+        "src/project_rag/config.py",
+        '    type: Literal["FLAT", "IVF_FLAT"] = "FLAT"',
+        '    type: Literal["FLAT", "IVF_FLAT"] = "IVF_FLAT"',
+        "索引 FLAT、关键字后端 memory",
+        "check_m1_1_config.py",
+    ),
+    (
+        "RT-6 关键字后端的类默认值改成 milvus（老集合写入/检索会当场报错）",
+        "src/project_rag/config.py",
+        '    backend: Literal["memory", "milvus"] = "memory"',
+        '    backend: Literal["memory", "milvus"] = "milvus"',
+        "索引 FLAT、关键字后端 memory",
         "check_m1_1_config.py",
     ),
 ]

@@ -100,11 +100,10 @@ CASES: tuple[Case, ...] = (
         target=KB_VIEW,
         old="""onUnmounted(() => {
   // 离开页面就停轮询:不然切到聊天页还在每 3 秒打一次清单
-  stopPolling()
-})""",
+  stopPolling()""",
         new="""onUnmounted(() => {
-  // 反向测试:不停轮询
-})""",
+  // 反向测试:不停轮询(后面那两行 removeEventListener 也一并去掉,让锚点保持唯一)
+  void onVisible""",
         needle="轮询：还有入库中的就开",
     ),
     Case(

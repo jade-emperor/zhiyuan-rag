@@ -7,7 +7,9 @@
  * 「字段名与 schemas.py 一致」—— 手写不等于可以漂。
  */
 
-export type Role = 'employee' | 'admin'
+/** 三个角色(与 `domain/auth.py` 的 USER_ROLES 一一对应)。**前端不比较角色字符串** ——
+ * 页签按 `/auth/me` 报的三个能力布尔值渲染(见 `Me`),加第四个角色时这里不用动。 */
+export type Role = 'employee' | 'ops' | 'admin'
 export type RetrievalMode = 'vector' | 'keyword' | 'hybrid'
 export type FusionMode = 'rrf' | 'weighted'
 /**
@@ -85,10 +87,19 @@ export interface LoginOut {
   expires_in: number
 }
 
+/**
+ * `/api/v1/auth/me` —— 当前账号与**三个能力**。
+ *
+ * 三个布尔值是真源(后端 `domain/auth.py` 的三张表算出来的):前端按"能不能"渲染页签,
+ * 而不是自己写 `role === 'ops' || role === 'admin'` —— 那种抄写会在加角色时静默漏掉一个页签。
+ */
 export interface Me {
   username: string
   role: Role
   is_admin: boolean
+  can_view_reports: boolean
+  can_use_knowledge: boolean
+  can_manage: boolean
 }
 
 export interface Citation {
@@ -158,23 +169,68 @@ export interface QueryResponse {
 /** 文档状态是闭集(与 `domain/documents.DOC_STATUSES` 一致)。 */
 export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed' | 'deleting'
 
+/**
+ * 「这份文档现在到底怎么样」—— 清单卡片要显示的那一个字段(与 `domain/documents.DOC_STATES` 一致)。
+ *
+ * 它比 `status` 多出四个**不一致态**:登记表是一份没人失效的缓存(CLI 灌完不写它、
+ * rm 一个文件不写它、drop 一个集合更不写它),所以"已入库"必须由**库里有没有块**说了算。
+ * 非 `processed` 的行 `state` 原样等于 `status`(在途/失败的行,登记表就是真相)。
+ */
+export type DocState =
+  | DocStatus
+  | 'ok'
+  | 'changed'
+  | 'not_indexed'
+  | 'file_missing'
+  | 'unregistered'
+
 export interface DocumentRecord {
   document_id: string
   source: string
   filename: string
-  status: DocStatus
+  /** 登记表说的状态;`unregistered` = 磁盘上有、登记表没有(那种行不是"状态",是"没登记")。 */
+  status: DocStatus | 'unregistered'
+  /** 要显示的是这个,不是 `status` —— 两个字段分岔时 `state` 才是现实。 */
+  state: DocState
+  /** **登记表**记的块数(那次入库写进去多少)。 */
   chunks: number
+  /** 登记时记下的字节数(0 = 当年没记过,判不了"文件改没改")。 */
   size_bytes: number
+  /** 磁盘上现在的字节数(0 = 不在)。与 `size_bytes` 并排显示才看得出"变了没有"。 */
+  disk_size_bytes: number
+  on_disk: boolean
   created_at: string
   error: string | null
-  /** 只有 `processed` 才是"能被检索到"。清单卡片上要显示这个,不是显示状态就完事。 */
+  /** **按库内实际块数算**:登记说 processed 不算数 —— 那正是"显示已入库却搜不到"的成因。 */
   searchable: boolean
+  /** **向量库里**实际的块数(与 `chunks` 不是一个数:相等才是"对得上")。 */
+  indexed_chunks: number
+  /**
+   * 这份文档有没有被收窄过(P0-6)。**谁看得见是另一回事** —— 清单已经按可见范围过滤过,
+   * 员工看到的每一行他都能看;这个字段只用来标一句"这是限定的"。
+   */
+  restricted: boolean
+}
+
+/** 清单的一句话汇总(与逐行 `state` 同一个口径:后端数一遍,前端不再自己数)。 */
+export interface DocumentSummary {
+  total: number
+  ok: number
+  changed: number
+  not_indexed: number
+  file_missing: number
+  unregistered: number
+  /** 在途与失败(pending/processing/failed/deleting)—— 它们不是"对不上",是"还没完"。 */
+  in_flight: number
 }
 
 export interface DocumentsOut {
   documents: DocumentRecord[]
+  summary: DocumentSummary
   /** 原文件落在哪 —— 排障时要知道去哪儿找(由后端告诉前端,不是前端猜)。 */
   uploads_dir: string
+  /** 语料**源材料**目录:清单里那些「未入库」的文件就在这儿(删除时不动这个目录)。 */
+  corpus_dir: string
 }
 
 /** 删除结果:**后端把做了什么如实说清**(删了几块 / 文件在不在 / 登记行在不在)。 */
@@ -183,6 +239,8 @@ export interface DeletedDocument {
   deleted_chunks: number
   removed_file: boolean
   removed_record: boolean
+  /** true = 磁盘上那份是**语料源材料**,故意没动(删库不删源);与 `removed_file` 是两件事。 */
+  kept_source: boolean
 }
 
 export interface ChunkPreview {
@@ -225,7 +283,7 @@ export interface SlowRow {
   total_ms: number
 }
 
-/** `GET /api/v1/admin/metrics` —— 一个时间窗的延迟汇总。 */
+/** `GET /api/v1/reports/metrics` —— 一个时间窗的延迟汇总。 */
 export interface MetricsOut {
   window: string
   rows: number
@@ -238,6 +296,110 @@ export interface MetricsOut {
   rag_answers: number
   segments: SegmentStats[]
   slowest: SlowRow[]
+}
+
+/**
+ * 消耗报表里的一个模型 + **一个时段**(P0-7)。
+ *
+ * 同一个模型最多两行:`peak`(高峰)/ `off_peak`(空闲)—— provider 的空闲时段打折,
+ * 单价差 2 倍,所以不能合成一行。
+ *
+ * `cached_input_tokens` 是输入里**命中 prompt cache** 的那部分(包含在 `input_tokens` 里,
+ * 不是额外的);它的单价与未命中差 **50 倍**(0.02 vs 1 元/百万)。
+ * `total_cost` 为 `null` = **这个模型没配单价**(不是花了 0 元)。
+ */
+export interface CostLine {
+  model: string
+  period: string
+  calls: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  total_cost: number | null
+}
+
+/** 一个时段的合计(与 provider 的价目表一行行对得上)。 */
+export interface PeriodTotal {
+  period: string
+  calls: number
+  input_tokens: number
+  output_tokens: number
+  total_cost: number
+}
+
+/**
+ * `GET /api/v1/reports/cost` —— 一个时间窗的消耗。
+ *
+ * `all_priced` 与四个"缺口"计数必须一起读,`total_cost` 才是可解释的:
+ * `unmetered_calls`(没量到 token)、`period_unknown_calls`(读不到发生时间 → 按高峰计)、
+ * `cache_unknown_calls`(没回报缓存命中数 → 整段按未命中价计)、`unpriced_models`(没配单价)。
+ */
+export interface CostOut {
+  window: string
+  currency: string
+  metered_calls: number
+  unmetered_calls: number
+  period_unknown_calls: number
+  cache_unknown_calls: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  total_cost: number
+  all_priced: boolean
+  unpriced_models: string[]
+  periods: PeriodTotal[]
+  lines: CostLine[]
+}
+
+/** 账号列表里的一行(管理员页)。**不含密码或它的哈希**。 */
+export interface UserOut {
+  user_id: string
+  username: string
+  role: Role
+  is_admin: boolean
+  /** 他所属的组(哪几类员工)。 */
+  group_ids: string[]
+}
+
+export interface UsersOut {
+  users: UserOut[]
+}
+
+/** 建号结果。**不回显密码**(它不是"确认",是"记下来给谁看"的问题)。 */
+export interface CreateUserOut {
+  user_id: string
+  username: string
+  role: Role
+}
+
+/** 删除结果(账号 / 组通用):`deleted=false` = 本来就没有(删除是幂等的)。 */
+export interface DeletedSubjectOut {
+  deleted: boolean
+}
+
+/** 一个组(一类员工)。`member_ids` 是成员的用户 ID。 */
+export interface GroupOut {
+  group_id: string
+  name: string
+  member_ids: string[]
+}
+
+export interface GroupsOut {
+  groups: GroupOut[]
+}
+
+/**
+ * 一份文档的可见范围。
+ *
+ * `restricted=false` 且两个名单都空 = **没有规则 = 人人可见**(默认状态)。
+ * 两个名单都空地 PUT 回去 = 取消限制(不是"谁都看不到")。
+ */
+export interface DocumentAclOut {
+  document_id: string
+  restricted: boolean
+  user_ids: string[]
+  group_ids: string[]
 }
 
 /** `/api/v1/stream` 的四种帧 —— 与 `api/app.py` 的 `_frame` 一一对应。 */

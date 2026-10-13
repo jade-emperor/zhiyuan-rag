@@ -163,6 +163,9 @@ class _FakeAuthStore:
 
     def set_password(self, user_id, password_hash) -> None: ...
 
+    def delete_user(self, user_id) -> int:  # pragma: no cover - 本脚本用不到
+        return 0
+
     def list_users(self):
         return [user for user, _ in self.users.values()]
 
@@ -281,11 +284,16 @@ class _World:
 
 
 def _options_for(**payload):
-    """输入:QueryRequest 的字段。行为:走 `_options` 翻译一次。输出:RetrievalOptions。"""
+    """输入:QueryRequest 的字段。行为:走 `_options` 翻译一次。输出:RetrievalOptions。
+
+    P0-6 起 `_options` 还要一个可见范围结论(``denied_docs``)。这里给**不受限**的那一份:
+    这条检查测的是"检索旋钮怎么翻译",可见范围另有一套契约(``check_p0_6_access.py``)。
+    """
     from project_rag.api.schemas import QueryRequest
+    from project_rag.application.access import UNRESTRICTED
 
     request = QueryRequest(query="随便问问", **payload)
-    return _backend_module()._options(_World().deps, request)
+    return _backend_module()._options(_World().deps, request, UNRESTRICTED)
 
 
 # ══ 一、前端工程与产物（静态契约） ═══════════════════════════════════════════
@@ -481,20 +489,52 @@ def _() -> str:
     return "0 处能力闭集字面量 / 0 处写死模型名 / 0 处写死 accept"
 
 
-@check("角色分流：管理页签只对管理员渲染，路由守卫拦住非管理员")
+@check("角色分流：页签按能力渲染（对话/知识库/报表/账号），路由按能力拦")
 def _() -> str:
+    """P0-6:导航不再按"是不是管理员"分两档,而是按**能力**分四档 ——
+    运维只看到「报表」,员工看到「对话 + 知识库」,管理员全都看到。
+
+    这几条断言盯的是"三件事必须同时成立",漏一件就会出现
+    "藏了页签但路由放行"(点 URL 能进)或"拦了路由但页签还在"(点了必然 403):
+    ① 页签用的那三个 computed 真的存在且来自 `/auth/me`;② 路由 meta 按能力标;
+    ③ 守卫真的用 `NEEDS` 判定,而且进不去时有落地页。
+    """
     header = (WEB_SRC / "components" / "AppHeader.vue").read_text(encoding="utf-8")
-    admin_tabs = re.findall(r'v-if="isAdmin"[^>]*>([^<]+)<', header)
-    if len(admin_tabs) < 2:
-        raise AssertionError(
-            f"顶部导航里用 isAdmin 守住的页签只有 {admin_tabs}：知识库/可观测都必须是管理员可见"
+    # **逐个页签**核对它那一行上的守卫,不是"整个文件里出现过就算" ——
+    # 后者会被"另一个页签也用了同一个能力"蒙混过去(反向测试 RT-8 抓出来的:
+    # 把知识库页签的 v-if 去掉,文件里仍有 v-if="canUseKnowledge",检查照样绿)。
+    wanted = {
+        "chat": ("canUseKnowledge", "对话:员工与管理员"),
+        "knowledge": ("isAdmin", "知识库:页面里有上传/删除/授权,所以只有管理员"),
+        "reports": ("canViewReports", "报表:运维与管理员"),
+        "accounts": ("isAdmin", "账号与权限:只有管理员"),
+    }
+    for name, (guard, what) in wanted.items():
+        line = next(
+            (item for item in header.splitlines() if f":to=\"{{ name: '{name}' }}\"" in item),
+            None,
         )
+        if line is None:
+            raise AssertionError(f"顶部导航里没有指向 {name} 的页签")
+        if f'v-if="{guard}"' not in line:
+            raise AssertionError(
+                f"{what}这个页签该用 v-if=\"{guard}\" 守住,实际这一行是:{line.strip()}"
+            )
     router_text = (WEB_SRC / "router.ts").read_text(encoding="utf-8")
-    if router_text.count("admin: true") < 2:
-        raise AssertionError("router.ts 里管理路由没有 meta.admin 标记")
-    if "to.meta.admin" not in router_text:
-        raise AssertionError("router.ts 的守卫没有检查 meta.admin（标记了却不用 = 没拦）")
-    return f"导航 {len(admin_tabs)} 个管理页签 + 守卫检查 meta.admin"
+    for need in ("'knowledge'", "'reports'", "'manage'"):
+        if need not in router_text:
+            raise AssertionError(f"router.ts 里没有按能力标记路由(缺 needs: {need})")
+    if "NEEDS[need]" not in router_text:
+        raise AssertionError("router.ts 的守卫没有按能力判定（标了却不用 = 没拦）")
+    if "landingRoute" not in router_text:
+        raise AssertionError(
+            "router.ts 没有落地页逻辑:运维打不开 /chat,不给去处会绕成空白页"
+        )
+    auth_text = (WEB_SRC / "stores" / "auth.ts").read_text(encoding="utf-8")
+    for field in ("can_view_reports", "can_use_knowledge", "can_manage"):
+        if field not in auth_text:
+            raise AssertionError(f"stores/auth.ts 没有用后端报的能力字段 {field}（那是唯一真源）")
+    return "导航 3 档能力页签 + 路由 needs 标记 + 按能力判定 + 落地页"
 
 
 @check("WebSocket 带 ?token=（浏览器不能给 WS 设头，这是唯一一条令牌进 URL 的路）")

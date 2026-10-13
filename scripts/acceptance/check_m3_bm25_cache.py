@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from _harness import check, report
@@ -44,7 +44,7 @@ from _harness import check, report
 from project_rag.domain import Chunk
 
 if TYPE_CHECKING:  # 只为类型:运行期一个字节都不 import
-    from project_rag.domain import Embedding, RetrievedChunk
+    from project_rag.domain import Embedding, RetrievedChunk, SparseVector
     from project_rag.ports import VectorStore
 
 
@@ -65,9 +65,15 @@ class _CountingStore:
         self.loads = 0
         self.fingerprints = 0
 
-    def upsert(self, chunks: Sequence[Chunk], embeddings: Sequence[Embedding]) -> int:
-        """输入:子块 + 向量。行为:转发。输出:库内总数。"""
-        return self._inner.upsert(chunks, embeddings)
+    def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Embedding],
+        *,
+        sparse: Sequence[SparseVector] | None = None,
+    ) -> int:
+        """输入:子块 + 向量(+ 可选稀疏向量)。行为:转发。输出:库内总数。"""
+        return self._inner.upsert(chunks, embeddings, sparse=sparse)
 
     def search(
         self, query_embedding: Embedding, *, k: int, source: str | None = None
@@ -75,9 +81,19 @@ class _CountingStore:
         """输入:查询向量、条数、来源过滤。行为:转发。输出:命中序列。"""
         return self._inner.search(query_embedding, k=k, source=source)
 
+    def search_sparse(
+        self, query_sparse: SparseVector, *, k: int, source: str | None = None
+    ) -> Sequence[RetrievedChunk]:
+        """输入:查询的稀疏向量。行为:转发(这条契约验的是进程内 BM25,不走这一路)。输出:命中序列。"""
+        return self._inner.search_sparse(query_sparse, k=k, source=source)
+
     def delete_by_doc_id(self, doc_id: str) -> int:
         """输入:文档标识。行为:转发。输出:删除条数。"""
         return self._inner.delete_by_doc_id(doc_id)
+
+    def has_sparse_column(self) -> bool:
+        """输入:无。行为:转发(这一档的集合有没有稀疏列,与本条契约无关)。输出:布尔。"""
+        return self._inner.has_sparse_column()
 
     def fingerprint(self) -> Sequence[str]:
         """输入:无。行为:**计数后**转发。输出:指纹序列。"""
@@ -88,6 +104,10 @@ class _CountingStore:
         """输入:无。行为:**计数后**转发。输出:全部子块。"""
         self.loads += 1
         return self._inner.load_all()
+
+    def chunk_counts(self) -> Mapping[str, int]:
+        """输入:无。行为:转发。输出:``doc_id -> 块数``。"""
+        return self._inner.chunk_counts()
 
     def delete_by_source(self, source: str) -> int:
         """输入:来源标签。行为:转发。输出:删除条数。"""

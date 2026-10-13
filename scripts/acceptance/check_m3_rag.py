@@ -1710,12 +1710,19 @@ def _() -> str:
     return f"并发换语料后不炸、命中 {len(hits)} 条（快照是配套的）"
 
 
-@check("分词口径只有一处：matcher_bm25 与 bm25_index 共用 chinese_tokens")
+@check("分词口径只有一处：关键字那几路（FAQ 匹配 / BM25 两档）共用 chinese_tokens")
 def _() -> str:
-    matcher = (SRC / "adapters" / "matcher_bm25.py").read_text(encoding="utf-8")
-    index = (SRC / "adapters" / "bm25_index.py").read_text(encoding="utf-8")
+    """**三处**文本匹配都走同一个分词器 —— 少一处就是"同一条查询在两处切出不同的词"。
+
+    这条以前只盯两处（FAQ 匹配器 + 进程内 BM25），``keyword.backend=milvus`` 那一档加进来之后
+    **第三个用户（``bm25_sparse.py``）漏在外面**了：它自己 import jieba 也能跑，而且症状是静默的
+    —— 入库按一种切法算权重、检索按另一种切法编码查询，命中率掉一截而没有任何报错。
+    「口径只在一处」这句话里的"一处"必须把**所有用户**枚举完，否则它只是当时那两处的巧合。
+    """
+    users = ("matcher_bm25", "bm25_index", "bm25_sparse")
     shared = (SRC / "adapters" / "chinese_tokens.py").read_text(encoding="utf-8")
-    for name, text in (("matcher_bm25", matcher), ("bm25_index", index)):
+    for name in users:
+        text = (SRC / "adapters" / f"{name}.py").read_text(encoding="utf-8")
         if "from project_rag.adapters.chinese_tokens import tokens" not in text:
             raise AssertionError(f"{name} 没有用共享分词器 —— 分词口径分叉了")
         # 查 import 语句而不是子串:docstring 里提一句 "jieba 分词" 不该算分叉
@@ -1723,7 +1730,7 @@ def _() -> str:
             raise AssertionError(f"{name} 里还直接 import jieba —— 分词口径分叉了")
     if "jieba" not in shared:
         raise AssertionError("chinese_tokens 里没有 jieba，那它拿什么分词？")
-    return "两处都用 adapters/chinese_tokens.tokens，没有第二份分词实现"
+    return f"{len(users)} 处都用 adapters/chinese_tokens.tokens：{' / '.join(users)}，没有第二份分词实现"
 
 
 @check("CLI：search --route bm25 在真实语料上召回（不加载嵌入模型）")

@@ -15,10 +15,13 @@ from functools import lru_cache
 from typing import Any, TypeVar
 
 from project_rag.adapters.bm25_index import BM25KeywordIndex
+from project_rag.adapters.bm25_sparse import BM25SparseEncoder, MilvusSparseKeywordIndex
+from project_rag.application.cost import PeriodRule
 from project_rag.domain import ConversationTurn, QaEvent, RetrievalOptions
 from project_rag.observability import get_logger, note_build
 from project_rag.observability.ledger_sink import LedgerHandler, attach_ledger_sink
 from project_rag.ports import (
+    AccessStore,
     AuthStore,
     Cache,
     DocumentStore,
@@ -30,6 +33,7 @@ from project_rag.ports import (
     RateLimiter,
     Reranker,
     SessionCatalog,
+    SparseEncoder,
     TextMatcher,
     VectorStore,
 )
@@ -45,7 +49,7 @@ def _default_faq_threshold() -> float:
     它只在**构造 Deps 时**才被调用,所以本模块 import 期仍然不碰 config
     (`--help` 那条路根本不构造 Deps),而 `build_real_deps()` 自动拿到配置值。
     """
-    from project_rag.config import get_settings
+    from project_rag.config import get_settings, project_path
 
     return get_settings().faq.threshold
 
@@ -55,6 +59,40 @@ def _default_cache_ttl() -> int:
     from project_rag.config import get_settings
 
     return get_settings().cache.ttl_s
+
+
+def _default_cost_prices() -> dict[str, Any]:
+    """输入:无。行为:读配置里的单价表(``模型 -> 三档 × 两时段的价``)。输出:字典。
+
+    理由同 ``_default_faq_threshold``:写一份字面量就等于在 config 之外又立一个真源。
+    验收脚本可以注入自己的单价表(一个同形状的对象就行),直接测"算钱"那段口径。
+    """
+    from project_rag.config import get_settings
+
+    return get_settings().cost.prices()
+
+
+def _default_cost_rule() -> PeriodRule:
+    """输入:无。行为:把配置里的高峰口径(星期 / 窗口 / 节假日)解析成判定规则。输出:``PeriodRule``。
+
+    **解析只在这一处**(与 ``_default_cost_prices`` 同一个理由):用例层收到的是能直接判的
+    规则,不是"三个原始列表";配置写错时在这里当场抛,而不是每个请求各抛一次。
+    """
+    from project_rag.config import get_settings
+
+    cost = get_settings().cost
+    return PeriodRule.of(
+        weekdays=cost.peak.weekdays,
+        windows=cost.peak.windows,
+        holidays=cost.holidays,
+    )
+
+
+def _default_cost_currency() -> str:
+    """输入:无。行为:读配置里的币种。输出:文本(只用于显示)。"""
+    from project_rag.config import get_settings
+
+    return get_settings().cost.currency
 
 
 # 这个类实例创建完成以后,就不再需要修改了,所以用 frozen=True,slots=True
@@ -76,11 +114,19 @@ class Deps:
     auth_store_factory: Callable[[], AuthStore] | None = None
     # 文档登记表(有哪些文档 / 各自状态)。默认 None = 不接(老契约与纯检索路径用不上)。
     document_store_factory: Callable[[], DocumentStore] | None = None
+    # 可见范围(组 / 组员 / 每份文档授权给谁)。默认 None = 不接 = **不做可见范围**
+    # (没有任何规则时本来就人人可见,所以"不接"与"接了但一条规则都没有"行为一致)。
+    # `build_real_deps` 永远接上 —— 于是"生产路径上没有'忘了配权限'"这一档。
+    access_store_factory: Callable[[], AccessStore] | None = None
     # 上传入库要用的三样,全部走工厂:**api/ 只许认识 Deps,不许认识适配器**
     # (那条分层法律也有 AST 检查)。切分器、装载函数、支持的后缀表都在适配器里。
     chunker_factory: Callable[[], Any] | None = None
     loader_factory: Callable[[], Any] | None = None
     suffixes_factory: Callable[[], tuple[str, ...]] | None = None
+    # **磁盘索引**(上传目录 + 语料目录里的文件、大小、候选 doc_id)。清单拿它和登记表、
+    # 向量库对账 —— "语料目录里新放的文件"只有这一处看得见。默认 None = 不看磁盘那一处
+    # (多份老契约只关心登记表与库,不注入就不扫);`build_real_deps` 永远接上。
+    disk_files_factory: Callable[[], Sequence[Any]] | None = None
     # 阈值:默认取配置(见 _default_faq_threshold),注入就按注入的来 ——
     # 验收脚本靠这个注入一个边界值直接测「命中判定」。
     faq_threshold: float = field(default_factory=_default_faq_threshold)
@@ -88,6 +134,13 @@ class Deps:
     # 放 Deps 而不是让 faq.py 自己 get_settings(),
     # 是为了让验收脚本能注入一个短 TTL 直接测过期。
     cache_ttl: int = field(default_factory=_default_cache_ttl)
+    # 消耗报表的单价表与币种(见 config.CostConfig)。静态标量,理由同 cache_ttl:
+    # 验收注入一份自己的单价就能直接测"算钱",不必改配置文件。
+    cost_prices: dict[str, Any] = field(default_factory=_default_cost_prices)
+    cost_currency: str = field(default_factory=_default_cost_currency)
+    # 高峰/空闲的判定规则(见 config.CostConfig.peak + holidays)。默认规则 = 不分时段
+    # (`` PeriodRule() `` 的窗口是空的):所有调用按 peak 价,报表也不报"时段不明"。
+    cost_rule: PeriodRule = field(default_factory=_default_cost_rule)
     # 思考档位。**不是工厂**:它是个静态标签,唯一用途是让延迟账里能看出
     # 「这一轮按哪一档跑的」。命令层把它转交给 stream_rag / stream_question,用例与账本
     # 都不认识 config。默认 None → 账里是 '-'（注入式调用不该被编一个假档位)。
@@ -95,8 +148,15 @@ class Deps:
     embedder_factory: Callable[[], Embedder] | None = None
     vector_store_factory: Callable[[], VectorStore] | None = None
     # 关键字那一路。它的语料也是从向量库取的(全量文本只有那一份),
-    # 所以它跟 vector_store_factory 共享同一个实例 —— 见 build_real_deps 里的 lru_cache
+    # 所以它跟 vector_store_factory 共享同一个实例 —— 见 build_real_deps 里的 lru_cache。
+    # 走哪一档由 `keyword.backend` 决定:memory = 进程内 BM25(默认),
+    # milvus = 稀疏向量检索(那档才需要 sparse_encoder_factory)。
     keyword_index_factory: Callable[[], KeywordIndex] | None = None
+    # 稀疏向量编码器(keyword.backend=milvus 那一档)。**入库与检索共用同一个实例**:
+    # 查询侧虽然不带 idf,但"分词口径 + 哈希维度"必须与写文档时逐字一致,
+    # 共用实例让这件事不靠约定(见 adapters/bm25_sparse.py)。
+    # 默认 None = 不接这一档(写入不带稀疏向量,检索仍走进程内 BM25)。
+    sparse_encoder_factory: Callable[[], SparseEncoder] | None = None
     # 重排。**注意它和上面几个不一样:工厂存在 ≠ 每次都用** ——
     # 用不用由 config 的 rag.rerank 决定,而那个开关只在命令层读。
     # 这样「关掉重排」不会顺带把模型加载也省掉,语义干净:
@@ -140,8 +200,14 @@ def build_real_deps() -> Deps:
     # 重适配器一律按完整路径 import:它们不在 adapters 包入口里
     # (llm_deepseek 拉 langchain,实测 3510ms;另外两个拉 torch,秒级 + 上 G 内存)
     from project_rag.adapters.auth_mysql import MySQLAuthStore
+    from project_rag.adapters.access_mysql import MySQLAccessStore
     from project_rag.adapters.chunker_recursive import ChineseRecursiveChunker
-    from project_rag.adapters.document_loader import load_documents, supported_suffixes
+    from project_rag.adapters.document_loader import (
+        index_files,
+        ingest_roots,
+        load_documents,
+        supported_suffixes,
+    )
     from project_rag.adapters.documents_mysql import MySQLDocumentStore
     from project_rag.adapters.ledger_mysql import MySQLLedgerStore
     from project_rag.adapters.llm_deepseek import DeepSeekLLM
@@ -152,11 +218,16 @@ def build_real_deps() -> Deps:
     )
     from project_rag.adapters.reranker_bge import BGEReranker
     from project_rag.adapters.sessions_mysql import MySQLSessionCatalog
-    from project_rag.config import get_settings
+    from project_rag.config import get_settings, project_path
 
     settings = get_settings()
-    # 匹配器只造一个:工厂每次调用都返回同一个实例,它按语料指纹缓存的索引才有意义
-    matcher = BM25TextMatcher()
+    # 匹配器只造一个:工厂每次调用都返回同一个实例,它按语料指纹缓存的索引才有意义。
+    # 两道覆盖率闸门从配置进来:它们是**命中口径**的一部分,写死在适配器里就等于
+    # "调它要改代码"(口径与推导见 adapters/matcher_bm25.py)。
+    matcher = BM25TextMatcher(
+        min_query_coverage=settings.faq.min_query_coverage,
+        min_entry_coverage=settings.faq.min_entry_coverage,
+    )
 
     # 下面四个工厂都是**进程级单例**(lru_cache),因为它们各自抱着一份重资源:
     # Milvus 连接 / 嵌入模型(2G) / 重排模型(2.2G) / BM25 的全量分词索引。
@@ -170,7 +241,16 @@ def build_real_deps() -> Deps:
     @lru_cache(maxsize=1)
     def _vector_store() -> MilvusVectorStore:
         note_build("vector_store")
-        return MilvusVectorStore(settings.milvus)
+        # sparse 那一列要不要建,由关键字那一路的档位决定(一个开关决定 schema,
+        # 免得"配置说用稀疏检索、集合却没有那一列"这种两处各说一套的坏法)
+        return MilvusVectorStore(
+            settings.milvus, sparse=settings.keyword.backend == "milvus"
+        )
+
+    @lru_cache(maxsize=1)
+    def _sparse_encoder() -> SparseEncoder:
+        """关键字那一路的稀疏编码器。**只在这一档被调用**(memory 那档根本不会用到它)。"""
+        return BM25SparseEncoder(k1=settings.keyword.bm25_k1, b=settings.keyword.bm25_b)
 
     @lru_cache(maxsize=1)
     def _embedder() -> Embedder:
@@ -182,7 +262,11 @@ def build_real_deps() -> Deps:
         return BGEReranker(settings.embedding)
 
     @lru_cache(maxsize=1)
-    def _keyword_index() -> BM25KeywordIndex:
+    def _keyword_index() -> KeywordIndex:
+        if settings.keyword.backend == "milvus":
+            # 稀疏那一档:进程内**不再**需要全量语料与 jieba 索引(111MB/进程 + 冷启动 2.1s
+            # 实测见 bm25_index.py),查询编码后交给 Milvus 的稀疏倒排索引。
+            return MilvusSparseKeywordIndex(store=_vector_store(), encoder=_sparse_encoder())
         # 缓存只用来存「语料指纹的摘要」,让每查询那次 397.6ms 的 Milvus 往返
         # 变成一次 Redis GET(~0.1ms);缓存坏了自动退回"每查询读一次指纹",不影响正确性。
         return BM25KeywordIndex(
@@ -201,6 +285,7 @@ def build_real_deps() -> Deps:
         ledger_store_factory=lambda: MySQLLedgerStore(settings.mysql),
         auth_store_factory=lambda: MySQLAuthStore(settings.mysql),
         document_store_factory=lambda: MySQLDocumentStore(settings.mysql),
+        access_store_factory=lambda: MySQLAccessStore(settings.mysql),
         chunker_factory=lambda: ChineseRecursiveChunker(
             settings.rag.parent_chunk_size,
             settings.rag.child_chunk_size,
@@ -208,6 +293,15 @@ def build_real_deps() -> Deps:
         ),
         loader_factory=lambda: load_documents,
         suffixes_factory=supported_suffixes,
+        # 磁盘索引(清单对账用的"磁盘那一处")。**每次调用扫一遍**,不做缓存:
+        # 有人刚往语料目录里放了个文件,清单就该立刻看见它 —— 缓存一秒都是在制造
+        # "我明明放进去了前端看不到"这类问题。目录不大,递归列一遍是毫秒级。
+        disk_files_factory=lambda: index_files(
+            ingest_roots(
+                project_path(settings.api.uploads_dir), project_path(settings.api.corpus_dir)
+            ),
+            suffixes=supported_suffixes(),
+        ),
         # 集合级运维(列现状 / 删集合本身)。这两个不碰模型、也不建连接 —— 客户端在**被调用时**才建。
         collections_factory=lambda: list_collections(settings.milvus),
         drop_collection_factory=lambda name: drop_collection(settings.milvus, name),
@@ -216,6 +310,12 @@ def build_real_deps() -> Deps:
         embedder_factory=_embedder,
         vector_store_factory=_vector_store,
         keyword_index_factory=_keyword_index,
+        # **只在 milvus 那一档装配**:memory 那档的集合 schema 里根本没有 sparse_vector 列,
+        # 装了它只会让写入路径带着稀疏向量去撞那一列(而且先白算一遍全库统计)。
+        # 一个旋钮决定三件事:schema 要不要稀疏列 / 写入带不带稀疏向量 / 检索走哪条路。
+        sparse_encoder_factory=(
+            _sparse_encoder if settings.keyword.backend == "milvus" else None
+        ),
         # 重排模型同样上 G 内存(实测加载 1.6s),所以也是惰性工厂;
         # 而且它跟嵌入共用 embedding 段配置(rerank_model_dir / device / use_f16)
         reranker_factory=_reranker,
@@ -233,6 +333,13 @@ def build_real_deps() -> Deps:
         rate_limiter_factory=_rate_limiter(settings),
         faq_threshold=settings.faq.threshold,
         cache_ttl=settings.cache.ttl_s,
+        cost_prices=settings.cost.prices(),
+        cost_currency=settings.cost.currency,
+        cost_rule=PeriodRule.of(
+            weekdays=settings.cost.peak.weekdays,
+            windows=settings.cost.peak.windows,
+            holidays=settings.cost.holidays,
+        ),
         thinking=settings.llm.thinking,
     )
 
@@ -342,6 +449,26 @@ def knowledge_callable(
         )
 
     return call
+
+
+def ensure_access_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保可见范围那三张表存在(**幂等**)。输出:失败原因;成功给 None。
+
+    **为什么失败只记一条告警、不拦启动**:没有 MySQL 时连登录都过不去
+    (令牌要 ``JOIN users`` 才换得出人),所以"建不了这几张表"不会变成一次静默放行 ——
+    它只会让管理员页在 MySQL 恢复前用不了。反过来把服务拦在启动阶段,
+    等于"权限表没建好,整套问答都用不了",那是拿一个次要功能绑架主功能。
+
+    **查询期不这样做**:真正读规则失败时接口回 503(见 ``api/app.py`` 的 ``_access``),
+    因为那时已经有人在用这套权限了 —— 读不到就放行才是真的危险。
+    """
+    if deps.access_store_factory is None:
+        return None
+    try:
+        deps.access_store_factory().init_schema()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
 
 
 def attach_ledger(deps: Deps) -> LedgerHandler | None:

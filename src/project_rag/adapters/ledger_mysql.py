@@ -14,6 +14,17 @@ MySQL 账本适配器:一行账本写进 ``latency_ledger``,按时间窗读回�
 
 **为什么 ts 由这里盖**:账本用的是 ``time.perf_counter()``(单调时钟,量间隔用的,
 没有"绝对时刻"的含义)。落表要的是墙上时间,由存储层盖戳,**账本本体不必知道日历**。
+
+**ts 存 UTC,并单独记下盖戳时的时区偏移**(``ts_offset`` 列) —— 这是分时段计价逼出来的:
+价目表按**北京时间**分高峰/空闲(差一倍的价钱),而"14:00"离开时区就不是一个时刻。
+实测这个项目里**同一张表有两种写入者**:容器里的 app 进程钟是 UTC、宿主上的脚本是 CST
+(容器 ``date`` → UTC,宿主 → CST),只存一个裸钟点的话,两者相差 8 小时 ——
+足以把高峰判成空闲,而报表上只会显示一个"合理"的金额。
+
+所以:``ts`` 一律存 UTC(新行),``ts_offset`` 记下盖戳者的 UTC 偏移(新行是 ``+00:00``);
+**没有 ``ts_offset`` 的行 = 老账**(那时只存了裸钟点,不知道写它的是哪个钟)——
+读回来时**不替它猜**,而还给用例层一个不带时区的时间戳,由报表按"判不出来"处理
+(按高峰价计 + 计数,见 ``application/cost.py``)。
 """
 
 from __future__ import annotations
@@ -21,23 +32,29 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pymysql
 
 from project_rag.config import MySQLConfig
 from project_rag.ports import LedgerStore
+from project_rag.ports.ledger import LEDGER_TS
 
 # 表名白名单:与 conversation_mysql 同一套做法(表名会拼进 SQL,而它是配置来的)
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_TABLE = "latency_ledger"
 
-# 建表语句。**加索引列 = 改这里 + 改 _indexed()**,payload 里的字段不用动。
+# 盖戳时区那一列的宽度:正好装得下 "+08:00"。
+_OFFSET_WIDTH = 8
+
+# 建表语句。**加索引列 = 改这里 + 改 _indexed() + 改 _ensure_columns()**,
+# payload 里的字段不用动。
 _DDL = """
 CREATE TABLE IF NOT EXISTS {table} (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   request_id VARCHAR(64) NOT NULL,
   ts DATETIME(3) NOT NULL,
+  ts_offset VARCHAR(8) NULL,
   label VARCHAR(16) NOT NULL,
   channel VARCHAR(16) NULL,
   cold TINYINT(1) NOT NULL,
@@ -78,6 +95,30 @@ def _float_or_none(value: str) -> float | None:
     return None if value in ("", "-") else float(value)
 
 
+def _offset_text(moment: datetime) -> str:
+    """输入:一个带时区的时刻。行为:把它相对 UTC 的偏移写成 ``±HH:MM``。输出:文本。
+
+    写成偏移而不是时区名(``Asia/Shanghai``):读的一侧不需要 IANA 时区库就能还原出绝对时刻
+    (容器里常常没有 tzdata),而"中国没有夏令时"这件事让固定偏移就是准确的。
+    """
+    total = int((moment.utcoffset() or timedelta(0)).total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    return f"{sign}{total // 3600:02d}:{total % 3600 // 60:02d}"
+
+
+def _stamp(ts: datetime, offset: str | None) -> str:
+    """输入:库里的裸钟点 + 那一行的偏移文本。行为:拼成 ISO-8601。输出:文本。
+
+    **有偏移 = 绝对时刻**,读的一侧换算成北京时间判高峰/空闲;**没有偏移 = 老账**,
+    原样返回一个裸钟点,让报表按"时段判不出来"处理(按高峰价计 + 计数)。
+    """
+    if offset is None:
+        return ts.isoformat()
+    total = (1 if offset[0] == "+" else -1) * (int(offset[1:3]) * 60 + int(offset[4:6]))
+    return ts.replace(tzinfo=timezone(timedelta(minutes=total))).isoformat()
+
+
 class MySQLLedgerStore(LedgerStore):
     """``latency_ledger`` 的读写。构造不连库,第一次用到才连(与其它适配器一致)。"""
 
@@ -89,17 +130,37 @@ class MySQLLedgerStore(LedgerStore):
         self._table = table
 
     def init_schema(self) -> None:
-        """输入:无。行为:建表(幂等,``IF NOT EXISTS``)。输出:无。"""
+        """输入:无。行为:建表 + 补历史表缺的列(幂等)。输出:无。
+
+        老表(加 ``ts_offset`` 之前建的)不会因为 ``CREATE TABLE IF NOT EXISTS`` 长出这一列,
+        所以这里显式补一次 —— 幂等由 ``information_schema`` 查一下保证。
+        """
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
                 cur.execute(_DDL.format(table=self._table))
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s",
+                    (self._table, "ts_offset"),
+                )
+                found = cur.fetchone()
+                if not found or not found[0]:
+                    cur.execute(
+                        f"ALTER TABLE {self._table} "
+                        f"ADD COLUMN ts_offset VARCHAR({_OFFSET_WIDTH}) NULL"
+                    )
         finally:
             conn.close()
 
     def record(self, row: Mapping[str, str]) -> None:
-        """输入:一行账本。行为:索引列拆出来 + 整行进 payload,插一条。输出:无。"""
-        ts = datetime.now()
+        """输入:一行账本。行为:索引列拆出来 + 整行进 payload,插一条。输出:无。
+
+        ``ts`` 存 **UTC**(与库/容器的本地时区无关),另把盖戳时的偏移写进 ``ts_offset``
+        —— 于是"这一次调用发生在几点"在任何机器上读出来都是同一个绝对时刻。
+        """
+        now = datetime.now(UTC)
+        ts = now.replace(tzinfo=None)
         values = (
             str(row.get("request_id") or "-"),
             str(row.get("label") or "-"),
@@ -114,34 +175,47 @@ class MySQLLedgerStore(LedgerStore):
         )
         sql = (
             f"INSERT INTO {self._table} "
-            f"(ts, {', '.join(_COLUMNS)}, payload) VALUES (%s, "
+            f"(ts, ts_offset, {', '.join(_COLUMNS)}, payload) VALUES (%s, %s, "
             f"{', '.join(['%s'] * len(_COLUMNS))}, %s)"
         )
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
-                cur.execute(sql, (ts, *values, json.dumps(dict(row), ensure_ascii=False)))
+                cur.execute(sql, (ts, _offset_text(now), *values, json.dumps(dict(row), ensure_ascii=False)))
         finally:
             conn.close()
 
     def load_since(self, since: datetime) -> Sequence[Mapping[str, str]]:
-        """输入:起始时刻(含)。行为:按 ts 升序取回 payload。输出:行字典序列。"""
+        """输入:起始时刻(含)。行为:按 ts 升序取回 payload(**并把 ts 附在行里**)。输出:行字典序列。
+
+        ``since`` 可以是**带时区的绝对时刻**(最好),也可以是裸钟点 —— 后者按**本进程的本地时区**
+        解释(宿主上是 CST、容器里是 UTC,两边都对)。列里存的是 UTC,所以比较前先换算过去。
+
+        **为什么要把 ts 塞回行里**:分时段计价(高峰 / 空闲)要问"这一次调用发生在几点",
+        而账本本体只有 ``time.perf_counter()``(单调时钟)—— 墙上时间只在这个表里有。
+        键名用 ``ports.ledger.LEDGER_TS``,并且有契约盯着"账本自己的字段表里没有这个名字"。
+        """
+        moment = since if since.tzinfo is not None else since.astimezone()
+        bound = moment.astimezone(UTC).replace(tzinfo=None)
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT payload FROM {self._table} WHERE ts >= %s ORDER BY ts ASC", (since,)
+                    f"SELECT ts, ts_offset, payload FROM {self._table} "
+                    "WHERE ts >= %s ORDER BY ts ASC",
+                    (bound,),
                 )
                 rows = cur.fetchall()
         finally:
             conn.close()
         out: list[Mapping[str, str]] = []
-        for (payload,) in rows:
+        for ts, offset, payload in rows:
             # pymysql 对 JSON 列返回的是 str(它不替我们解析);解析失败的行**跳过而不是炸** ——
             # 一行坏数据不该让整张报表打不开。
             loaded = json.loads(payload) if isinstance(payload, (str, bytes)) else payload
             if isinstance(loaded, dict):
-                out.append(loaded)
+                # 不覆盖 payload 里同名键(理论上不会有,真撞上时以库里的列为准并留个痕)
+                out.append({**loaded, LEDGER_TS: _stamp(ts, offset)})
         return out
 
     def _connect(self, *, autocommit: bool):

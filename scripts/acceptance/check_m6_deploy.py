@@ -874,6 +874,88 @@ def _dev_sh_port_guards() -> str:
     return f"空闲放行（含 RAG_API__PORT / RAG_LOG_DIR）/ 容器端口 {container} 被拒 / 占用端口被拒"
 
 
+@check("启动入口自报角色：up=中间件三件（且明说没有前端）、app=容器那份、status=能读出谁在发前端")
+def _entry_points_self_report() -> str:
+    """同一个「启动」有多个入口时，**每个入口必须自己说清它起了什么**。
+
+    真实的混乱（作者报障）：「为什么我有时候启动 docker 会自动启动前端，有时候不会」——
+    两个入口的服务集合本来就不一样，而差别只存在于"上次好像有页面"这种记忆里：
+
+    * ``./scripts/dev.sh up`` → ``docker compose up -d standalone mysql redis``（**没有 app**）;
+    * ``docker compose up -d``  → compose 里全部服务（含 ``app`` 与 ``attu``），前端在 8080。
+
+    更隐蔽的是第二种：**镜像里的前端产物是构建那一刻的** —— ``npm run build`` 只改工作区，
+    容器照旧发旧产物，所以"前端在"也可能"不是你改的那份"。``status`` 把两份摘要读出来对比，
+    这条检查钉的就是"这三个入口各自还在做那件事"（**连它调的那个函数一起看**：
+    分支里只写一行 ``start_container_app`` 的话，实现在别处漂了同样没人知道）。
+    """
+    text = _dev_sh_text()
+
+    def branch(name: str) -> str:
+        match = re.search(rf"^  {re.escape(name)}\)\n(.*?)^    ;;$", text, re.M | re.S)
+        if match is None:
+            raise AssertionError(f"dev.sh 里找不到 `{name})` 分支 —— 那个入口没了？")
+        return match.group(1)
+
+    def func(name: str) -> str:
+        match = re.search(rf"^{re.escape(name)}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
+        if match is None:
+            raise AssertionError(f"dev.sh 里找不到 `{name}()` 函数")
+        return match.group(1)
+
+    up = branch("up")
+    services = set(re.findall(r"docker compose up -d ([a-z ]+)", up)[0].split())
+    if services != {"standalone", "mysql", "redis"}:
+        raise AssertionError(
+            f"`up` 起的是 {sorted(services)}：它的语义是「**只起中间件**」（前端用 app / serve 两个入口）。"
+            "集合一变，那句「这一步没有前端」就变成假话 —— 而用户正是靠它判断前端该不该在"
+        )
+    for entry in ("dev.sh app", "dev.sh serve"):
+        if entry not in up:
+            raise AssertionError(
+                f"`up` 起完没说清另外两条路（缺 `{entry}`）：只说「起了 3 件」，"
+                "用户还是会去 8080 找一个不存在的前端"
+            )
+
+    if "start_container_app" not in branch("app"):
+        raise AssertionError("`app` 分支没有走 start_container_app：那个入口与实现分家了")
+    body = func("start_container_app")
+    if "docker compose up -d app" not in body:
+        raise AssertionError("start_container_app 没有真的起 app 容器")
+    if "docker compose build app" not in body or '"$build" = "--build"' not in body:
+        raise AssertionError(
+            "`app` 不支持 `--build`：改了前端之后，容器那份**只能**靠重建镜像跟上"
+            "（npm run build 只改工作区）—— 没有这条路，用户只能自己记住两条命令"
+        )
+    if body.index("npm run build") > body.index("docker compose build app"):
+        raise AssertionError(
+            "`app --build` 先建镜像后建前端：镜像里会装进**上一版**产物，而且界面上看不出来"
+            "（前端「在」，但不是你改的那份）"
+        )
+
+    if "show_status" not in branch("status"):
+        raise AssertionError("`status` 分支没有走 show_status：入口与实现分家了")
+    status = func("show_status")
+    if "source-digest.txt" not in text:
+        raise AssertionError(
+            "dev.sh 里没人读前端产物的摘要（source-digest.txt）：那样「谁在发前端」只能回答"
+            "「在不在跑」—— 而「在跑」正是最不容易搞错的那一半"
+        )
+    for const in ("CONTAINER_PORT", "DEV_BACKEND_PORT", "VITE_PORT"):
+        if const not in status:
+            raise AssertionError(f"`status` 没有把三个角色都摆出来（少了 {const}）")
+    # 「读了两份摘要」还不够，必须**比较**：只打印不比对，用户还是得自己拿眼睛看两个哈希
+    if '"$in_container" != "$in_workspace"' not in status:
+        raise AssertionError(
+            "`status` 读了容器与工作区两份摘要却没有比较：那样它只会把两个哈希并排打出来，"
+            "而「容器发的是旧前端」这件事仍然要人自己判断"
+        )
+    return (
+        f"up={sorted(services)} 且点名 app/serve 两条路；app→start_container_app "
+        "（--build 时前端先于镜像）；status→show_status 读 source-digest.txt 并列出三个角色"
+    )
+
+
 @check("报 bug 的模板里两个入口各自带着正确的端口（别让提问的人 curl 错端口）")
 def _bug_template_ports() -> str:
     dev = _dev_port("DEV_BACKEND_PORT")

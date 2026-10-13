@@ -5,19 +5,33 @@
 | 目录 | 放什么 | 判断标准 |
 |---|---|---|
 | `acceptance/` | `check_m*.py`、`calibrate_threshold.py`、`run_all.py`（分组跑全部） | 它回答"**应该是什么样**"。跑一次就知道当前代码离契约有多远 |
-| `tools/` | 造评估集、灌 FAQ、下模型、提取课程 HTML、跑 RAGAS、比多次运行 | 它回答"**把数据变成什么样**"。一次性或按需重复，产出落在 `data/` |
+| `tools/` | 造评估集、灌 FAQ、下模型、跑 RAGAS、比多次运行 | 它回答"**把数据变成什么样**"。一次性或按需重复，产出落在 `data/` |
 
 **先记三个入口**（一条命令，别背下面那些长命令）::
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 16 套契约 + 15 份反向（CI 跑的就是这条，实测 560s）
-./scripts/dev.sh all        # 全套：23 套契约 + 15 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 20 套契约 + 20 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：28 套契约 + 20 份反向（要中间件 + 语料 + key）
 ```
 
+**「启动」有四个入口，前端在不在取决于你走哪个**（作者报过"有时候起前端、有时候不起"）：
+
+```bash
+./scripts/dev.sh up         # 只起中间件三件（standalone / mysql / redis）—— 没有前端
+./scripts/dev.sh app        # 起容器那份（8080，一个进程同时发页面与接口）
+./scripts/dev.sh app --build# 同上，但先构建前端再重建镜像（改了 web/ 之后必须走这条）
+./scripts/dev.sh serve      # 只起代码后端（18080，跑工作区源码，零镜像，页面也是工作区那份）
+./scripts/dev.sh status     # 谁在发前端、发的是哪一份（对比容器/镜像与工作区的产物摘要）
+```
+
+**为什么需要 `status`**：镜像里的前端产物是**构建那一刻**的，`npm run build` 只改工作区 ——
+于是"前端在"也可能"不是你改的那份"。`status` 把两份摘要并排打出来（读的是
+`src/project_rag/api/static/app/source-digest.txt`，与 `check_m7_frontend` 同一个判据）。
+
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
-分组依据是 的一次实测探测：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
-再跑全部 23 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
+分组依据是**一次实测探测**：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
+再跑全部 28 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
 
@@ -41,9 +55,11 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 
 1. **改源码必须用 `with patched_source(path, old, new):`** —— 它先落备份（`.cache/reverse_backup/`，**镜像源码路径**）、退出时还原，**启动时 `restore_stale_patches()` 会把上次被打断留下的坏源码自愈回来**。不用它的 runner 在"改坏 → 跑检查 → 还原"那个窗口里被 SIGTERM/SIGPIPE 杀掉，`src/**` 就会**留在坏版本上**（语法没错、能 import、只是行为变了）。
 2. **别把反向测试的输出管进 `head`** —— `head` 读够行数就关管道，Python 收到 SIGPIPE 当场死，正好死在窗口里（真踩过）。要看短的输出就 `> .cache/xxx.log` 再 `grep`。每个用例都要先核对**锚点恰好出现 1 次**并把它算成失败：锚点漂了的那条反向测试是「安静地没跑」，而它看起来只是报告里的一句「1 条没红」。
+3. **改了产品代码就重跑那一块的反向 runner** —— 锚点是逐字匹配的，重构（改名、把一段逻辑抽成函数、给函数体加两行）会让锚点**悄悄失效**；runner 会把它报成「锚点出现 0 次」并**计为失败**（设计如此：改坏窗口里最危险的不是红，而是「看起来跑过了」）。
+4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 23 份检查 + 15 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 28 份检查 + 20 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标
@@ -292,6 +308,7 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 | 为什么产物入库、为什么 hash 路由 | `check_m7_frontend.py`「产物与源码同源」+「hash 路由 + 相对 base」两条契约 |
 | 契约（M7.1 聊天页） | `check_m7_frontend.py` **17 条**（静态 9 + 行为 8）；反向 `reverse_m7_frontend.py` **10 条** |
 | 契约（M7.2 知识库页） | `check_m7_2_kb.py` **12 条**（预览接口行为 7 + 前端静态 5）；反向 `reverse_m7_2_kb.py` **9 条** |
+| 契约（M3 索引 + 稀疏向量） | `check_m3_sparse.py` **16 条**（索引类型由配置决定 3 + 稀疏列边界 3 + BM25 编码口径 6 + 接线 4，全部用桩客户端，零容器）；`check_m3_sparse_milvus.py` **3 条**（真 Milvus：稀疏列往返 / rebuild_index 换类型 / 页码与来源过滤）；反向 `reverse_m3_sparse.py` **10 条全红** |
 | 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **11 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 5）；反向 `reverse_m7_3_metrics.py` **13 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"） |
 | 契约（M7.4 安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
 | 改了前端忘了构建 | 契约第 1 条就会红：产物摘要与当前源码不一致 |

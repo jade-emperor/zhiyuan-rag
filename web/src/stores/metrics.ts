@@ -17,13 +17,19 @@
 import { reactive } from 'vue'
 
 import * as api from '../api/endpoints'
-import type { MetricsOut } from '../api/types'
+import type { CostOut, MetricsOut } from '../api/types'
 import { capabilitiesState, loadCapabilities } from './capabilities'
 
 const state = reactive({
   window: '',
   top: 10,
   data: null as MetricsOut | null,
+  /**
+   * 消耗那一半(P0-7)。**与延迟分开两个字段、一起取**:两半读的是同一批账本行,
+   * 合成一个对象会让"这一半拿到了、那一半没拿到"这种事看不出来。
+   */
+  cost: null as CostOut | null,
+  costError: '',
   loading: false,
   error: '',
   /** 渲染时刻(本机时间):报表是"取数那一刻"的快照,得让用户知道看的是什么时候的数。 */
@@ -64,9 +70,17 @@ export async function loadMetrics(): Promise<void> {
   } catch (error) {
     state.error = (error as Error).message
     state.data = null
-  } finally {
-    state.loading = false
   }
+  // 消耗单独 try:延迟报表拿到了就该显示,不该因为消耗那一半失败而一起清空。
+  // 但**错误要各自留着** —— 一句"报表加载失败"盖住两个不同的原因,排障时最难查。
+  try {
+    state.cost = await api.cost(state.window)
+    state.costError = ''
+  } catch (error) {
+    state.costError = (error as Error).message
+    state.cost = null
+  }
+  state.loading = false
 }
 
 export async function setWindow(value: string): Promise<void> {

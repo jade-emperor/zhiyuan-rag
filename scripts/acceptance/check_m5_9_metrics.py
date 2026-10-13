@@ -248,7 +248,7 @@ def _sink_contract() -> str:
     return "普通日志不落表；sink 故障记 failures 不抛；重复挂载只留一个 handler"
 
 
-@check("接口 GET /api/v1/admin/metrics：形状与窗口白名单（注入假账本，不用容器）")
+@check("接口 GET /api/v1/reports/metrics：形状与窗口白名单（注入假账本，不用容器）")
 def _api_shape() -> str:
     from fastapi.testclient import TestClient
 
@@ -274,9 +274,9 @@ def _api_shape() -> str:
     ledger = _FakeLedger()
     # 注入 deps = 不读 .env、不连库:这条检查因此不需要容器
     client = TestClient(create_app(Deps(ledger_store_factory=lambda: ledger)))
-    ok = client.get("/api/v1/admin/metrics?window=1h&top=3")
+    ok = client.get("/api/v1/reports/metrics?window=1h&top=3")
     if ok.status_code != 200:
-        raise AssertionError(f"/api/v1/admin/metrics 该 200，实际 {ok.status_code}：{ok.text[:200]}")
+        raise AssertionError(f"/api/v1/reports/metrics 该 200，实际 {ok.status_code}：{ok.text[:200]}")
     body = ok.json()
     for key in ("window", "rows", "cold_rows", "warm_rows", "refused", "segments", "slowest"):
         if key not in body:
@@ -285,7 +285,7 @@ def _api_shape() -> str:
         raise AssertionError(f"窗口/行数不对：{body['window']} / {body['rows']}")
     if ledger.since is None:
         raise AssertionError("没把窗口换算成起始时刻就去读库了")
-    bad = client.get("/api/v1/admin/metrics?window=42y")
+    bad = client.get("/api/v1/reports/metrics?window=42y")
     if bad.status_code != 400:
         raise AssertionError(f"窗口不在白名单该 400，实际 {bad.status_code}")
     return f"200 且含 {sorted(body)}；窗口白名单生效（42y → 400）"
@@ -324,7 +324,7 @@ def main() -> int:
             "说明：除「真 MySQL 往返」外全部内存假件（不需要容器/模型/网络）。",
         ),
         hint=(
-            "提示：报表看 `project-rag metrics --window 24h` 或 `GET /api/v1/admin/metrics`。"
+            "提示：报表看 `project-rag metrics --window 24h` 或 `GET /api/v1/reports/metrics`。"
             "p95/p99 显示 `-` 不是坏了，是样本不够（门槛 20 / 100）—— 看 n 那一列。"
         ),
     )

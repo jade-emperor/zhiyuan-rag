@@ -65,7 +65,7 @@ CASES: list[tuple[str, Path, str, str, str, str]] = [
     (
         "RT-2 装载不排序(同一份语料两次顺序可能不同 → chunk_id 幂等没了)",
         LOADER,
-        "for file in sorted(candidates, key=lambda found: found.relative_to(root).as_posix()):",
+        "for file in sorted(candidates, key=lambda found: doc_id_of(root, found)):",
         "for file in candidates:",
         "装载：混合目录",
         SCRIPT,
@@ -73,7 +73,7 @@ CASES: list[tuple[str, Path, str, str, str, str]] = [
     (
         "RT-3 source 不去掉 _data(过滤字段与库里对不上)",
         LOADER,
-        '    name = root.name.removesuffix("_data") or root.name',
+        "    return root.name.removesuffix(\"_data\") or root.name",
         "    name = root.name",
         "装载：混合目录",
         SCRIPT,

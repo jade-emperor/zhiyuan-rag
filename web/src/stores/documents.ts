@@ -1,21 +1,30 @@
 /**
  * 知识库管理(M7.2)：清单、上传、删除、预览。
  *
- * 三件刻意的事:
+ * 四件刻意的事:
  *
- * 1. **拿到 202 不算完**:上传接口是异步入库,状态要从清单里看。所以只要还有
+ * 1. **清单是"三处对账"的结果,不是登记表的一遍朗读**:后端每次都拿登记表、磁盘、
+ *    向量库对一遍,给每行一个 `state`(`ok` / `changed` / `not_indexed` / `file_missing` /
+ *    `unregistered`)。前端**只显示 `state`**,不自己由 `status` 推"已入库" ——
+ *    那正是"集合清空了卡片还写 677 块"的成因;
+ * 2. **拿到 202 不算完**:上传接口是异步入库,状态要从清单里看。所以只要还有
  *    `pending` / `processing` 的文档就**自动轮询**(3 秒一次),全部落定就停 ——
  *    一直轮询会白烧请求,不轮询则用户永远看到"处理中";
- * 2. **删除后如实转述后端的结果**(删了几块 / 文件在不在 / 登记行在不在):
+ * 3. **删除后如实转述后端的结果**(删了几块 / 文件在不在 / 语料源材料留没留 / 登记行在不在):
  *    删除是幂等的,重复点不该报错,而"其实什么都没删"这件事必须让用户看见;
- * 3. **预览按父块折叠**(后端做的):界面上同时显示"入库 N 块(子块)"与"预览 M 段(父块)",
+ * 4. **预览按父块折叠**(后端做的):界面上同时显示"入库 N 块(子块)"与"预览 M 段(父块)",
  *    两个数不一样是正常的 —— 只显示一个数会让人以为丢数据。
  */
 
 import { reactive } from 'vue'
 
 import * as api from '../api/endpoints'
-import type { DeletedDocument, DocumentPreview, DocumentRecord } from '../api/types'
+import type {
+  DeletedDocument,
+  DocumentPreview,
+  DocumentRecord,
+  DocumentSummary,
+} from '../api/types'
 
 export interface UploadTask {
   name: string
@@ -24,9 +33,24 @@ export interface UploadTask {
   detail: string
 }
 
+/** 空汇总:还没拉到清单时用它,而不是编一堆 0 当"一切正常"。 */
+const EMPTY_SUMMARY: DocumentSummary = {
+  total: 0,
+  ok: 0,
+  changed: 0,
+  not_indexed: 0,
+  file_missing: 0,
+  unregistered: 0,
+  in_flight: 0,
+}
+
 const state = reactive({
   docs: [] as DocumentRecord[],
+  summary: { ...EMPTY_SUMMARY },
   uploadsDir: '',
+  corpusDir: '',
+  /** 上一次成功刷新的时刻("HH:MM:SS")—— 空串 = 还没刷过。页面是不是过期了,用户要看得出来。 */
+  refreshedAt: '',
   loading: false,
   error: '',
   uploads: [] as UploadTask[],
@@ -78,7 +102,10 @@ export async function refreshDocuments(): Promise<void> {
   try {
     const result = await api.documents()
     state.docs = result.documents
+    state.summary = result.summary
     state.uploadsDir = result.uploads_dir
+    state.corpusDir = result.corpus_dir
+    state.refreshedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     state.error = ''
   } catch (error) {
     state.error = (error as Error).message

@@ -19,9 +19,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
-from project_rag.domain import Chunk, Embedding, RetrievedChunk
+from project_rag.domain import Chunk, Embedding, RetrievedChunk, SparseVector
 from project_rag.ports import VectorStore
 
 
@@ -37,22 +37,50 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def _sparse_dot(left: SparseVector, right: SparseVector | None) -> float:
+    """输入:两个稀疏向量(右边可能是 None = 这行没写稀疏)。行为:算内积。输出:分数。
+
+    遍历**小的那一侧**取键:稀疏向量动辄几百维,按大的那侧遍历会白跑很多次查字典。
+    """
+    if not right:
+        return 0.0
+    small, large = (left, right) if len(left) <= len(right) else (right, left)
+    return sum(weight * large.get(dim, 0.0) for dim, weight in small.items())
+
+
 class InMemoryVectorStore(VectorStore):
     """进程内向量库。数据随进程消失,不做持久化。"""
 
     def __init__(self) -> None:
         """输入:无。行为:初始化空表。输出:无。"""
-        # chunk_id -> (子块, 向量)。用 dict 就是为了让 upsert 天然幂等
-        self._rows: dict[str, tuple[Chunk, Embedding]] = {}
+        # chunk_id -> (子块, 稠密向量, 稀疏向量)。用 dict 就是为了让 upsert 天然幂等
+        self._rows: dict[str, tuple[Chunk, Embedding, SparseVector | None]] = {}
 
-    def upsert(self, chunks: Sequence[Chunk], embeddings: Sequence[Embedding]) -> int:
-        """输入:子块 + 同序等长向量。行为:按 chunk_id 覆盖写入。输出:表内总条数。"""
+    def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Embedding],
+        *,
+        sparse: Sequence[SparseVector] | None = None,
+    ) -> int:
+        """输入:子块 + 同序等长稠密向量 + 可选的同序等长稀疏向量。行为:按 chunk_id 覆盖写入。输出:表内总条数。
+
+        稀疏向量只是存下来(给 ``search_sparse`` 用):内存实现没有"列"的概念,
+        所以不做 Milvus 那种"该给没给就报错"的检查 —— 那条规矩属于**存储 schema**,
+        由 ``MilvusVectorStore`` 负责。
+        """
         if len(chunks) != len(embeddings):
             raise ValueError(
                 f"chunks({len(chunks)}) 与 embeddings({len(embeddings)}) 必须等长同序"
             )
-        for chunk, embedding in zip(chunks, embeddings):
-            self._rows[chunk.chunk_id] = (chunk, embedding)
+        if sparse is not None and len(sparse) != len(chunks):
+            raise ValueError(f"sparse({len(sparse)}) 与 chunks({len(chunks)}) 必须等长同序")
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            self._rows[chunk.chunk_id] = (
+                chunk,
+                embedding,
+                None if sparse is None else sparse[i],
+            )
         return len(self._rows)
 
     def search(
@@ -67,18 +95,47 @@ class InMemoryVectorStore(VectorStore):
             RetrievedChunk(
                 chunk=chunk, score=_cosine(query_embedding.dense, embedding.dense)
             )
-            for chunk, embedding in self._rows.values()
+            for chunk, embedding, _ in self._rows.values()
             if source is None or chunk.source == source
         ]
         # 同分时按 chunk_id 兜底排序:顺序稳定,验收才写得死断言
         hits.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))
         return hits[:k]
 
+    def search_sparse(
+        self,
+        query_sparse: SparseVector,
+        *,
+        k: int,
+        source: str | None = None,
+    ) -> Sequence[RetrievedChunk]:
+        """输入:查询的稀疏向量、返回条数、来源过滤。行为:算内积、滤掉 0 分、降序。输出:前 k 条。
+
+        与 Milvus 那一路同口径:交集为空 = 0 分 = **不算命中**(见端口 docstring)。
+        """
+        hits: list[RetrievedChunk] = []
+        for chunk, _, sparse in self._rows.values():
+            if source is not None and chunk.source != source:
+                continue
+            score = _sparse_dot(query_sparse, sparse)
+            if score > 0.0:
+                hits.append(RetrievedChunk(chunk=chunk, score=score))
+        hits.sort(key=lambda hit: (-hit.score, hit.chunk.chunk_id))
+        return hits[:k]
+
+    def has_sparse_column(self) -> bool:
+        """输入:无。行为:内存实现有没有"稀疏列"。输出:恒 True。
+
+        它没有 schema 这一层:``upsert(sparse=...)`` 存下来,``search_sparse`` 就能用。
+        真实存储那两份(Milvus)才需要回答"schema 里到底有没有那一列"。
+        """
+        return True
+
     def load_all(self) -> Sequence[Chunk]:
         """输入:无。行为:取出全部子块(按 chunk_id 排序,顺序稳定)。输出:子块序列。"""
         return [
             chunk
-            for chunk, _ in sorted(self._rows.values(), key=lambda row: row[0].chunk_id)
+            for chunk, _, _ in sorted(self._rows.values(), key=lambda row: row[0].chunk_id)
         ]
 
     def fingerprint(self) -> Sequence[str]:
@@ -88,14 +145,21 @@ class InMemoryVectorStore(VectorStore):
         主键与父块号都是十六进制串,不含这个字符,拼起来不会歧义。
         """
         return sorted(
-            f"{chunk.chunk_id}\x1f{chunk.parent_id}" for chunk, _ in self._rows.values()
+            f"{chunk.chunk_id}\x1f{chunk.parent_id}" for chunk, _, _ in self._rows.values()
         )
+
+    def chunk_counts(self) -> Mapping[str, int]:
+        """输入:无。行为:按 ``doc_id`` 数一遍块数(与 Milvus 实现同口径)。输出:``doc_id -> 块数``。"""
+        counts: dict[str, int] = {}
+        for chunk, _, _ in self._rows.values():
+            counts[chunk.doc_id] = counts.get(chunk.doc_id, 0) + 1
+        return counts
 
     def delete_by_doc_id(self, doc_id: str) -> int:
         """输入:文档标识。行为:删掉这份文档的全部块(ingest 写之前调)。输出:删除条数。"""
         doomed = [
             chunk_id
-            for chunk_id, (chunk, _) in self._rows.items()
+            for chunk_id, (chunk, _, _) in self._rows.items()
             if chunk.doc_id == doc_id
         ]
         for chunk_id in doomed:
@@ -106,7 +170,7 @@ class InMemoryVectorStore(VectorStore):
         """输入:来源标签。行为:删掉该来源的全部块(整份语料下架时用)。输出:删除条数。"""
         doomed = [
             chunk_id
-            for chunk_id, (chunk, _) in self._rows.items()
+            for chunk_id, (chunk, _, _) in self._rows.items()
             if chunk.source == source
         ]
         for chunk_id in doomed:

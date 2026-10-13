@@ -3,8 +3,12 @@
  * 顶部导航:品牌、页签、后端地址、当前账号。
  *
  * 两件刻意的事:
- * 1. **管理页签只对管理员渲染** —— 员工看不到「知识库」「可观测」。但这不是权限,
- *    后端对那两个接口各自有 `require_admin`(前端藏起来只是不给点必然 403 的按钮);
+ *
+ * 1. **页签按能力渲染**(P0-6):「对话」要 `can_use_knowledge`、「报表」要
+ *    `can_view_reports`、「知识库 / 账号」要 `is_admin`。运维因此只看到「报表」,
+ *    员工看到「对话 + 知识库(只读清单)」。**这不是权限** —— 后端每条路由各自有
+ *    `require_reports` / `require_knowledge` / `require_admin`,前端藏起来只是不给点
+ *    一个必然 403 的按钮;
  * 2. **后端地址放在这里**(而不是藏在设置页深处):它是这个 app 唯一的环境,
  *    填错了连登录都进不去,必须一眼可见、一点可改。
  */
@@ -12,7 +16,14 @@ import { computed, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import { backendBase, setBackendBase } from '../api/client'
-import { authState, isAdmin, logout } from '../stores/auth'
+import {
+  authState,
+  canUseKnowledge,
+  canViewReports,
+  isAdmin,
+  logout,
+  roleLabel,
+} from '../stores/auth'
 import { loadCapabilities } from '../stores/capabilities'
 import { resetChat } from '../stores/chat'
 
@@ -69,9 +80,12 @@ async function signOut(): Promise<void> {
     </div>
 
     <nav class="nav">
-      <RouterLink class="tab" :to="{ name: 'chat' }">对话</RouterLink>
+      <RouterLink v-if="canUseKnowledge" class="tab" :to="{ name: 'chat' }">对话</RouterLink>
+      <!-- 知识库这一页要 manage(页面上有上传/删除/授权):页签必须与**那一页的要求**一致,
+           否则员工看到一个点进去就被守卫弹回来的入口。 -->
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'knowledge' }">知识库</RouterLink>
-      <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'metrics' }">可观测</RouterLink>
+      <RouterLink v-if="canViewReports" class="tab" :to="{ name: 'reports' }">报表</RouterLink>
+      <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'accounts' }">账号与权限</RouterLink>
     </nav>
 
     <div class="right">
@@ -94,7 +108,7 @@ async function signOut(): Promise<void> {
 
       <span class="who">
         {{ auth.user?.username ?? auth.username }}
-        <span class="tag" :class="isAdmin ? 'info' : 'soft'">{{ isAdmin ? '管理员' : '员工' }}</span>
+        <span class="tag" :class="isAdmin ? 'info' : 'soft'">{{ roleLabel }}</span>
       </span>
       <button class="ghost" type="button" @click="signOut()">退出</button>
     </div>

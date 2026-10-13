@@ -53,6 +53,22 @@ _logger = get_logger("application.answer_rag")
 # 检索为空(或模型返回空)时的兜底话术。
 REFUSAL_TEXT = "信息不足,无法回答,请联系人工客服。"
 
+# 有文档被禁止时每路多要几倍的候选(理由见 ``retrieve`` 里那段注释)。
+_DENIED_OVERFETCH = 4
+# 多要的上界:调用方把 k 开到几百时,再乘 4 会把整个库拉回来做一次无谓的过滤。
+_DENIED_MAX_K = 200
+
+
+def _visible(
+    hits: Sequence[RetrievedChunk], denied: set[str], k: int
+) -> tuple[RetrievedChunk, ...]:
+    """输入:一路的命中、禁止名单、要几条。行为:滤掉被禁文档,再截到 k 条。输出:可见的命中。
+
+    **截断放在过滤之后**:先截再滤的话,k 条里被禁几条就少几条 —— 而那正是"多要几倍"
+    要解决的问题。两者顺序反过来,多要的候选全白要了。
+    """
+    return tuple(hit for hit in hits if hit.chunk.doc_id not in denied)[:k]
+
 
 def _renumber(citations: Iterable[Citation]) -> tuple[Citation, ...]:
     """输入:任意引用序列。行为:按当前顺序重新从 1 编号。输出:新引用元组。
@@ -184,6 +200,16 @@ def retrieve(
     options = options or RetrievalOptions()
     mark = timing.mark if timing is not None else _noop
 
+    # 可见范围(见 application/access.py):被禁止的文档**不许出现在任何一条路上**。
+    # 过滤放在这里(两路结果汇齐之后、融合之前)而不是各家适配器里,是因为"谁能看什么"
+    # 是用例层的规矩,不是存储引擎的:三份适配器各写一遍过滤,迟早有一份忘了 ——
+    # 而漏掉的那一路会把受限文档照常召回来。
+    denied = set(options.denied_docs)
+    # 禁止名单非空时**多要几条再筛**:库里取的是"最像的 k 条",其中若干条被禁之后
+    # 剩下的不足 k,而调用方是按 k 理解结果的(少了几条它不知道)。倍数按"被禁比例"给:
+    # 4 倍能容忍约 3/4 的命中落在被禁文档里;上界防止 k 很大时白拉一整库。
+    ask = options.k if not denied else min(options.k * _DENIED_OVERFETCH, _DENIED_MAX_K)
+
     # 查询嵌入与向量检索拆成两句:写成一句的话,「嵌入多久」与「Milvus 多久」就永远
     # 分不开了 —— 而这两件事的优化手段完全不同(换 device / 换索引 / 加缓存)
     #
@@ -194,13 +220,17 @@ def retrieve(
     if options.vector_weight > 0:
         query_vector = embedder.embed([query])[0]
         mark("embed")
-        rankings[VECTOR_ROUTE] = store.search(query_vector, k=options.k, source=options.source)
+        rankings[VECTOR_ROUTE] = store.search(query_vector, k=ask, source=options.source)
         mark("vector")
     if keyword_index is not None and options.bm25_weight > 0:
         rankings[KEYWORD_ROUTE] = keyword_index.search(
-            query, k=options.k, source=options.source
+            query, k=ask, source=options.source
         )
     mark("bm25")
+    if denied:
+        rankings = {
+            route: _visible(hits, denied, options.k) for route, hits in rankings.items()
+        }
 
     if len(rankings) == 1:
         # 单路:不做融合(也没有第二路可比)。**路名从剩下的那一路取** ——
@@ -333,6 +363,15 @@ def _rag_frames(
     for delta in llm.stream([ChatMessage(role="user", content=prompt)]):
         if delta.last:
             reason = delta.finish_reason
+        if delta.usage is not None:
+            # 用量只记在**这一层**(真调了模型的那一层):外层的 qa 账本也会转发这些帧,
+            # 但它没有自己的 provider 调用,记上去就是双倍计入(见 application/cost.py)。
+            timing.usage(
+                model=delta.usage.model,
+                input_tokens=delta.usage.input_tokens,
+                output_tokens=delta.usage.output_tokens,
+                cached_input_tokens=delta.usage.cached_input_tokens,
+            )
         if delta.reasoning:
             # 思考只记账、**不外发**:这一轮想没想、想了多久要看得见,但草稿不该进答案
             # (也不进 token 帧 —— 前端此刻只该等正文)。阈值/口径见 observability/latency.py

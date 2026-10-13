@@ -527,6 +527,52 @@ def _() -> str:
     return "read_consistency 默认 strong（域 bounded/eventually/strong）；rerank_use_f16 默认 False"
 
 
+@check("新增旋钮的类默认值：索引 FLAT、关键字后端 memory（两档都不改既有语义）")
+def _() -> str:
+    """索引类型与关键字后端这两个新旋钮，类默认值同样取"一直以来的行为"：
+
+    * ``MilvusConfig.index.type`` 默认 ``FLAT`` —— 代码里原先硬编码就是 FLAT（精确检索）。
+      改成 IVF_FLAT 是**部署选择**（近似检索换延迟），而且**建集合那一刻定格**，
+      所以默认值不动：新机器第一次 ingest 得到的东西必须与老部署一致。
+    * ``KeywordConfig.backend`` 默认 ``memory`` —— 进程内 BM25。换成 ``milvus``
+      （稀疏向量进库）要求集合带稀疏列，也就是**要重灌**；默认值一改，
+      老集合会在写入/检索时当场报错（那条报错是对的，但不该由一个默认值触发）。
+    """
+    from project_rag.config import KeywordConfig, MilvusConfig
+
+    index = MilvusConfig().index
+    if index.type != "FLAT":
+        raise AssertionError(
+            f"MilvusConfig.index.type 类默认应为 'FLAT'（= 原先硬编码的索引），实际 {index.type!r}"
+            " —— 默认值一改，新集合建出来的东西就和老部署不是一回事了"
+        )
+    if index.nlist < 1 or index.nprobe < 1 or index.nprobe > index.nlist:
+        raise AssertionError(f"索引参数默认值不合法：{index}")
+    keyword = KeywordConfig()
+    if keyword.backend != "memory":
+        raise AssertionError(
+            f"KeywordConfig.backend 类默认应为 'memory'（进程内 BM25），实际 {keyword.backend!r}"
+            " —— 换成 milvus 要求集合带稀疏列（要重灌），不能靠默认值静默切换"
+        )
+    if (keyword.bm25_k1, keyword.bm25_b) != (1.5, 0.75):
+        raise AssertionError(
+            f"BM25 常数默认值该与 rank_bm25 的默认一致（1.5 / 0.75），实际 "
+            f"{(keyword.bm25_k1, keyword.bm25_b)} —— 两档的形状要能对上"
+        )
+    allowed_index = {"FLAT", "IVF_FLAT"}
+    args = set(typing.get_args(MilvusConfig.model_fields["index"].annotation))
+    _ = args  # index 是嵌套模型，取值域在 MilvusIndexConfig 上，见下
+    from project_rag.config import MilvusIndexConfig
+
+    got = set(typing.get_args(MilvusIndexConfig.model_fields["type"].annotation))
+    if got != allowed_index:
+        raise AssertionError(f"index.type 的取值域变了：{sorted(got)}，契约是 {sorted(allowed_index)}")
+    backends = set(typing.get_args(KeywordConfig.model_fields["backend"].annotation))
+    if backends != {"memory", "milvus"}:
+        raise AssertionError(f"keyword.backend 的取值域变了：{sorted(backends)}")
+    return "索引默认 FLAT（域 FLAT/IVF_FLAT）、关键字后端默认 memory（域 memory/milvus）、BM25 1.5/0.75"
+
+
 def main() -> int:
     # 检查函数在模块导入（装饰）时已全部执行，结果按文件中的定义顺序记录
     notes = (

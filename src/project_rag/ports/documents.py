@@ -3,16 +3,43 @@
 
 **为什么单独一张表、而不是从向量库推**:向量库里只有 chunk 级的 ``doc_id``,
 推出"文件名/大小/上传时间/处理状态"是不可能的;而这些恰恰是前端要显示的东西。
-**登记表是"有哪些文档"的唯一事实来源**,向量库是它的派生物 —— 删除时按这个顺序清:
-标记 ``deleting`` → 删向量 → 删文件 → 删行(见 ``application/documents.py``)。
+删除时按这个顺序清:标记 ``deleting`` → 删向量 → 删文件 → 删行(见 ``application/documents.py``)。
+
+**一句话限定**:登记表是"**走过正规写入路径的那些文档**"的事实来源,不是"库里到底有什么"的 ——
+``project-rag ingest`` 灌完的语料、有人往语料目录里直接放的文件,登记表都不知道。
+清单接口因此要三处对账(见 ``application/documents.py`` 的 ``document_views``),
+而写入方(上传与 CLI)有责任把结果登记回来(``upsert``)。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Protocol
 
 from project_rag.domain.documents import DocRecord, DocStatus
+
+
+class DiskFile(Protocol):
+    """磁盘上的一个语料文件(**还没读正文**)—— 清单对账要的"磁盘那一处"。
+
+    实现是 ``adapters/document_loader.py`` 的 ``DiskFile``(同名同形,结构化匹配):
+    用例层只认识这个协议,不认识那个适配器(分层法律:adapters 之外不许 import adapters)。
+
+    ``doc_ids`` 是"从各个可能的入库根看它"的候选 id,从具体到宽泛 ——
+    同一个文件既能当 ``x.md`` 灌进去,也能当 ``bagu_ai_data/x.md`` 灌进去,
+    两种登记行都该认出磁盘上这同一份(否则会有一边被误报成「文件不在」)。
+    """
+
+    path: Path
+    size_bytes: int
+    source: str
+    doc_ids: tuple[str, ...]
+
+    @property
+    def doc_id(self) -> str:
+        """输入:无。行为:取首选的那个候选 id(最具体的入库根)。输出:doc_id。"""
+        ...
 
 
 class DocumentStore(Protocol):
@@ -24,6 +51,16 @@ class DocumentStore(Protocol):
 
     def add(self, record: DocRecord) -> None:
         """输入:登记信息。行为:插入一行(主键重复抛错)。输出:无。"""
+        ...
+
+    def upsert(self, record: DocRecord) -> None:
+        """输入:登记信息。行为:**整行**写入(有就覆盖,没有就插入)。输出:无。
+
+        与 ``add`` 的分工:``add`` 是"第一次登记"(重名要炸,免得悄悄顶掉别人的行),
+        ``upsert`` 是"写入方把这次真的做成的结果登记回来" —— CLI 重灌同一份文件、
+        上传重传同名文件都走它。**覆盖的是状态/块数/大小/来源/错误,不覆盖 ``created_at``**:
+        那个字段记的是"这份文档第一次出现的时间",重灌不是第一次来。
+        """
         ...
 
     def list_all(self) -> Sequence[DocRecord]:

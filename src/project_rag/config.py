@@ -14,6 +14,17 @@ CONFIG_FILE = PROJECT_ROOT / "config" / "config.yaml"
 ENV_FILE = PROJECT_ROOT / ".env"
 
 
+def project_path(raw: str | Path) -> Path:
+    """输入:配置里的一个路径文本。行为:相对路径挂到**项目根**下(绝对路径原样)。输出:路径。
+
+    **"相对路径按项目根解析"只有这一处实现**:上传目录、语料目录、模型目录、日志目录都走它。
+    散着写过的后果是每一处都要自己记得「``/`` 遇到绝对右值会丢弃左值」这个细节 ——
+    忘一次就是"配置里写了绝对路径反而找不到"。
+    """
+    path = Path(raw)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 # 嵌套配置类,传入yaml的子配置字典,将字典中的值转化为对应的字段类型,如果没传入的字段,则使用默认值
 class LLMConfig(BaseModel):
     deepseek_api_key: SecretStr = SecretStr("")
@@ -30,6 +41,10 @@ class LLMConfig(BaseModel):
     # 只有 off 时才用得上;② 思考计入输出 token 计费,而且会吃掉 max_tokens 预算
     # (思考吃满时 content 为 0 帧、finish_reason=length → 产品会按「空回答」降级成拒答话术)。
     thinking: Literal["auto", "off", "low", "high", "max"] = "auto"
+    # 让 provider 在流末尾回报这次用了多少 token(OpenAI 协议的 ``stream_options.include_usage``)。
+    # **关掉它不会让服务坏,只会让报表说"没量到 token"** —— 那正是这个开关存在的意义:
+    # 有些代理不认这个参数(直接 400),那时把它设成 false 就能继续跑,账本上那一格是 ``-``。
+    stream_usage: bool = True
 
     # 验证器,这个方法会自动被调用,验证DEEPSEEK_API_KEY字段的值,如果未设置或者为空,会抛出异常
     @field_validator("deepseek_api_key")
@@ -80,12 +95,60 @@ class RedisConfig(BaseModel):
 
 
 class FaqConfig(BaseModel):
-    # 表名和阈值。阈值口径见 adapters/matcher_bm25.py:
-    # score = top1 原始分 / 该条问自己的分,一字不差 ≈ 1.000,
-    # 完全无关 ≤ 0.303(463 条真实语料),所以 0.85 表示「只答近乎一字不差的问题」,
-    # 改写问法交给知识库通道。
+    """FAQ 通道的命中口径（口径与推导见 ``adapters/matcher_bm25.py``）。
+
+    命中 = 置信度 ≥ ``threshold`` **且**两个覆盖率都过门槛::
+
+        置信度 = top1 原始 BM25 分 ÷「这条问自己」的分（夹到 0~1）
+        提问覆盖率 = 提问的实词有多大比例出现在命中的条目里
+        条目覆盖率 = 命中的条目的实词有多大比例出现在提问里
+
+    **为什么要覆盖率**（作者报障的那次）：`rank_bm25` 的 `BM25Plus` 给**每一个查询词**
+    都加 `idf(q)·delta`（哪怕这条文档里没有它），而置信度的分母只是"这条问自己的分" ——
+    于是提问里"别处出现过、这条没有"的词越多，比值越高；短条目（如两个字的一条）自身分极低，
+    随便一点底分就顶穿，而比值夹回 1.0 之后 **1.712 与 1.000 记成同一个数，光靠阈值分不开**。
+    两个覆盖率正是拦它的：提问覆盖率低 ⇒ 这条答不了用户问的；条目覆盖率低 ⇒ 这条问的不是用户问的。
+    实测（`scripts/acceptance/faq_hijack_report.py`，150 条真实 FAQ + 50 条留出题）：
+    提问覆盖 0.5 + 条目覆盖 0.8 → 一字不差与礼貌语 **150/150 全放行**、留出题被误答 **6 → 1**、
+    无关问法最高分 0.206 → **0.000**（剩的那条是符号被分词丢掉，见 deferred）。
+
+    **为什么没有"上界"这道旋钮**：试过，量出来它随语料规模漂（`idf=ln((N+1)/df)`，
+    库 150 → 1324 条时「请问，…」的最高值 1.000 → 1.311，1.10 那一档把合法提问砍掉三成），
+    而**只留两个覆盖率的成绩与它逐项相同** —— 于是删掉：少一个旋钮、少一处漂移源。
+    两个门槛都可以用 ``0`` 关掉（回滚用）。
+    """
+
+    # 下界：一字不差 ≈ 1.000、完全无关 ≤ 0.303（463 条真实语料），
+    # 所以 0.85 表示「只答近乎一字不差的问题」，改写问法交给知识库通道。
     threshold: float = 0.85
+    # 提问覆盖率：用户问的词至少这么大比例要出现在命中的条目里。
+    # 作者那条只有 0.20（5 个词里只沾上「协程」）→ 拦下，交给知识库。
+    min_query_coverage: float = 0.5
+    # 条目覆盖率：命中的条目里至少这么大比例的词要被用户提到。
+    # 没有它，两条只有虚词相同的"X 和 Y 的区别"会互相命中。
+    min_entry_coverage: float = 0.8
+    # ── 数据侧：什么样的"问题"才准进这张表（`scripts/tools/load_faq_csv.py` 装载时校验）──
+    # 规则 = **分词后至少 min_question_tokens 个实词**，**或者**整串至少 min_question_chars 个字。
+    # 为什么按"词"：病根是**单个实词**的条目 —— 它的"问自己"分极低，任何含这个词的提问都能把
+    # 置信度顶到 1.0（实测「线程、进程、协程的对比」被两个字的那条 `协程` 答掉，阈值 0.98 也没用）。
+    # 为什么留一条"或足够长"：`IllegalArgumentException` 只有一个实词，但它是个合格的问题。
+    # 两个都填 0 = 关掉这道校验（回滚用）。**改这里就等于改"什么能入库"**，改完记得重跑
+    # `scripts/tools/load_faq_csv.py --dry-run` 看有没有行被拒。
+    min_question_tokens: int = 2
+    min_question_chars: int = 8
     table: str = "faq"
+
+    @model_validator(mode="after")
+    def _check_gates(self) -> "FaqConfig":
+        """输入:无。行为:两个覆盖率门槛必须落在 [0,1]（0 = 关掉那一道）。输出:self。"""
+        for name in ("min_query_coverage", "min_entry_coverage"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"faq.{name} 是比例,必须落在 [0, 1]，收到 {value}")
+        for name in ("min_question_tokens", "min_question_chars"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"faq.{name} 不能为负（0 = 关掉那一条）,收到 {getattr(self, name)}")
+        return self
 
 
 class CacheConfig(BaseModel):
@@ -153,6 +216,178 @@ class RateLimitConfig(BaseModel):
     login: int = 10
 
 
+class RateConfig(BaseModel):
+    """**一个计价档**的两个时段价:高峰与空闲(单位:元 / 每百万 token)。
+
+    为什么要分时段:provider 的空闲时段打折(价目表上是半价)。哪一段算空闲由
+    ``CostConfig.peak`` 的规则给(工作日 + 钟点窗口 + 非节假日);`off_peak` 那一格
+    **留空**时,该档一律按 ``peak`` 价计(等价于"这个部署不分时段")。
+    """
+
+    peak: float | None = None
+    off_peak: float | None = None
+
+    @field_validator("peak", "off_peak")
+    @classmethod
+    def _non_negative(cls, v: float | None) -> float | None:
+        """输入:单价。行为:不许为负(负单价 = 报表算出负的钱)。输出:原值。"""
+        if v is not None and v < 0:
+            raise ValueError(f"单价不能为负,收到 {v}")
+        return v
+
+    def for_period(self, *, off_peak: bool) -> float | None:
+        """输入:这一次是不是空闲时段。行为:取对应那一档的价。输出:单价;没配给 None。
+
+        **空闲档没配时回落到高峰价**,不是 None:那表示"这个部署没打算分时段",
+        而不是"这个时段不知道多少钱"(后者会让整段时间的账都算不出来)。
+        """
+        if off_peak and self.off_peak is not None:
+            return self.off_peak
+        return self.peak
+
+
+class ModelPriceConfig(BaseModel):
+    """一个模型的**三档**单价:输入(命中缓存)/ 输入(未命中)/ 输出。
+
+    **为什么输入要拆两档**:provider 的 prompt cache 命中价与未命中价差着一个量级
+    (实测 0.02 vs 1 元/百万,50 倍)。合成一档的话,账单会差出几十倍,而且**报表上看不出来**
+    ——它只会显示一个"合理"的金额。
+
+    三档都可以不填;不填的那一档就是"未配置单价",报表会如实说而不是当 0 元。
+    """
+
+    input_cache_hit: RateConfig = RateConfig()
+    input_cache_miss: RateConfig = RateConfig()
+    output: RateConfig = RateConfig()
+
+    @property
+    def configured(self) -> bool:
+        """输入:无。行为:判这个模型有没有配过价。输出:布尔。"""
+        return any(
+            rate.peak is not None or rate.off_peak is not None
+            for rate in (self.input_cache_hit, self.input_cache_miss, self.output)
+        )
+
+
+class PeakConfig(BaseModel):
+    """**高峰时段**的判定口径(贵的那一档;其余时间空闲,价目表上是半价)。
+
+    作者给的价目表原话就是口径::
+
+        空闲时段价格为高峰时段价格的一半。北京时间周一至周五(不含中国法定节假日)
+        9:00 - 12:00、14:00 - 18:00 为高峰时段;其余时段,包括周末及中国法定节假日
+        全天均为空闲时段。
+
+    所以高峰 = **工作日** ∩ **那几个钟点窗口** ∩ **不是法定节假日**。三个条件分别落在
+    ``weekdays`` / ``windows`` / ``CostConfig.holidays`` 上,判定在
+    ``application/cost.py:PeriodRule``(纯函数,``check_p0_7_cost.py`` 钉住)。
+
+    **窗口与星期留空是两种不同的意思**,别混:
+
+    * ``windows`` 空 = **不分时段**(所有调用都按 ``peak`` 价,报表不报"时段不明");
+    * ``weekdays`` 空 = **不按星期过滤**(每天都可能高峰,只按钟点判)。
+    """
+
+    # ISO 星期:1=周一 … 7=周日。空列表 = 不按星期过滤。**调休上班的周末不算工作日**
+    # (价目表说的是"周一至周五"与"周末",不是"调休日历"),这条有用例盯着。
+    weekdays: list[int] = []
+    # 高峰钟点窗口,**按北京时间读**(写这里是"北京时间的 9 点",不是服务器本地的 9 点)。
+    # ``[起, 止)`` 左闭右开:``["09:00","12:00"]`` 里的 12:00 整已经不算高峰(午休开始)。
+    # 支持跨午夜(如 ``["22:00","02:00"]``)。
+    windows: list[list[str]] = []
+
+    @field_validator("weekdays")
+    @classmethod
+    def _check_weekdays(cls, value: list[int]) -> list[int]:
+        """输入:星期列表。行为:逐个校验是 ISO 1–7。输出:原值。
+
+        **0/7 之外的写法必须当场炸**:``0``(有些人按 C 的星期写)会让周一永远匹配不上,
+        于是每个周一都按空闲价算 —— 报表上看不出异常,只是钱少了一半。
+        """
+        for day in value:
+            if day < 1 or day > 7:
+                raise ValueError(f"cost.peak.weekdays 用 ISO 星期(1=周一 … 7=周日),收到 {day}")
+        return value
+
+    @field_validator("windows")
+    @classmethod
+    def _check_windows(cls, value: list[list[str]]) -> list[list[str]]:
+        """输入:高峰窗口列表。行为:逐个校验是 ``[HH:MM, HH:MM]``。输出:原值。
+
+        **格式错必须当场炸**:写错一个冒号会让"高峰"永远匹配不上,而报表上看不出异常 ——
+        只是钱一直按空闲算(少报一半)。
+        """
+        import re as _re
+
+        pattern = _re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+        for window in value:
+            if len(window) != 2 or not all(pattern.match(part) for part in window):
+                raise ValueError(
+                    f"cost.peak.windows 的每一项都该是 ['HH:MM', 'HH:MM'],收到 {window!r}"
+                )
+        return value
+
+
+class CostConfig(BaseModel):
+    """消耗报表:按模型配单价(分时段、分缓存),把账本里的 token 折成钱。
+
+    **为什么单价要写在配置里、而不是查官网**:① 同一个模型在不同代理/不同套餐下价格不同;
+    ② 价格会变,而"改一个数字"不该动代码;③ 更要紧的是 —— **写死的价格会在涨价后
+    静默变成错的**,而报表上那几个数字看上去永远是对的。
+
+    键就是 provider 回报的模型名(``llm_model``,通常等于 ``llm.model``)。
+    没配单价的模型**不会被当成 0 元**:它在报表里单列出来,提醒你把这个名字填进来。
+    不知道自己该填哪个名字时看报表的 ``unpriced_models`` —— 那里就是 provider 报的原名。
+    """
+
+    # 币种符号,只用于显示。**不做汇率换算**:换算需要一份会过期的汇率表,
+    # 而"这个数到底是不是人民币"比"换算得准不准"更要紧。
+    currency: str = "CNY"
+    # 高峰那两档怎么判(工作日 + 钟点窗口)。默认空 = 不分时段。
+    peak: PeakConfig = PeakConfig()
+    # 中国法定节假日,**含头含尾的日期区间**(``[["2026-02-15","2026-02-23"], …]``)。
+    # 落在这里的日子全天算空闲 —— 春节里的一次调用不该按高峰价收费。
+    # 来源:国务院办公厅每年 11 月前后发的《关于XXXX年部分节假日安排的通知》
+    # (docs/STATUS.md 记了更新办法)。**只有工作日+窗口内的调用才需要它**:
+    # 周末与夜里本来就已经是空闲了。
+    # 那一年没填 → 报表按高峰计并计进 ``calendar_unknown_calls``(不假装那天不放假)。
+    holidays: list[list[str]] = []
+    # ``模型名 -> 三档单价``。默认空表 = 谁都没配 = 报表只报 token,不报钱。
+    models: dict[str, ModelPriceConfig] = {}
+
+    @field_validator("holidays")
+    @classmethod
+    def _check_holidays(cls, value: list[list[str]]) -> list[list[str]]:
+        """输入:节假日区间列表。行为:逐个校验是 ``[YYYY-MM-DD, YYYY-MM-DD]`` 且起 ≤ 止。输出:原值。
+
+        **写成扁平的一串日期会被当场拒掉**:那种形状读起来像对、跑起来每年只休息一天,
+        而报表上只会显示"钱少了",看不出是配置写错了。
+        """
+        from datetime import date as _date
+
+        for span in value:
+            if len(span) != 2:
+                raise ValueError(
+                    f"cost.holidays 的每一项都该是 ['2026-01-01', '2026-01-03'] 这样的区间,"
+                    f"收到 {span!r}(单个日子写成 [同一天, 同一天])"
+                )
+            try:
+                start, end = _date.fromisoformat(span[0]), _date.fromisoformat(span[1])
+            except ValueError as exc:
+                raise ValueError(f"cost.holidays 里有不是日期的项:{span!r}({exc})") from exc
+            if start > end:
+                raise ValueError(f"cost.holidays 的区间起止反了:{span!r}")
+        return value
+
+    def prices(self) -> dict[str, ModelPriceConfig]:
+        """输入:无。行为:把单价表原样交给用例层(它只认识这个模型的字段)。输出:字典。
+
+        **为什么要有这一道转换**:``application/cost.py`` 只认识"三档 × 两个时段"这几个数,
+        不认识 pydantic 的嵌套形状。转换只此一处,免得接口层与 CLI 各拼一遍、拼法还不一样。
+        """
+        return dict(self.models)
+
+
 class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
@@ -164,6 +399,12 @@ class ApiConfig(BaseModel):
     # 上传的原文件落盘目录(相对**项目根**,与 models/data 同一套解析方式)。
     # 落盘而不是只进向量库:解析要读原文件、前端要能"预览",而且删文档时三处痕迹要一起清。
     uploads_dir: str = "data/uploads"
+    # 语料**源材料**目录(相对项目根)。知识库页拿它和登记表/向量库对账:
+    # 这里放着、但还没入库的文件会在清单上显示成「未入库」—— 后端直接往这儿放文件时,
+    # 前端才看得见(以前只念登记表,放进去的文件前端根本不知道)。
+    # **它不是知识库本身**:入库的产物在 Milvus 里,这里只是"可以灌的东西"的出处;
+    # 删除文档时也不动这个目录里的任何文件(删库不删源,见 application/documents.py)。
+    corpus_dir: str = "data/corpus"
     # 单个上传文件的大小上限(MB)。**不是安全边界,是一道礼貌的闸**:
     # 真正防滥用要靠反代/限流。定 50 是因为语料里最大的 PDF 也就几 MB。
     max_upload_mb: int = 50
@@ -182,6 +423,45 @@ class ApiConfig(BaseModel):
     cors_origins: list[str] = ["*"]
     # 限流。**它同时是"防滥用"与"防爆破"**:问答烧 token、上传烧 CPU、登录烧口令。
     rate_limit: RateLimitConfig = RateLimitConfig()
+
+
+class MilvusIndexConfig(BaseModel):
+    """稠密向量的**索引类型**与它的两个参数（见 ``adapters/milvus_store.py``）。
+
+    为什么做成旋钮：``FLAT`` 是暴力精确检索（结果是"标准答案"，验收好断言），
+    ``IVF_FLAT`` 先按 k-means 分 ``nlist`` 个簇、检索时只探 ``nprobe`` 个簇 ——
+    快，但**是近似**（召回率换延迟）。语料规模与查询量决定该用哪个，
+    所以它属于部署配置，不该写死在适配器里。
+
+    * ``type=FLAT`` → 建索引时不带任何参数；``nlist`` / ``nprobe`` 都不生效；
+    * ``type=IVF_FLAT`` → 建索引用 ``nlist``，检索用 ``nprobe``。
+
+    **``nprobe`` 必须 ≤ ``nlist``**：探的簇比总簇数还多没有意义（Milvus 不报错，
+    只是白填一个数），这里 fail-fast —— 与 ``ApiConfig.port`` 那次同一个口径：
+    配置写错就该在启动时炸，而不是在检索结果里慢慢体现。
+    """
+
+    type: Literal["FLAT", "IVF_FLAT"] = "FLAT"
+    # 簇数。经验值 ~ 4·√N（N=块数）：3927 块 → 约 250；取 128 是"少分点簇、每簇更准"的保守侧。
+    # 语料涨到十万块再往上调，并且**重建索引**才会生效（改配置不会自动重排已有索引，
+    # 见 `project-rag collections --reindex`）。
+    nlist: int = 128
+    # 检索时探几个簇。越大越接近 FLAT（nprobe=nlist 就退化成分簇暴力），越小越快越可能漏。
+    nprobe: int = 16
+
+    @model_validator(mode="after")
+    def _check(self) -> MilvusIndexConfig:
+        """输入:无。行为:把两个参数的关系当场校验。输出:self。"""
+        if self.nlist < 1:
+            raise ValueError(f"milvus.index.nlist 必须 ≥ 1，收到 {self.nlist}")
+        if self.nprobe < 1:
+            raise ValueError(f"milvus.index.nprobe 必须 ≥ 1，收到 {self.nprobe}")
+        if self.nprobe > self.nlist:
+            raise ValueError(
+                f"milvus.index.nprobe({self.nprobe}) 不能大于 nlist({self.nlist})"
+                " —— 探的簇比总簇数还多没有意义"
+            )
+        return self
 
 
 class MilvusConfig(BaseModel):
@@ -207,6 +487,42 @@ class MilvusConfig(BaseModel):
     # 类默认保持 "strong"：它是这段代码一直以来的行为，默认值一改语义就变
     # （有契约钉着，见 check_m1_1_config）。要那 400ms 就在 config.yaml 里写 bounded。
     read_consistency: Literal["bounded", "eventually", "strong"] = "strong"
+    # 稠密向量的索引类型与参数（FLAT / IVF_FLAT）。**类默认 FLAT** = 这段代码一直以来的行为；
+    # 想快就在 config.yaml 里写 IVF_FLAT（近似检索，见 MilvusIndexConfig 的说明）。
+    index: MilvusIndexConfig = MilvusIndexConfig()
+
+
+class KeywordConfig(BaseModel):
+    """关键字（词面）那一路：走哪份索引、BM25 的两个常数。
+
+    两档后端（**一档决定"索引存哪"，也决定集合 schema 要不要稀疏列**）：
+
+    * ``memory``（默认）—— 进程内 ``rank_bm25.BM25Plus``，语料从向量库全量读出后本地建索引。
+      行为与一直以来的实现一致；代价是每进程约 111MB 常驻 + 冷启动约 2.1s（实测见
+      ``adapters/bm25_index.py`` 的账）。
+    * ``milvus`` —— 入库时把文档编码成**稀疏向量**写进同一个集合的稀疏列
+      （``bm25_sparse`` 适配器），检索交给 Milvus 的 ``SPARSE_INVERTED_INDEX``。
+      进程内不再需要全量语料与 jieba 索引，代价是**集合必须带稀疏列** ——
+      换这一档要重灌（老集合没有那一列，写/查都会当场报错，不会静默降级）。
+
+    ⚠️ 类默认是 ``memory``：它是这段代码一直以来的行为，而且换档要重灌语料，
+    所以默认值不动，要换在 ``config.yaml`` 里写（有契约钉着，见 ``check_m1_1_config``）。
+    """
+
+    backend: Literal["memory", "milvus"] = "memory"
+    # BM25 的两个常数（只对 milvus 那档生效；memory 那档用 rank_bm25 自己的默认值，
+    # 恰好也是 1.5 / 0.75，所以两档的"形状"一致，只是变体不同：BM25Plus vs 标准 BM25）。
+    bm25_k1: float = 1.5  # 词频饱和速度：越大越"词频说话"
+    bm25_b: float = 0.75  # 长度归一强度：0 = 不归一，1 = 完全按长度惩罚
+
+    @model_validator(mode="after")
+    def _check(self) -> KeywordConfig:
+        """输入:无。行为:两个 BM25 常数取值当场校验。输出:self。"""
+        if self.bm25_k1 <= 0:
+            raise ValueError(f"keyword.bm25_k1 必须 > 0，收到 {self.bm25_k1}")
+        if not 0.0 <= self.bm25_b <= 1.0:
+            raise ValueError(f"keyword.bm25_b 必须在 [0, 1] 内，收到 {self.bm25_b}")
+        return self
 
 
 class EmbeddingConfig(BaseModel):
@@ -229,7 +545,6 @@ class EmbeddingConfig(BaseModel):
     # 检索全是噪声」,而这种坏法**不报错** —— 所以有条契约专门钉默认值(见 check_m3_rag)。
     # 演示用法(不必下载 4.4G 模型):`RAG_EMBEDDING__BACKEND=hashing`
     backend: Literal["bge_m3", "hashing"] = "bge_m3"
-
     # property装饰器,将方法调用转为属性调用
     @property
     def model_path(self) -> Path:
@@ -336,10 +651,14 @@ class Settings(BaseSettings):
     faq: FaqConfig = FaqConfig()
     cache: CacheConfig = CacheConfig()
     milvus: MilvusConfig = MilvusConfig()
+    keyword: KeywordConfig = KeywordConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     rag: RagConfig = RagConfig()
     conversation: ConversationConfig = ConversationConfig()
     api: ApiConfig = ApiConfig()
+    # 消耗报表的单价表(见 CostConfig)。**与 llm 分开**:llm 说的是"怎么调模型",
+    # cost 说的是"这些 token 值多少钱" —— 换代理/换套餐时只动后者。
+    cost: CostConfig = CostConfig()
 
     # 这个类方法,是用来定义配置的来源和优先级顺序的
     @classmethod
@@ -377,6 +696,7 @@ __all__ = [
     "CONFIG_FILE",
     "ENV_FILE",
     "PROJECT_ROOT",
+    "project_path",
     "ApiConfig",
     "CacheConfig",
     "ConversationConfig",

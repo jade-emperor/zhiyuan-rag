@@ -159,8 +159,8 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-16 加回 `# syntax=`（构建第一步就要去 registry 拉 frontend）",
         "Dockerfile",
-        "# =============================================================================\n# project-rag 应用镜像(服务化)",
-        "# syntax=docker/dockerfile:1.7\n# =============================================================================\n# project-rag 应用镜像(服务化)",
+        "# project-rag 应用镜像(服务化)\n",
+        "# syntax=docker/dockerfile:1.7\n# project-rag 应用镜像(服务化)\n",
         "不用外挂 frontend",
     ),
     (
@@ -254,6 +254,44 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "      - ./data/uploads:/app/data/uploads\n",
         "",
         "上传目录与 logs 可写",
+    ),
+    # ── 启动入口自报角色：翻车形状是「两个入口起的东西不一样，而没人说」 ──────────
+    (
+        "RT-30 `up` 偷偷把 app 也起了（那句「这一步没有前端」当场变假话）",
+        "scripts/dev.sh",
+        "run docker compose up -d standalone mysql redis",
+        "run docker compose up -d standalone mysql redis app",
+        "启动入口自报角色",
+    ),
+    (
+        "RT-31 `up` 起完不再说另外两条路（用户还是会去 8080 找前端）",
+        "scripts/dev.sh",
+        "    printf '  要容器那份（%s，一个进程同时发页面与接口）：./scripts/dev.sh app\\n' \"$CONTAINER_PORT\"\n",
+        "",
+        "启动入口自报角色",
+    ),
+    (
+        "RT-32 `app` 不支持 --build（改了前端之后容器那份永远跟不上）",
+        "scripts/dev.sh",
+        '  if [ "$build" = "--build" ]; then',
+        '  if [ "$build" = "--never" ]; then',
+        "启动入口自报角色",
+    ),
+    (
+        "RT-33 `app --build` 先建镜像后建前端（镜像里装进上一版产物，界面上看不出来）",
+        "scripts/dev.sh",
+        """    run bash -c 'cd web && npm run typecheck && npm run build'
+    run docker compose build app""",
+        """    run docker compose build app
+    run bash -c 'cd web && npm run typecheck && npm run build'""",
+        "启动入口自报角色",
+    ),
+    (
+        "RT-34 `status` 读了两份摘要却不比较（「容器发的是旧前端」又变成要人自己看哈希）",
+        "scripts/dev.sh",
+        '  printf \'\\n\\033[36m▸ 前端产物（改了 web/ 之后,容器里那份**不会**自己变）\\033[0m\\n\'\n  printf \'  容器/镜像里  %s\\n\' "${in_container:-（读不到：镜像没构建过，或容器没起且镜像不在）}"\n  printf \'  工作区       %s\\n\' "$in_workspace"\n  if [ -n "$in_container" ] && [ "$in_container" != "$in_workspace" ]; then',
+        '  printf \'\\n\\033[36m▸ 前端产物（改了 web/ 之后,容器里那份**不会**自己变）\\033[0m\\n\'\n  printf \'  容器/镜像里  %s\\n\' "${in_container:-（读不到：镜像没构建过，或容器没起且镜像不在）}"\n  printf \'  工作区       %s\\n\' "$in_workspace"\n  if [ -n "$in_container" ] && false; then',
+        "启动入口自报角色",
     ),
 ]
 

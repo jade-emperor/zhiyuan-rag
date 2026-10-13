@@ -26,6 +26,12 @@
 ``think_tokens`` 同理数思考帧 —— **思考帧绝不计入 ``tokens``**:混进去会让「答案多少字」
 凭空变大,还会让 TTFT 提前到思考开始那一刻,而那正是这个指标要回答的问题。
 
+**``tokens`` 不是账单上的 token**:前者是帧数(给 tps 用的近似),后者是 provider 回报的
+计费口径(``llm_model`` / ``llm_input_tokens`` / ``llm_cached_input_tokens`` /
+``llm_output_tokens``,见 ``LlmUsage``)。
+两个都在账上、两个都不许互相替代 —— 拿帧数去乘单价,金额会偏(思考帧、缓存命中的 input
+都不在帧数里);反过来拿计费 token 去算 tps,速率会虚高。报表用的是后三个。
+
 **为什么不用 contextvars 传账本**:帧流是同步生成器,会在线程池的不同线程里被 ``next()``
 (api 的 ``_in_thread``),contextvar 的写入会随调用上下文丢失 —— 那会得到「有时有账、
 有时没账」的日志,比没有日志更坏。显式传一个可变对象最不容易骗自己。
@@ -61,6 +67,10 @@ _FIELDS = (
     "llm_think_ms",
     "llm_ttft_ms",
     "think_tokens",
+    "llm_model",
+    "llm_input_tokens",
+    "llm_cached_input_tokens",
+    "llm_output_tokens",
     "ttft_ms",
     "tokens",
     "gen_ms",
@@ -114,6 +124,15 @@ def _flag(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _count(value: int | None) -> str:
+    """输入:整数或 None。行为:渲染成文本。输出:文本;没量到给 ``-``(不编 0)。
+
+    **``0`` 与 ``-`` 必须分得开**:0 = 真的一个 token 都没用(空回答),
+    ``-`` = provider 没告诉我们 / 这一路压根没调模型。折成 0 会让"少报了多少"看不见。
+    """
+    return _NONE if value is None else str(value)
+
+
 @dataclass(slots=True)
 class StreamTiming:
     """一次回答的计时账本 —— 可变、显式传递(理由见模块 docstring)。
@@ -148,6 +167,15 @@ class StreamTiming:
     first_thought: float | None = None
     last_thought: float | None = None
     think_tokens: int = 0
+    # provider 回报的用量(**只在真调了模型的那一行上有值**,见 cost.py 的判据)。
+    # 模型名单独存一份:单价是按模型配的,而"这次到底是哪个模型答的"只有 provider 知道
+    # (配置里写的是我们**要求**它用哪个,两者不一定一样)。
+    llm_model: str | None = None
+    input_tokens: int | None = None
+    # 输入里命中缓存的那部分(provider 的 prompt cache)。**单价与未命中差 50 倍**,
+    # 所以它必须单独记账;没回报时是 None(渲染成 ``-``),不是 0。
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
     refused: bool = False
     truncated: bool = False
     done: bool = False
@@ -198,6 +226,37 @@ class StreamTiming:
         self.refused = refused
         self.truncated = truncated
         self.done = True
+
+    def usage(
+        self,
+        *,
+        model: str = "",
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cached_input_tokens: int | None = None,
+    ) -> None:
+        """输入:provider 回报的一次用量(模型名 + 三个 token 数)。行为:记下来。输出:无。
+
+        **收的是三个基本类型,不是一个 ``LlmUsage`` 对象**:账本是纯计时的,
+        它只 import 标准库(那条分层法律有契约盯着 —— ``check_m5_5_latency.py``)。
+        让 ``application`` 那一层把领域对象拆开交进来,账本因此不认识 domain。
+        
+
+        **只在"真的调了模型"的那一层调它**(见 ``application/answer_rag.py``):一次合流请求
+        会产生两行账(外层 ``qa`` + 内层 ``rag``),用量只记在内层 —— 两行都记就是双倍计入金额,
+        而那种错在报表上看起来只是"花得有点多"。
+
+        重复调用时**后来的覆盖先前的**:provider 是在流末尾给的这一个数,
+        而"末尾那个"才是完整的一次调用(前面若有中间回报,通常是增量)。
+        """
+        if model:
+            self.llm_model = model
+        if input_tokens is not None:
+            self.input_tokens = input_tokens
+        if cached_input_tokens is not None:
+            self.cached_input_tokens = cached_input_tokens
+        if output_tokens is not None:
+            self.output_tokens = output_tokens
 
     @property
     def aborted(self) -> bool:
@@ -298,6 +357,9 @@ class StreamTiming:
         ``vector_ms``/``bm25_ms``/``fuse_ms``/``collapse_ms``/``rerank_ms`` 是**相邻两个打点之差**
         (段耗时,六段之和 ≈ ``retrieve_ms``);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
         ``llm_ttft_ms`` 是 ``llm_start`` 到第一帧 token;``think_tokens``/``tokens`` 是帧数;
+        ``llm_model``/``llm_input_tokens``/``llm_cached_input_tokens``/``llm_output_tokens`` 是
+        **provider 回报的计费口径**(没调模型或没回报时是 ``-``,报表按它们算钱,
+        见 ``application/cost.py``;缓存命中的输入单价与未命中差 50 倍,所以它是单独一列);
         ``thinking`` 是配置档位(唯一的字符串字段之一,与 ``label``/``channel`` 同类);
         ``ttft_ms``/``total_ms`` 从本段开始算。拿不到的一律 ``-`` —— 「没量到」和「量到 0」必须区分得开。
         """
@@ -320,6 +382,11 @@ class StreamTiming:
             "llm_think_ms": _ms(self.llm_think_ms),
             "llm_ttft_ms": _ms(self._since("llm_start", self.first_token)),
             "think_tokens": str(self.think_tokens),
+            # 计费口径的三个字段(不是帧数,见模块 docstring)
+            "llm_model": self.llm_model or _NONE,
+            "llm_input_tokens": _count(self.input_tokens),
+            "llm_cached_input_tokens": _count(self.cached_input_tokens),
+            "llm_output_tokens": _count(self.output_tokens),
             "ttft_ms": _ms(self.ttft_ms),
             "tokens": str(self.tokens),
             "gen_ms": _ms(self.gen_ms),

@@ -126,7 +126,19 @@ SRC = Path(__file__).resolve().parents[2] / "src" / "project_rag"
 DEFAULT_THRESHOLD = 0.85
 EXPECTED_MYSQL = {"host": "127.0.0.1", "port": 10093, "user": "rag", "database": "rag"}
 EXPECTED_REDIS = {"host": "127.0.0.1", "port": 10087, "db": 0}
-EXPECTED_FAQ = {"threshold": 0.85, "table": "faq"}
+# faq 段的**类默认值**（= 没有 config.yaml 时的兜底，也是"这段代码一直以来的行为"）。
+# 两个覆盖率门槛是这次作者报障后加的（推导见 adapters/matcher_bm25.py）：它们**必须与适配器里的
+# DEFAULT_* 常量一致** —— 两处各写一个数就是两处真相，改一处不会有人发现。
+# （曾经还有一道"上界"，量出来它随语料规模漂、且战果与覆盖率逐项相同，已删掉。）
+EXPECTED_FAQ = {
+    "threshold": 0.85,
+    "min_query_coverage": 0.5,
+    "min_entry_coverage": 0.8,
+    # 数据侧那两条下限（装载脚本用；它们**在配置里**，不在脚本里 —— 有契约盯着）
+    "min_question_tokens": 2,
+    "min_question_chars": 8,
+    "table": "faq",
+}
 
 # 缓存 value 的编码分隔符（ASCII 单元分隔符）。契约的一部分，必须与
 # application/answer_faq.py 的 _CACHE_SEP 一致 —— 这里刻意写死字面量而不是 import，
@@ -198,6 +210,12 @@ def _answer_faq():
 def _settings_cls():
     module = _require("project_rag.config", ("Settings",))
     return module.Settings
+
+
+def _faq_cls():
+    """输入:无。行为:取 FaqConfig（用来读**类默认值**，不带 config.yaml 的覆盖）。输出:类。"""
+    module = _require("project_rag.config", ("FaqConfig",))
+    return module.FaqConfig
 
 
 ANSWER_FAQ_SIGNATURE = (
@@ -447,7 +465,7 @@ def _() -> str:
     return f"四个工厂都是进程级单例并接进 Deps：{sorted(cached)}"
 
 
-@check("组合根：Deps 是 frozen+slots dataclass，字段 = 19 个工厂 + faq_threshold + cache_ttl + thinking 标签")
+@check("组合根：Deps 是 frozen+slots dataclass，字段 = 20 个工厂 + 五个静态标量")
 def _() -> str:
     Deps = _deps_cls()
     if not dataclasses.is_dataclass(Deps):
@@ -484,6 +502,11 @@ def _() -> str:
         "chunker_factory",
         "loader_factory",
         "suffixes_factory",
+        # 稀疏那一路（keyword.backend=milvus）与知识库清单的磁盘索引 —— 各自那次改动
+        # 都往 Deps 加了字段，而这条契约没跟着改（check_m2_faq 只在 local 档跑，
+        # 于是"红的契约"躺了很久）。加字段时**必须**同步这张表。
+        "sparse_encoder_factory",
+        "disk_files_factory",
         # P0-5 之后起:集合级运维 —— 列出集合、删掉一个集合。
         # Milvus 特有,所以包成两个函数放在组合根;命令层不 import pymilvus。
         "collections_factory",
@@ -493,12 +516,27 @@ def _() -> str:
         "session_catalog_factory",
         # M7.4起:限流计数器(默认 Redis,见 cli/deps.py 的 `_rate_limiter`)。
         "rate_limiter_factory",
+        # P0-6起:可见范围(组 / 组员 / 每份文档授权给谁)。默认 None = **不做可见范围**
+        # (一条规则都没有时本来就人人可见,所以"不接"与"接了但没规则"行为一致);
+        # `build_real_deps` 永远接上 —— 生产路径上没有"忘了配权限"这一档。
+        "access_store_factory",
     )
     # M5.8 起:思考档位。它**不是工厂** —— 是个静态标签,唯一用途是让延迟账里能看出
     # 「这一轮按哪一档跑的」。命令层把它转交出去,用例与账本都不认识 config。
     # cache_ttl 同理:缓存过期秒数也是「命令层从配置读出来、交给用例」的静态标量,
     # 它不该是工厂(不需要惰性构造),也不该由用例自己去读 config。
-    labels = ("faq_threshold", "cache_ttl", "thinking")
+    # P0-7 起多一个静态标量:消耗报表的两个值(单价表 + 币种)。同样由命令层从配置读出来
+    # 交给用例/接口,理由与 cache_ttl 一样 —— 用例层不认识 config,验收也能注入自己的价目表。
+    labels = (
+        "faq_threshold",
+        "cache_ttl",
+        "thinking",
+        "cost_prices",
+        "cost_currency",
+        # P0-7 起多一个:时段规则(分时段计价靠它;窗口为空的规则 = 不分时段)。
+        # 它是**解析好的值对象**,不是三个原始列表 —— 解析只发生在组合根(法则 #25)。
+        "cost_rule",
+    )
     missing = [n for n in want_factories + labels if n not in fields]
     extra = sorted(set(fields) - set(want_factories) - set(labels))
     if missing or extra:
@@ -516,6 +554,7 @@ def _() -> str:
     # 所以这里直接构造一个裸 Deps，验「没注入时确实取自配置」。
     # 之前是两个字面量 + 一条"与 config 比对"的检查 —— 同一个值两个真源，
     # 而它防的开销（import config）实测只有 79~179ms，比真正的大头（import adapters = 3.5s）小 40 倍。
+    from project_rag.application.cost import PeriodRule
     from project_rag.cli.deps import Deps as DepsClass
     from project_rag.config import get_settings
 
@@ -523,6 +562,16 @@ def _() -> str:
     for name, want in (
         ("faq_threshold", settings.faq.threshold),
         ("cache_ttl", settings.cache.ttl_s),
+        ("cost_prices", settings.cost.prices()),
+        ("cost_currency", settings.cost.currency),
+        (
+            "cost_rule",
+            PeriodRule.of(
+                weekdays=settings.cost.peak.weekdays,
+                windows=settings.cost.peak.windows,
+                holidays=settings.cost.holidays,
+            ),
+        ),
     ):
         got = getattr(DepsClass(), name)
         if got != want:
@@ -530,7 +579,7 @@ def _() -> str:
                 f"裸 Deps().{name} 应取自配置（{want!r}），实际 {got!r}；"
                 "默认值别写成字面量 —— 那会让同一个值有两个真源（法则 #25）"
             )
-    return "字段与默认值一致（两个静态标量取自配置）"
+    return "字段与默认值一致（五个静态标量取自配置）"
 
 
 # ── 2. 配置 ───────────────────────────────────────────────────────────────────
@@ -562,16 +611,30 @@ def _() -> str:
             )
     if not _plain(settings.mysql.password) or not _plain(settings.redis.password):
         raise AssertionError("mysql.password / redis.password 不该为空")
-    if abs(settings.faq.threshold - EXPECTED_FAQ["threshold"]) > 1e-9:
+    # **比类默认值,不比生效值**:生效值会被 config.yaml / 环境变量覆盖（那是部署旋钮，
+    # 作者可以调），"生效值还在不在可用区间里"由 check_p0_4_ab 那条契约负责。
+    defaults = _faq_cls()()
+    for field, want in EXPECTED_FAQ.items():
+        actual = getattr(defaults, field, "<缺这个字段>")
+        if isinstance(want, bool) or not isinstance(want, (int, float)):
+            same = actual == want
+        else:
+            same = isinstance(actual, (int, float)) and abs(actual - want) <= 1e-9
+        if not same:
+            raise AssertionError(
+                f"faq.{field} 的**类默认值**期望 {want!r}，实际 {actual!r}"
+                "（config.yaml 里可以不一样，但类默认值是这个项目的口径基线）"
+            )
+    if settings.faq.table != defaults.table:
         raise AssertionError(
-            f"faq.threshold 期望 {EXPECTED_FAQ['threshold']}，实际 {settings.faq.threshold}"
+            f"生效的 faq.table={settings.faq.table!r} 与类默认值 {defaults.table!r} 不一致"
         )
-    if settings.faq.table != EXPECTED_FAQ["table"]:
-        raise AssertionError(f"faq.table 期望 {EXPECTED_FAQ['table']!r}，实际 {settings.faq.table!r}")
     return (
         f"mysql={settings.mysql.host}:{settings.mysql.port} "
         f"redis={settings.redis.host}:{settings.redis.port} "
-        f"threshold={settings.faq.threshold} table={settings.faq.table}"
+        f"faq 默认值 threshold={defaults.threshold} "
+        f"覆盖 {defaults.min_query_coverage}/{defaults.min_entry_coverage}"
+        f"（生效 threshold={settings.faq.threshold}）"
     )
 
 
@@ -1234,6 +1297,335 @@ def _() -> str:
             "归一化只用来和阈值比较；复现脚本 scripts/acceptance/calibrate_threshold.py 的 D 组"
         )
     return f"{len(entries)} 条真实问题（原句 + 接无关尾缀）全部命中自己"
+
+
+def _must_match(matcher, query: str, entries):
+    """输入:匹配器 + 提问 + 语料。行为:调 best_match 并断言拿到了匹配。输出:FaqMatch。
+
+    只是把"语料非空 ⇒ 一定有条目"这件事写成类型检查看得懂的断言 ——
+    端口签名是 `FaqMatch | None`（空候选给 None），而这几条检查的语料永远非空。
+    """
+    hit = matcher.best_match(query, entries)
+    if hit is None:
+        raise AssertionError(f"语料非空却拿不到匹配：{query!r}")
+    return hit
+
+
+# ── FAQ 命中口径的三道闸门（作者报障驱动：任何带「协程」的提问都被两个字的那条答掉） ──
+def _gate_corpus():
+    """输入:无。行为:造一份能复现"夹带词有底分"的小语料。输出:(matcher, entries)。
+
+    语料要点（与真实表同形）：一条**两个字**的短条目 `协程`；另外几条里出现 `线程` / `对比`
+    —— 它们不是问题的主体，却让「线程、进程、协程的对比」这条提问在 BM25Plus 里拿到底分。
+    `进程` 刻意**不在**语料里（没出现过的词没有 idf，也就不贡献底分）。
+    """
+    from project_rag.adapters import BM25TextMatcher
+    from project_rag.domain import FaqEntry
+
+    entries = [
+        FaqEntry(1, "协程", "协程是用户态的轻量级线程。"),
+        FaqEntry(2, "HashMap不是线程安全的，怎么让它线程安全", "用 ConcurrentHashMap。"),
+        FaqEntry(3, "对比学习与监督学习的区别", "对比学习不需要标签。"),
+        FaqEntry(4, "编译型与解释型语言区别", "编译型先整体翻译。"),
+        FaqEntry(5, "Java线程池的7个核心参数", "核心线程数、最大线程数……"),
+        # 下面两条是"别处"：它们提供 `垃圾回收` / `内存模型` / `什么` / `是` 这些词的 idf
+        # （提问里夹带的词要有底分，才能复现"分子被抬起来"那件事）
+        FaqEntry(6, "垃圾回收怎么调优", "看停顿时间与吞吐。"),
+        FaqEntry(7, "什么是内存模型", "内存模型规定了可见性。"),
+    ]
+    return BM25TextMatcher(), entries
+
+
+@check("分数回到 0~1：一字不差 1.000、夹带提问也是 1.000（判不命中靠覆盖率,不靠分数大小）")
+def _score_range() -> str:
+    """作者定稿的口径：分数压回 0~1，判"该不该答"交给两道覆盖率。
+
+    报障那条提问的**未剪辑**比值是 1.712（分子里混进了 `线程/的/对比` 的底分），夹回 1.0 之后
+    与一字不差**同分** —— 所以光靠阈值分不开它（这正是最初的 bug）。分开它的是**提问覆盖率**
+    （那条提问只有 0.20 的词落在条目里），而不是分数的大小。这一条钉住：
+    ① 分数确实落在 0~1；② 一字不差拿满分；③ 夹带提问也是满分但**不命中**（被覆盖率拦下）。
+    """
+    from project_rag.adapters import BM25TextMatcher
+
+    entries = _gate_corpus()[1]
+    matcher = BM25TextMatcher(min_query_coverage=0.5, min_entry_coverage=0.8)
+    open_matcher = BM25TextMatcher(min_query_coverage=0, min_entry_coverage=0)
+    hijack = "线程、进程、协程的对比"
+
+    exact = _must_match(matcher, "协程", entries)
+    if exact.entry.question != "协程" or abs(exact.score - 1.0) > 1e-9:
+        raise AssertionError(f"一字不差该得 1.000 并命中自己，实际 {exact.entry.question!r} {exact.score}")
+    # 闸门关掉时这条提问会被答掉（旧行为），它的**原始**比值已经顶到 1.0 以上（信息在这里丢了，
+    # 所以不能再靠它判）—— 这也解释了为什么必须用覆盖率。
+    loose = _must_match(open_matcher, hijack, entries)
+    if loose.score < 1.0:
+        raise AssertionError(f"夹带提问的置信度该是 1.000（夹取后），实际 {loose.score:.3f}")
+    blocked = _must_match(matcher, hijack, entries)
+    if blocked.score != 0.0:
+        raise AssertionError(
+            f"夹带提问该被**覆盖率**拦下（score=0），实际 {blocked.score:.3f}"
+            f"（命中 {blocked.entry.question!r}）"
+        )
+    every = [_must_match(matcher, entry.question, entries).score for entry in entries]
+    if min(every) < 0.0 or max(every) > 1.0:
+        raise AssertionError(f"分数必须落在 0~1，实测 {min(every):.3f}~{max(every):.3f}")
+    # **过得了闸门、但原始比值 > 1** 的提问（同一个词重复两遍）:夹取后必须是 1.000。
+    # 少了这一条，"把 min(1.0, …) 去掉"这种坏法就抓不到（其它断言的分数恰好都是 1.000）。
+    repeated = _must_match(matcher, "协程 协程", entries)
+    if repeated.entry.question != "协程" or abs(repeated.score - 1.0) > 1e-9:
+        raise AssertionError(
+            f"同一个词重复两遍的提问该被夹到 1.000（该条命中自己），实际 {repeated.score:.3f}"
+        )
+    for label, entries_ in (("一字不差", [_must_match(matcher, e.question, entries) for e in entries]),):
+        del label, entries_
+    return (
+        f"一字不差 1.000 命中；同一条夹带提问也是 1.000（夹取）但 score=0（覆盖率 0.20 拦下）；"
+        f"{len(every)} 条问自己的分数都在 0~1 内"
+    )
+
+
+@check("命中口径②提问覆盖率：提问的实词大半不在这条里 → 交知识库（边界取 >=）")
+def _query_coverage_gate() -> str:
+    from project_rag.adapters import BM25TextMatcher
+
+    entries = _gate_corpus()[1]
+    only_query = BM25TextMatcher(
+        min_query_coverage=EXPECTED_FAQ["min_query_coverage"], min_entry_coverage=0
+    )
+    blocked = _must_match(only_query, "线程、进程、协程的对比", entries)
+    if blocked.score != 0.0:
+        raise AssertionError(
+            f"提问 5 个词只沾上 1 个（覆盖率 0.20）该被拦下,实际 {blocked.score:.3f}"
+        )
+    # 边界:覆盖率**正好等于**门槛时必须放行（与阈值那条同一条约定:取等号）
+    boundary = _must_match(only_query, "协程 什么", entries)
+    if boundary.score <= 0.0:
+        raise AssertionError(
+            "覆盖率正好 0.5 的提问被拦了 —— 门槛写成了严格大于？口径是 >=（取等号）"
+        )
+    ok = _must_match(only_query, "Java线程池的7个核心参数", entries)
+    if ok.entry.question != "Java线程池的7个核心参数" or abs(ok.score - 1.0) > 1e-9:
+        raise AssertionError(f"一字不差该命中自己那条,实际 {ok.entry.question!r} {ok.score:.3f}")
+    return f"覆盖率 0.20 → 0；正好 0.50 → 放行（>=）；一字不差 → 1.000"
+
+
+@check("命中口径③条目覆盖率：条目的词用户没提 → 交知识库（问答两边不是同一件事）")
+def _entry_coverage_gate() -> str:
+    r"""与②是两个方向:这条拦的是"命中的条目里大半的词用户根本没提"。
+
+    真实表里剩下的那 1 条误命中（「cookie和session的区别」→「&和&&的区别」）**不属于这一类** ——
+    `&`/`&&` 在分词那一步被丢了（`tokens()` 只留含 ``\w`` 的词），那条条目在索引里只剩
+    「和/的/区别」，于是它与任何"X 和 Y 的区别"都长得一样。修法在分词口径上，记在 deferred。
+    """
+    from project_rag.adapters import BM25TextMatcher
+
+    entries = _gate_corpus()[1]
+    open_matcher = BM25TextMatcher(min_query_coverage=0, min_entry_coverage=0)
+    only_entry = BM25TextMatcher(
+        min_query_coverage=0, min_entry_coverage=EXPECTED_FAQ["min_entry_coverage"]
+    )
+    query = "线程池 HashMap 对比学习 垃圾回收"
+    loose = _must_match(open_matcher, query, entries)
+    if loose.score < 0.98:
+        raise AssertionError(
+            f"造出来的提问在不设闸门时只有 {loose.score:.3f}（< 阈值），复现不出误命中 —— 语料要改"
+        )
+    blocked = _must_match(only_entry, query, entries)
+    if blocked.score != 0.0:
+        raise AssertionError(
+            f"条目里大半的词用户没提（覆盖率 < 0.8）该被拦下,实际 {blocked.score:.3f}"
+            f"（命中 {blocked.entry.question!r}）"
+        )
+    return (
+        f"不设闸门时会误命中「{loose.entry.question}」({loose.score:.3f})；"
+        "只开条目覆盖率 → 0"
+    )
+
+
+@check("命中口径：两道覆盖率可以用 0 关掉（回滚路径），关了以后不再拦")
+def _gates_off() -> str:
+    from project_rag.adapters import BM25TextMatcher
+
+    from project_rag.adapters import BM25TextMatcher
+
+    entries = _gate_corpus()[1]
+    matcher = BM25TextMatcher(min_query_coverage=0, min_entry_coverage=0)
+    hit = _must_match(matcher, "线程、进程、协程的对比", entries)
+    if hit.score == 0.0:
+        raise AssertionError("两道闸门都设 0 之后不该再拦（那是回滚路径）")
+    return f"两道设 0 → 该提问又被答掉（score={hit.score:.3f}），回滚路径可用"
+
+
+@check("命中口径：类默认值与适配器里的常量一致（两处真相迟早漂）")
+def _gate_defaults_agree() -> str:
+    from project_rag.adapters import matcher_bm25
+
+    defaults = _faq_cls()()
+    pairs = (
+        ("min_query_coverage", matcher_bm25.DEFAULT_MIN_QUERY_COVERAGE),
+        ("min_entry_coverage", matcher_bm25.DEFAULT_MIN_ENTRY_COVERAGE),
+    )
+    for field, constant in pairs:
+        if abs(getattr(defaults, field) - constant) > 1e-9:
+            raise AssertionError(
+                f"FaqConfig.{field}={getattr(defaults, field)} 与适配器常量 {constant} 不一致 —— "
+                "改一处忘另一处，线上行为就和配置说的不一样"
+            )
+    return "FaqConfig 的两个覆盖率默认值 == adapters.matcher_bm25 的两个 DEFAULT_*"
+
+
+@check("命中口径对语料规模不敏感：默认规则在 150 条与 600+ 条上给同一批提问同一个判定")
+def _scale_invariant() -> str:
+    """作者追问"分数不再是 0~1,随着语料漂移怎么办" —— 这一条就是那个问题的答案。
+
+    **比值会漂**（分子分母都含 idf，而 idf=ln((N+1)/df) 随语料变）：实测把 FAQ 库从 150 条撑到
+    300 / 617 / 1324 条（混入 `pool-faq.csv`），「请问，<原问题>」这一档的**最高**未剪辑比值
+    从 1.000 涨到 1.407 / 1.334 / 1.311 —— 所以**任何"比绝对大小"的闸门都会随语料误伤合法提问**
+    （曾经试过上界 1.10：放行率从 100% 被砍到 60%/69%/71%，于是删掉了）。
+
+    **覆盖率不漂**：它只是 token 计数比值（`|提问 ∩ 条目| / |提问|` 这类），不含 idf、不含分数。
+    这一条用真语料把这件事钉住：同一批提问（每条问自己 / 加礼貌语 / 无关问法 / 作者那条夹带）
+    在两种规模的语料上必须给出**逐条相同**的判定。语料池不在本地时 SKIP 并点名 owner。
+    """
+    import csv as csv_module
+
+    import pymysql
+
+    from project_rag.adapters import BM25TextMatcher
+    from project_rag.domain import FaqEntry
+
+    pool_path = Path(__file__).resolve().parents[2] / "data" / "faq" / "pool-faq.csv"
+    if not pool_path.is_file():
+        raise SkipCheck(
+            f"扩语料用的 {pool_path.name} 不在本地 —— 没有它就量不出「规模变大之后还稳不稳」；"
+            "owner：数据装载（走 scripts/tools/load_faq_csv.py 那条链）"
+        )
+
+    settings = _settings_cls()()
+    try:
+        conn = pymysql.connect(connect_timeout=5, autocommit=True, **MYSQL_ENV)
+    except Exception as exc:  # noqa: BLE001 - 容器没起是环境问题，不是契约失败
+        raise SkipCheck(
+            f"MySQL 连不上（{MYSQL_ENV['host']}:{MYSQL_ENV['port']}）：{type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT id, question, answer FROM {settings.faq.table} ORDER BY id ASC")
+            live = [FaqEntry(int(i), str(q), str(a)) for i, q, a in cur.fetchall()]
+    finally:
+        conn.close()
+    if not live:
+        raise SkipCheck("FAQ 表是空的 —— 先跑 scripts/tools/load_faq_csv.py；owner：数据装载")
+
+    with pool_path.open(encoding="utf-8-sig", newline="") as handle:
+        extra_rows = [row for row in csv_module.DictReader(handle) if row.get("问题")]
+    extra = [
+        FaqEntry(10_000 + index, str(row["问题"]).strip(), "x")
+        for index, row in enumerate(extra_rows)
+    ]
+    grown = live + extra
+
+    matcher = BM25TextMatcher(
+        min_query_coverage=settings.faq.min_query_coverage,
+        min_entry_coverage=settings.faq.min_entry_coverage,
+    )
+    probes: list[str] = []
+    for entry in live:
+        probes += [entry.question, "请问，" + entry.question]
+    probes += ["公司年会在哪天", "今天天气怎么样", "午饭吃什么", "线程、进程、协程的对比"]
+
+    def verdicts(entries: list[FaqEntry]) -> list[bool]:
+        out: list[bool] = []
+        for query in probes:
+            hit = matcher.best_match(query, entries)
+            out.append(hit is not None and hit.score >= settings.faq.threshold)
+        return out
+
+    small, big = verdicts(live), verdicts(grown)
+    changed = [
+        (probes[index], small[index], big[index])
+        for index in range(len(probes))
+        if small[index] != big[index]
+    ]
+    if changed:
+        query, was, now = changed[0]
+        raise AssertionError(
+            f"命中判定随语料规模变了 {len(changed)}/{len(probes)} 条，例：『{query[:30]}』"
+            f"（{len(live)} 条时{'命中' if was else '不命中'} → {len(grown)} 条时"
+            f"{'命中' if now else '不命中'}）—— 是不是引入了「比绝对大小」的判据"
+            "（分数阈值、原始分门槛、idf 相关的量）？那些数会随语料漂（idf=ln((N+1)/df)）；"
+            "默认口径只靠两个覆盖率，它们只数词、不漂"
+        )
+    hit_rate = sum(1 for value in small if value) / len(small)
+    return (
+        f"{len(probes)} 条探针在 {len(live)} 条与 {len(grown)} 条语料上判定逐条相同"
+        f"（命中率 {hit_rate:.0%}）—— 只数词的覆盖率换来的性质"
+    )
+
+
+@check("数据侧：入库校验拒绝「不像问句」的行（两个字的中文主题词）")
+def _loader_shape_guard() -> str:
+    """入口护栏：FAQ 表里不该出现 `协程` 这种两个字的主题词（作者报障的那一条就是它）。
+
+    算法侧已经有三道闸门兜住**行为**；这一层保证**数据**里不再进这种行 ——
+    位子很低但很硬：它拦住的正是"把八个字的标题当问题灌进去"这种批量操作。
+    """
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "load_faq_csv", root / "scripts" / "tools" / "load_faq_csv.py"
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - 文件不在就说明布局变了
+        raise AssertionError("找不到 scripts/tools/load_faq_csv.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    # ① **下限必须来自配置**（作者要求"最少词数能在配置里设"）：脚本自己不留默认值 ——
+    #    留了就是第二处真源，改了配置而脚本还是旧的，没人看得出来。
+    import inspect
+
+    params = inspect.signature(module.question_shape).parameters
+    for name in ("min_tokens", "min_chars"):
+        if name not in params or params[name].default is not inspect.Parameter.empty:
+            raise AssertionError(
+                f"question_shape 的 {name} 必须是**必填**参数（不许在脚本里留默认值）—— "
+                "下限只能来自 config.yaml 的 faq.min_question_*"
+            )
+    if hasattr(module, "MIN_QUESTION_TOKENS") or hasattr(module, "MIN_QUESTION_CHARS"):
+        raise AssertionError("装载脚本里还留着 MIN_QUESTION_* 常量 —— 口径又变成两处了")
+
+    # ② 用**生效配置**跑判定（配置一改，这里的判定立刻跟着变）
+    settings = _settings_cls()()
+    min_tokens = settings.faq.min_question_tokens
+    min_chars = settings.faq.min_question_chars
+    shape = lambda text: module.question_shape(  # noqa: E731 - 检查脚本里够用
+        text, min_tokens=min_tokens, min_chars=min_chars
+    )
+    rejected = {text: shape(text) for text in ("协程", "闭包", "熵", "数字签名", "???")}
+    bad = [text for text, reason in rejected.items() if not reason]
+    if bad:
+        raise AssertionError(f"这些不该通过入库校验（单实词的短条目）：{bad}")
+    accepted = [
+        "Java线程池的7个核心参数",
+        "IllegalArgumentException",  # 1 个实词但够长:标识符也算一个问句
+        "什么是协程",
+        "&和&&的区别",
+    ]
+    bad = [text for text in accepted if shape(text)]
+    if bad:
+        raise AssertionError(f"这些是合格的问句/标识符，不该被拒：{[(t, shape(t)) for t in bad]}")
+
+    # ③ 默认那份 CSV 必须能过（否则装载脚本对新克隆的人就是坏的）
+    rows, _dups, _subjects = module.read_rows(
+        module.DEFAULT_CSV, min_tokens=min_tokens, min_chars=min_chars
+    )
+    if len(rows) < 100:
+        raise AssertionError(f"默认 CSV 只读出 {len(rows)} 行，是不是被改坏了？")
+    return (
+        f"下限来自配置（{min_tokens} 实词 / {min_chars} 字）且脚本里没有第二处；"
+        f"默认 CSV {len(rows)} 行全过"
+    )
 
 
 def main() -> int:

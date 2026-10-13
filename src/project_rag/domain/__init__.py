@@ -1,5 +1,14 @@
 from .auth import USER_ROLES, User, UserRole
-from .documents import DOC_STATUSES, DocRecord, DocStatus
+from .documents import (
+    DOC_STATES,
+    DOC_STATUSES,
+    STATE_IN_FLIGHT,
+    STATE_MISMATCHES,
+    STATE_OK,
+    DocRecord,
+    DocState,
+    DocStatus,
+)
 from .models import (
     FUSION_MODES,
     RETRIEVAL_MODES,
@@ -17,6 +26,7 @@ from .models import (
     FusionMode,
     FusedChunk,
     LlmDelta,
+    LlmUsage,
     QaAnswer,
     QaEvent,
     RagAnswer,
@@ -24,15 +34,21 @@ from .models import (
     RetrievalOptions,
     RetrievedChunk,
     Role,
+    SparseVector,
 )
 from .pages import PageSpans, page_of
 from .sessions import TITLE_CHARS, SessionSummary, session_title
 
 __all__ = [
+    "DOC_STATES",
     "DOC_STATUSES",
     "FUSION_MODES",
+    "STATE_IN_FLIGHT",
+    "STATE_MISMATCHES",
+    "STATE_OK",
     "TITLE_CHARS",
     "DocRecord",
+    "DocState",
     "DocStatus",
     "USER_ROLES",
     "User",
@@ -51,6 +67,7 @@ __all__ = [
     "FusionMode",
     "FusedChunk",
     "LlmDelta",
+    "LlmUsage",
     "PageSpans",
     "QaAnswer",
     "QaEvent",
@@ -61,6 +78,7 @@ __all__ = [
     "RetrievedChunk",
     "Role",
     "SessionSummary",
+    "SparseVector",
     "page_of",
     "session_title",
 ]

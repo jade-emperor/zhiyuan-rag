@@ -162,6 +162,31 @@ class MySQLAuthStore(AuthStore):
             conn.close()
         return [User(user_id=r[0], username=r[1], role=_role(r[2])) for r in rows]
 
+    def delete_user(self, user_id: str) -> int:
+        """输入:用户 ID。行为:删用户 + 他的令牌(一个事务)。输出:删掉的用户行数。
+
+        **为什么两件事在一个事务里**:只删用户不删令牌,那些令牌行就永远留在表里
+        (换不出用户,但也查不出主人);反过来只删令牌不删用户则等于没删。
+        两条要么都成,要么都不成。
+
+        会话归属(``session_owner``)**故意不动**:见 ``ports/auth.py`` 的说明 ——
+        留着那一行,删号之后的会话仍然"有主人"(只是那个人不存在了),因此谁都读不到;
+        而那正是我们要的结果,同时留下了"这些会话曾经属于谁"的证据。
+        """
+        conn = self._connect(autocommit=False)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {self._tokens} WHERE user_id = %s", (user_id,))
+                cur.execute(f"DELETE FROM {self._users} WHERE user_id = %s", (user_id,))
+                removed = int(cur.rowcount)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return removed
+
     def issue_token(self, user: User, token_hash: str, ttl_seconds: int) -> None:
         """输入:用户、令牌哈希、有效期。行为:插入一行(过期时刻由**数据库**算)。输出:无。"""
         conn = self._connect(autocommit=True)

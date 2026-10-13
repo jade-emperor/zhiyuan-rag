@@ -52,10 +52,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 def _resolve(path_text: str) -> Path:
     """输入:命令行给的路径。行为:相对路径挂到项目根下。输出:绝对路径。"""
     # 延迟 import:--help 不该为了一个常量把 pydantic / yaml 拖进来
-    from project_rag.config import PROJECT_ROOT
+    from project_rag.config import project_path
 
-    path = Path(path_text)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return project_path(path_text)
 
 
 def _print_chunk_stats(chunks, chunk_size: int, chunk_overlap: int) -> None:
@@ -148,6 +147,12 @@ def run(args) -> int:
             embedder=deps.embedder_factory(),
             store=store,
             batch_size=batch_size,
+            # `keyword.backend=milvus` 那一档才装配稀疏编码器(见 cli/deps.py)。
+            # 这一次 ingest 的正文就是"全库"(整份重灌),所以 corpus_texts 不传 ——
+            # 传了反而会把口径搞成"统计的是别的语料"。
+            sparse_encoder=(
+                None if deps.sparse_encoder_factory is None else deps.sparse_encoder_factory()
+            ),
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("ingest 失败:%s", exc)
@@ -159,4 +164,45 @@ def run(args) -> int:
         f"\n入库完成:文档 {report.documents} 份 → 切出 {report.chunks} 块 → "
         f"清旧 {report.removed} 块 → {report.batches} 批 → 库内 {report.in_store} 块"
     )
+    if report.sparse_vocabulary:
+        print(
+            f"稀疏向量(关键字那一路):按全库 {report.chunks} 块统计,"
+            f"词表 {report.sparse_vocabulary} 维,平均块长 {report.sparse_avg_len:.1f} 词"
+        )
+
+    # ── 登记回来:不然"后端灌的语料"在前端永远是「未登记」 ──────────────────────
+    # 登记表是知识库页的骨架,而 ingest 以前**根本不碰它** —— CLI 灌进去的文档
+    # 只能靠 `doctor --backfill` 或者被上传过一次才出现在清单上。
+    # 这里写的是**这次真的入库了的结果**:块数(与刚写进库里的同口径)、磁盘真实字节数
+    # (下次判"文件改没改"就靠它)、来源标签(与装载器同口径)。
+    if deps.document_store_factory is None:
+        print("提示:这次没接登记表(document_store_factory 未装配),清单上看不到这一批。")
+        return 0
+    from datetime import datetime
+
+    from project_rag.adapters.document_loader import list_files, supported_suffixes
+    from project_rag.application.documents import register_ingested
+
+    # 大小按**同一个入库根**算(与 load_documents 的 doc_id 口径一致):
+    # 单份文件时根是它所在目录,目录时根就是它自己。
+    root = path if path.is_dir() else path.parent
+    sizes = {
+        file.doc_id: file.size_bytes
+        for file in list_files(root, suffixes=supported_suffixes())
+    }
+    rows = register_ingested(
+        deps.document_store_factory(),
+        documents=documents,
+        chunks=chunks,
+        sizes=sizes,
+        created_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    print(f"已登记 {len(rows)} 份(状态 processed + 块数 + 字节数),知识库清单上现在看得到它们。")
+    unknown = [row.document_id for row in rows if row.size_bytes == 0]
+    if unknown:
+        print(
+            f"⚠️ {len(unknown)} 份没算到磁盘大小({unknown[:3]}):登记表里大小是 0 "
+            "= 判不了「文件后来改没改」,清单不会把它们报成 changed。",
+            file=sys.stderr,
+        )
     return 0

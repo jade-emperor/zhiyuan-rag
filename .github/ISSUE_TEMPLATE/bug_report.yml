@@ -64,9 +64,14 @@ body:
     id: how
     attributes:
       label: 怎么跑的
+      description: |
+        前端在不在、是哪一份，取决于入口：`./scripts/dev.sh up` 只起中间件（**没有前端**）；
+        `./scripts/dev.sh app` 起容器那份（8080）；`./scripts/dev.sh serve` 起工作区源码那份（18080）。
+        不确定就先跑 `./scripts/dev.sh status`。
       options:
         - 宿主上的**代码后端**：`./scripts/dev.sh serve`（默认 18080）
         - 容器里的 app：`docker compose up -d`（8080，页面和接口同一个进程）
+        - 只起了中间件、前端在代码后端的 18080：`./scripts/dev.sh up` + `./scripts/dev.sh serve`
         - 单元级：直接跑某条验收脚本
         - 其他（在下面说明）
     validations:

@@ -21,15 +21,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from project_rag.domain import Document
+from project_rag.observability import get_logger
 from project_rag.ports import DocumentSource
 
 from .office_files import OfficeFileSource
 from .pdf_files import PdfFileSource
 from .text_files import TextFilesSource
+
+_logger = get_logger("adapters.document_loader")
 
 # 装配处:加一种格式 = 往这里加一个适配器(顺序只影响报错信息,分派按扩展名)
 SOURCES: tuple[DocumentSource, ...] = (
@@ -41,6 +45,126 @@ SOURCES: tuple[DocumentSource, ...] = (
 _BY_SUFFIX: dict[str, DocumentSource] = {
     suffix: source for source in SOURCES for suffix in source.suffixes
 }
+
+
+def doc_id_of(root: Path, file: Path) -> str:
+    """输入:入库根 + 根下的一个文件。行为:算它相对根的路径。输出:posix 相对路径(``doc_id`` 的口径)。"""
+    return file.relative_to(root).as_posix()
+
+
+def source_of(root: Path) -> str:
+    """输入:入库根。行为:去掉 ``_data`` 后缀。输出:来源标签。
+
+    ``bagu_ai_data/`` → ``bagu_ai``:顶层目录名去掉 ``_data``,可以直接当向量库的
+    ``source`` 过滤字段用。**这个规则只此一处** —— 装载(``load_documents``)与磁盘索引
+    (``list_files``)共用它,否则两边会各漂一个版本,而症状是"重新灌一遍块 id 全变了"。
+    """
+    return root.name.removesuffix("_data") or root.name
+
+
+@dataclass(frozen=True, slots=True)
+class DiskFile:
+    """磁盘上的一个语料文件,**还没读正文**(清单/对账只要路径、大小、名字)。
+
+    ``doc_ids`` 是「从各个可能的入库根看它」的候选 id,**从具体到宽泛**排 ——
+    同一个文件既能被 ``--path data/corpus/bagu_ai_data`` 当 ``x.md`` 灌进去,
+    也能被 ``--path data/corpus`` 当 ``bagu_ai_data/x.md`` 灌进去,
+    两种登记行都该认出磁盘上这同一份文件(否则会有一边被误报成「文件不在」)。
+    """
+
+    path: Path
+    size_bytes: int
+    source: str  # 来源标签:第一个(最具体的)入库根的名字去掉 _data
+    doc_ids: tuple[str, ...]
+
+    @property
+    def doc_id(self) -> str:
+        """输入:无。行为:取首选的那个候选 id(最具体的入库根)。输出:doc_id。"""
+        return self.doc_ids[0]
+
+
+def list_files(root: Path, *, suffixes: Collection[str] | None = None) -> tuple[DiskFile, ...]:
+    """输入:一个入库根 + 可选的后缀白名单。行为:递归列出文件(按相对路径排序)。输出:``DiskFile`` 元组。
+
+    **只列不读**:清单与对账要知道"磁盘上有什么、多大",不需要正文 ——
+    走 ``load_documents`` 会把 13MB 的 PDF 解析一遍,而那是分钟级的。
+
+    ``suffixes=None`` = 全都收(调用方想自己过滤);给了白名单就只收白名单里的 ——
+    用的是**同一个** ``supported_suffixes()``,别处不许再抄一份扩展名清单。
+
+    **读不到的文件跳过并记一条 WARNING,不抛也不当成"不在"**:把"读不到"报成
+    "文件不在",会让整个知识库清单误报一片 ``file_missing``(那比少列一个文件糟得多)。
+    """
+    if not root.is_dir():
+        return ()
+    found: list[DiskFile] = []
+    for file in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        try:
+            if not file.is_file():
+                continue
+            if suffixes is not None and file.suffix.lower() not in suffixes:
+                continue
+            size = file.stat().st_size
+        except OSError as exc:  # 权限 / 半删状态 / 坏符号链接
+            _logger.warning("列语料时读不到 %s,跳过(不当作「不在」):%s", file, exc)
+            continue
+        found.append(
+            DiskFile(
+                path=file,
+                size_bytes=size,
+                source=source_of(root),
+                doc_ids=(doc_id_of(root, file),),
+            )
+        )
+    return tuple(found)
+
+
+def ingest_roots(uploads_dir: Path, corpus_dir: Path) -> tuple[Path, ...]:
+    """输入:上传目录 + 语料根。行为:按**从具体到宽泛**给出入库根。输出:路径元组。
+
+    入库根 = ``--path`` 可能指到的那些目录(``doc_id`` 是**相对入库根**的路径,
+    所以"这个文件叫什么"完全取决于当时指向哪一层)。真实用到的只有这几种:
+
+    1. 上传目录(``data/uploads``)—— 上传的原件,名字就是文件名;
+    2. 语料根的**每个直接子目录**(``data/corpus/bagu_ai_data``)—— 按来源一份份灌;
+    3. 语料根本身(``data/corpus``)—— 整个语料一次灌。
+
+    顺序就是**优先级**:同一个文件有多个候选 id 时,取最具体的那个当 ``doc_id``
+    (那也是 ``project-rag ingest --path data/corpus/<来源>_data`` 会写进登记表的那个)。
+    从更深一层目录灌进去的 doc_id 对不上 —— 那种情况按「未登记」列出来,不会静默漏掉。
+    """
+    roots: list[Path] = [uploads_dir]
+    if corpus_dir.is_dir():
+        roots += sorted((child for child in corpus_dir.iterdir() if child.is_dir()),
+                        key=lambda path: path.name)
+        roots.append(corpus_dir)
+    return tuple(roots)
+
+
+def index_files(
+    roots: Sequence[Path], *, suffixes: Collection[str] | None = None
+) -> tuple[DiskFile, ...]:
+    """输入:若干入库根(顺序即优先级)+ 可选后缀白名单。行为:合并成一份磁盘索引。输出:``DiskFile`` 元组。
+
+    同一个文件被多个根看见时**合成一条**,``doc_ids`` 里按 ``roots`` 的顺序列全候选;
+    多个文件抢同一个候选 id 时(两个子目录里有同名文件)**先出现的赢** ——
+    按路径排序是确定的,所以两次调用给同一个答案(清单不能自己抖)。
+    """
+    merged: dict[Path, DiskFile] = {}
+    for root in roots:
+        for file in list_files(root, suffixes=suffixes):
+            key = file.path.resolve()
+            previous = merged.get(key)
+            if previous is None:
+                merged[key] = file
+            else:
+                merged[key] = DiskFile(
+                    path=previous.path,
+                    size_bytes=previous.size_bytes,
+                    source=previous.source,
+                    doc_ids=(*previous.doc_ids, *file.doc_ids),
+                )
+    return tuple(merged[key] for key in sorted(merged, key=lambda path: path.as_posix()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,13 +201,13 @@ def load_documents(path: Path) -> LoadedCorpus:
     else:
         raise FileNotFoundError(f"路径不存在:{path}")
 
-    name = root.name.removesuffix("_data") or root.name
+    name = source_of(root)
     documents: list[Document] = []
     skipped: list[str] = []
     empty: list[str] = []
 
-    for file in sorted(candidates, key=lambda found: found.relative_to(root).as_posix()):
-        relative = file.relative_to(root).as_posix()
+    for file in sorted(candidates, key=lambda found: doc_id_of(root, found)):
+        relative = doc_id_of(root, file)
         source = _BY_SUFFIX.get(file.suffix.lower())
         if source is None:
             skipped.append(relative)

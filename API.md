@@ -36,7 +36,7 @@ uv run project-rag-api            # 绑 config.yaml 里的 0.0.0.0:18080（宿�
 启动顺序是「装日志 → 预热 → 起 uvicorn」，预热**失败不拦启动**（只记 warning，首个请求会自己补做）。
 uvicorn **只起一个 worker**：嵌入 / 重排是进程内单例，多 worker 会各加载一份、内存翻倍。
 
-其他相关配置：`conversation.history_rounds`（历史轮数，默认 5，读与写共用）、`faq.threshold`（默认 0.85）、
+其他相关配置：`conversation.history_rounds`（历史轮数，默认 5，读与写共用）、`faq.threshold` / `faq.min_query_coverage` / `faq.min_entry_coverage`（FAQ 命中口径：阈值 + 两个覆盖率门槛，默认 0.85 / 0.5 / 0.8）、`faq.min_question_tokens` / `faq.min_question_chars`（数据侧：什么样的「问题」才准进 `faq` 表，装载时校验；默认 2 个实词 或 8 个字，0 = 关）、
 `rag.*`（检索旋钮）。配置优先级：**环境变量 > `.env` > `config/config.yaml`**，前缀 `RAG_`、嵌套用 `__`
 （例如 `RAG_API__PORT=9000`）。
 
@@ -90,7 +90,7 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 
 ---
 
-## 三、端点一览（16 条业务路由 + `/health` + 前端 app）
+## 三、端点一览（27 条业务路由 + `/health` + 前端 app）
 
 「认证」一列说明**必须带什么**：`—` = 不需要；`Bearer` = 任意登录账号；`admin` = 管理员角色。
 
@@ -105,13 +105,24 @@ app **只需要知道一个后端地址**（默认 = 页面自己的 origin）�
 | `GET` | `/api/v1/sessions` | **我名下的**会话目录（标题/轮数/最近活动，M7.1 加） | Bearer |
 | `POST` | `/api/v1/auth/login` | 账号密码换令牌 | — |
 | `POST` | `/api/v1/auth/logout` | **撤销当前令牌**(不只是前端删本地副本;幂等) | Bearer(可缺) |
-| `GET` | `/api/v1/auth/me` | 当前账号与角色（前端据此显示/隐藏按钮） | Bearer |
+| `GET` | `/api/v1/auth/me` | 当前账号 + **三个能力布尔值**（前端据此显示/隐藏页签） | Bearer |
 | `GET` | `/api/v1/capabilities` | 后缀 / 上限 / 模型 / 检索选项与上限（**前端唯一的能力来源**） | — |
 | `POST` | `/api/v1/documents?filename=…` | 上传一份文档（**原始 body 流式**，返回 202） | admin |
-| `GET` | `/api/v1/documents` | 已登记文档清单（新→旧） | Bearer |
-| `DELETE` | `/api/v1/documents/{document_id}` | 删一份文档（登记行 + 向量 + 原文件） | admin |
-| `GET` | `/api/v1/documents/{document_id}/chunks` | 预览入库后的样子（折叠成**父块**、带页码，M7.2 加） | Bearer |
-| `GET` | `/api/v1/admin/metrics` | 延迟报表（p50/p95/p99、冷热、最慢榜） | admin |
+| `GET` | `/api/v1/documents` | 知识库清单 —— **登记表 × 磁盘 × 向量库三处对账**后的实时视图（**按可见范围过滤**：被收窄且没授权给他的不出现） | Bearer + 知识库 |
+| `DELETE` | `/api/v1/documents/{document_id}` | 删一份文档（登记行 + 向量 + 原文件；**语料目录里的源材料不动**） | admin |
+| `GET` | `/api/v1/documents/{document_id}/chunks` | 预览入库后的样子（折叠成**父块**、带页码，M7.2 加）；**看不见的文档与不存在的回同一句 404** | Bearer + 知识库 |
+| `GET` | `/api/v1/reports/metrics` | 延迟报表（p50/p95/p99、冷热、最慢榜） | **运维 / admin** |
+| `GET` | `/api/v1/reports/cost` | 消耗报表（次数 / token / 金额；未配单价与没量到都如实说） | **运维 / admin** |
+| `GET` | `/api/v1/admin/users` | 全部账号（用户名 / 角色 / 所属组），**不含密码** | admin |
+| `POST` | `/api/v1/admin/users` | 建号（`employee` / `ops` / `admin`），201 + 不回显密码 | admin |
+| `DELETE` | `/api/v1/admin/users/{user_id}` | 删号（连带删令牌、组员行与授权行）；**不能删自己、不能删最后一个管理员** | admin |
+| `POST` | `/api/v1/admin/users/{user_id}/password` | 替某个账号改密码 | admin |
+| `GET` | `/api/v1/admin/groups` | 全部组（一类员工）与成员 | admin |
+| `POST` | `/api/v1/admin/groups` | 建组（重名 400） | admin |
+| `DELETE` | `/api/v1/admin/groups/{group_id}` | 删组（**连带清掉授权给它的规则**） | admin |
+| `PUT` | `/api/v1/admin/groups/{group_id}/members` | **整份**设置成员名单（声明式） | admin |
+| `GET` | `/api/v1/admin/documents/{document_id}/acl` | 一份文档的可见范围 | admin |
+| `PUT` | `/api/v1/admin/documents/{document_id}/acl` | **整份**设置可见范围；两个名单都空 = 取消限制 | admin |
 | `GET` | `/health` | 进程探活 | — |
 | `GET` | `/` | **307 → `/static/app/`**（前端 app，M7.1 起） | — |
 | `GET` | `/static/app/` | 前端产物（Vite+Vue3+TS 构建；hash 路由，无需服务端 rewrite） | — |
@@ -179,14 +190,14 @@ curl -s http://127.0.0.1:8080/api/v1/query \
 | `citations[].preview` | 父块正文前 120 字 —— 与**模型真正读到的那段**一致 |
 | `citations[].score` | 融合分；`rerank_score` 是重排分（关掉重排或候选只有 1 条时为 `null`）。**单路检索时它就是那一路的原始分**（向量余弦或 BM25 分），量纲与融合分不同，别拿来比 |
 | `citations[].page` | 这条引用在源文件的第几页（**从 1 开始**，P0-5）。`null` = 不知道：md/txt 没有页码概念，或者块是加 `page` 列之前入库的 —— **前端按「页码未知」显示，别拿 0 或 1 顶上** |
-| `faq_score` | 仅 FAQ 命中时有值（`top1 原始分 ÷ 该条问自己的分`） |
+| `faq_score` | 仅 FAQ 命中时有值（`top1 原始分 ÷ 该条问自己的分`，夹到 **0~1**：1.000 = 近乎一字不差；过不了覆盖率闸门时记 0 = 没命中） |
 
 **路由规则**（HTTP 与 WS 共用一份，实现在 `application/answer_question.py`）：
 
 ```text
 整句只是寒暄 ──→ 直接回话术（不查 FAQ、不检索、不写历史）
    │ 否则
-FAQ 匹配 ≥ faq.threshold(0.85) ──→ 标准答案直答（channel=faq）→ 记历史
+FAQ 匹配 ≥ faq.threshold 且两个覆盖率过门槛 ──→ 标准答案直答（channel=faq）→ 记历史
    │ 否则
 知识库检索 ──→ 有命中：检索 + 生成 + [n] 引用（channel=rag）→ 记历史
              └ 无命中：拒答话术（refused=true，不调模型）→ 记历史
@@ -264,20 +275,23 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/v1/auth/login \
   -d '{"username": "demo_admin", "password": "…"}' | python -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 
 curl -s http://127.0.0.1:8080/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
-# {"username": "demo_admin", "role": "admin", "is_admin": true}
+# {"username": "demo_admin", "role": "admin", "is_admin": true,
+#  "can_view_reports": true, "can_use_knowledge": true, "can_manage": true}
 ```
 
 | | |
 |---|---|
 | 令牌 | `POST /api/v1/auth/login` 发，**有效期 12 小时**（`security.TOKEN_TTL_SECONDS`）；库里存的是它的 **sha256**，不是令牌本身 |
 | 带法 | HTTP：`Authorization: Bearer <令牌>`；WebSocket：`?token=<令牌>`（浏览器不能给 WS 设自定义头）。代价是令牌会进服务器访问日志 |
-| 角色 | `admin`：上传/删除文档、看报表；`employee`：问答与会话。**没有注册接口** —— 建号走 `project-rag user add` |
+| 角色 | 三种，**闭集**：`employee`（检索与问答 + 看清单）/ `ops`（**只看报表**：延迟 + 消耗）/ `admin`（全部 + 管理动作）。**没有注册接口** —— 建号走 `project-rag user add --role …`，或由管理员在界面「账号与权限」页建 |
+| 能力从哪来 | `GET /api/v1/auth/me` 报 `can_view_reports` / `can_use_knowledge` / `can_manage` 三个布尔值。**前端不比较角色字符串** —— 后端加第四个角色时前端不用改，也不会静默少一个页签 |
+| 三张能力表 | 真源在 `domain/auth.py`：`REPORT_ROLES = (ops, admin)`、`KNOWLEDGE_ROLES = (employee, admin)`、`MANAGE_ROLES = (admin,)`。接口层用 `require_reports` / `require_knowledge` / `require_admin`，不在路由里写角色名 |
 | 401 / 403 | 没带令牌或令牌无效 → `401`；令牌有效但**不是你的东西**（别人的会话、要管理员的操作）→ `403` |
 | 登录失败 | 一律 `401` + **同一句话**（用户不存在与口令错误不分开说 —— 那是用户名枚举） |
 | WS 被拒 | 先回一帧 `{"type":"error",…}`，再 `close(1008)` —— 光 close 的话前端不知道是令牌过期还是服务挂了 |
 | 会话归属 | `create_session` 当场绑定；**没主人的会话也拒绝**（`owner_of` 的 `None` 既可能是老会话也可能是瞎编的 ID，分不清就别放行） |
 | 无认证模式 | 只有**显式**不注入 `auth_store` 时才成立（`build_real_deps` 永远接上）：此时老接口照常 200，`/api/v1/auth/*` 给 `503`，`/api/v1/sessions` 给空表 |
-| 前端只是"不给点" | 界面按角色隐藏管理入口（M7.1），但**权限在后端**：每个管理接口各自 `require_admin`。藏起来 ≠ 安全 |
+| 前端只是"不给点" | 界面按**能力**显示页签（运维只看到「报表」，员工看到「对话 + 知识库」），但**权限在后端**：每条路由各自 `require_*`。藏起来 ≠ 安全 |
 
 ### 3.5 文档治理（P0-3b，前端上传/列表/删除用）
 
@@ -305,9 +319,27 @@ curl -s -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" 
 # 202 {"document_id": "lecture01.pdf", "source": "uploads", "status": "pending", …}
 
 curl -s http://127.0.0.1:8080/api/v1/documents -H "Authorization: Bearer $TOKEN"
+# {"documents": [{"document_id": "lecture01.pdf", "status": "processed", "state": "ok",
+#                 "chunks": 42, "indexed_chunks": 42, "size_bytes": 20480,
+#                 "disk_size_bytes": 20480, "on_disk": true, "searchable": true, …},
+#                {"document_id": "handbook.docx", "status": "unregistered", "state": "unregistered",
+#                 "chunks": 0, "indexed_chunks": 0, "disk_size_bytes": 38426,
+#                 "on_disk": true, "searchable": false, "created_at": "", …}],
+#  "summary": {"total": 2, "ok": 1, "changed": 0, "not_indexed": 0,
+#              "file_missing": 0, "unregistered": 1, "in_flight": 0},
+#  "uploads_dir": "…/data/uploads", "corpus_dir": "…/data/corpus"}
+
 curl -s -X DELETE http://127.0.0.1:8080/api/v1/documents/lecture01.pdf -H "Authorization: Bearer $TOKEN"
-# {"document_id": "lecture01.pdf", "deleted_chunks": 42, "removed_file": true, "removed_record": true}
+# {"document_id": "lecture01.pdf", "deleted_chunks": 42, "removed_file": true,
+#  "removed_record": true, "kept_source": false}
 ```
+
+**清单是实时视图，不是登记表的一遍朗读**：后端每次都把三处摆到一起，给每行一个 `state` ——
+`ok`（三处一致）/ `changed`（磁盘上的文件变了）/ `not_indexed`（登记说已入库、库里一块没有）/
+`file_missing`（磁盘上找不到）/ `unregistered`（磁盘上有、登记表没有，**只读**）。
+非 `processed` 的行 `state` 原样等于 `status`（在途/失败的行，登记表就是真相）。
+`chunks`（登记表记的）与 `indexed_chunks`（库里实际的）是两个数，**不合成一个**；
+`searchable` 按**库内实际块数**算 —— 登记说 `processed` 不算数，那正是"显示已入库却搜不到"的成因。
 
 四条口径，前端照这个写：
 
@@ -320,9 +352,11 @@ curl -s -X DELETE http://127.0.0.1:8080/api/v1/documents/lecture01.pdf -H "Autho
 3. **文件名会被 basename 化**：`../../逃逸.md` 存成 `逃逸.md`，写不到 uploads 目录之外；
    不认识的后缀在上传时就被 `capabilities.suffixes` 拦掉（**`400`** —— 契约里钉的是 400，
    这里原来写着 415，是文档漂了；以 `check_p0_3_auth` 那条断言为准）；
-4. **删除是幂等的**：文档不存在也 `200`，只是三个字段都是 0/false —— 重复点删除按钮不该报错。
+4. **删除是幂等的**：文档不存在也 `200`，只是几个字段都是 0/false —— 重复点删除按钮不该报错。
    删除顺序是「先标记 `deleting` → 删向量 → 删原文件 → 删登记行」：**向量删失败就不动登记行**，
    宁可留一条看得见的记录，也不要「表里没了、库里还在」的孤儿。
+   **原件只在上传目录里才删**：语料目录（`data/corpus/**`）是源材料，删库不删源 ——
+   所以回执里 `removed_file`（真删了）与 `kept_source`（故意没动源材料）是两件事。
 
 ### 3.5.1 文档预览（M7.2）
 
@@ -414,13 +448,92 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 ### 3.6 报表（P0-2）
 
 ```bash
-curl -s "http://127.0.0.1:8080/api/v1/admin/metrics?window=24h&top=5" -H "Authorization: Bearer $TOKEN"
+curl -s "http://127.0.0.1:8080/api/v1/reports/metrics?window=24h&top=5" -H "Authorization: Bearer $TOKEN"
 ```
 
 `window` 只认 `1h / 6h / 24h / 7d / 30d`（别的给 `400`；这份白名单同时由
 `GET /api/v1/capabilities` 的 `metrics.windows` 报出，界面不写死）；`top` ∈ [1, `metrics.top_max`]；没接账本表给 `503`（**读不到 ≠ 是空的** ——
 分不清这两件事就会把「MySQL 挂了」读成「系统没流量」）。分位数口径（最近秩不插值、
 `p95` 要 n≥20、`-` 不折算成 0、冷行不进分段统计）见 `docs/STATUS.md` §7 P0-2。
+
+**权限**：运维与管理员（`require_reports`）。员工拿 `403`，无令牌 `401`。
+
+#### 消耗报表 `GET /api/v1/reports/cost`（P0-7）
+
+```bash
+curl -s "http://127.0.0.1:8080/api/v1/reports/cost?window=24h" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "window": "24h", "currency": "CNY",
+  "metered_calls": 24, "unmetered_calls": 0,
+  "period_unknown_calls": 0, "cache_unknown_calls": 0,
+  "input_tokens": 29412, "cached_input_tokens": 17638, "output_tokens": 16848,
+  "total_tokens": 46260, "total_cost": 0.071582,
+  "all_priced": true, "unpriced_models": [],
+  "periods": [{"period": "peak", "calls": 24, "input_tokens": 29412,
+               "output_tokens": 16848, "total_cost": 0.071582}],
+  "lines": [{"model": "deepseek-flash", "period": "peak", "calls": 24,
+             "input_tokens": 29412, "cached_input_tokens": 17638,
+             "output_tokens": 16848, "total_cost": 0.071582}]
+}
+```
+
+**计价是三档 × 两时段**（provider 的价目表就是这么给的）:
+
+| 档 | 空闲时段 | 高峰时段 |
+|---|---|---|
+| 输入 · **命中** prompt cache | 0.02 | 0.04 |
+| 输入 · **未命中** | 1 | 2 |
+| 输出 | 4 | 8 |
+
+（单位:元 / 每百万 token;数字来自 `config/config.yaml` 的 `cost.models`，**改价格只改那一处**。
+上面这张表是 `deepseek-flash` / `DeepSeek-V4.1-Flash` 的当前配置值。）
+
+口径（改口径 = 改契约，`check_p0_7_cost.py` 钉住）：
+
+| | |
+|---|---|
+| token 从哪来 | **provider 回报的那一份**（`llm.stream_usage: true` → 流末尾一帧的用量），账本记 `llm_model` / `llm_input_tokens` / `llm_cached_input_tokens` / `llm_output_tokens`。**不按字数估** —— 估出来的金额永远看着合理，然后和账单对不上 |
+| 时段怎么判 | 按**账本行的时间戳**（存储层盖的 `ts`）落在不在 `cost.off_peak` 的窗口里（默认北京时间 00:30–08:30，支持跨午夜）。账本本体只有单调时钟，墙上时间只有存储层有 |
+| 钱怎么算 | 先按 **（模型 × 时段）** 把 token 加起来，再按三档分别乘，最后四舍五入到 **6 位小数**（单次调用常常只有 0.000x 元，只留两位会被抹成 0.00） |
+| `null` 单价 | 那个模型**没配单价**：金额 `null`、进 `unpriced_models`、`all_priced=false`。**不是 0 元** |
+| `unmetered_calls` | 调了模型但没量到 token（provider 没回报 / 那一轮断了 / 老账）。**没算进金额** |
+| `period_unknown_calls` | 读不到时间戳 → 按**高峰**价计（贵的那个，偏保守，不会少报） |
+| `cache_unknown_calls` | 没回报缓存命中数 → 整段输入按**未命中**价计（**上界**，实际可能更低） |
+| 哪些调用计入 | 只有**真调 provider** 的那一行账。一次合流请求写两条账（外层 `qa` + 内层 `rag`），用量只记在内层 —— 两行都算就是双倍金额 |
+| 不花钱的路径 | FAQ 直答、检索为空拒答、寒暄都不调模型，因此不出现在消耗报表里 |
+
+> 三个"缺口"计数是**故意的**:报表宁可说"这一段我不知道"，也不把它画成 0 ——
+> 一个看起来完整的错误金额比一句"不知道"糟得多。
+>
+> `project-rag metrics --window 24h` 打的是同一份口径（同一次读表、同一个 `application/cost.py`），
+> 命令行与网页不会各说一套。**`project-rag faq`（FAQ 单通道 + 模型兜底）不写账本**，
+> 所以它烧掉的 token 不在报表里（见 `docs/deferred.md`）。
+
+#### 文档可见范围（P0-6）
+
+```bash
+# 这份文档只给「销售」组 + 某一个人看
+curl -s -X PUT http://127.0.0.1:8080/api/v1/admin/documents/内部报价单.md/acl \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"user_ids": ["u-abc"], "group_ids": ["g-1"]}'
+# {"document_id": "内部报价单.md", "restricted": true, "user_ids": ["u-abc"], "group_ids": ["g-1"]}
+
+# 取消限制(两个名单都空)→ 回到人人可见
+curl -s -X PUT … -d '{"user_ids": [], "group_ids": []}'
+```
+
+| | |
+|---|---|
+| 默认 | **没配规则 = 所有登录账号都能看**（与加这套东西之前逐字一致）。规则**只用来收窄** |
+| 授权对象 | 某个人（`user_ids`）或某一类人（`group_ids`）；两者取**并集**，任一命中即可见 |
+| 管理员 | **永远可见**，也不受规则限制 —— 他是唯一能改这份名单的人，被自己配的规则挡住就再也改不回来 |
+| 生效范围 | 检索（被禁文档不进候选）、知识库清单（不显示）、预览（404）三处同时生效；改完**下一条请求**就生效，不需要重启或重灌 |
+| 看不见 = 不存在 | 受限文档的预览回**与"文档不存在"逐字相同**的 404 —— 403 会把"这份文档存在"说出来，而名字往往就是内容（`XX客户报价单`） |
+| 删文档 | 连带清掉它的授权行：否则同名文件重新上传会**继承旧授权** |
+| 读不到规则 | `503`，**不放行** —— 一次数据库抖动不许变成一次全网可见 |
 
 ---
 
@@ -436,9 +549,8 @@ curl -s "http://127.0.0.1:8080/api/v1/admin/metrics?window=24h&top=5" -H "Author
 | `qa` | `-q/--question` | `--k` `--source` `--session` `--stream` | **合流**：FAQ 优先、知识库兜底（日常入口） |
 | `search` | `-q/--question` | `--k` `--source` `--route {both,vector,bm25}` | 只检索、**不调模型**；`both` 打四段：向量 / BM25 / 融合 / 重排 |
 | `ingest` | — | `--path` `--dry-run` `--purge-source` `--batch-size` | 切块入库；默认路径 `data/corpus/pdf_data` |
-| `collections` | — | — | 列出向量集合（块数 / 有没有 `page` 列 / 当前配置指向哪个）**纯读** |
-| `drop` | `--collection` | `--yes` | 删掉一个向量集合；**不给 `--yes` 只说不做**（退出码 1） |
-| `collections` | — | — | 列出向量集合（块数 / 有没有 `page` 列 / 当前配置指向哪个）**纯读** |
+| `collections` | — | `--reindex` `--yes` | 列出向量集合（块数 / `page` 列 / 稀疏列 / 稠密索引类型 / 当前配置指向哪个）**纯读**；`--reindex` 按 `milvus.index.*` 重建索引（数据不动，不给 `--yes` 只打印计划） |
+| `sparse` | — | `--yes` `--batch-size` | 按当前语料**重算全库的 BM25 稀疏向量**（`keyword.backend=milvus` 那一档）；不给 `--yes` 只打印会重算多少行 |
 | `drop` | `--collection` | `--yes` | 删掉一个向量集合；**不给 `--yes` 只说不做**（退出码 1） |
 
 约定：
@@ -458,7 +570,10 @@ curl -s "http://127.0.0.1:8080/api/v1/admin/metrics?window=24h&top=5" -H "Author
 ## 五、观测：一次回答一行账
 
 每次回答（HTTP / WS 的问答，以及 CLI 的 `qa`、`rag`）都会在 `logs/app.log` 写一行 INFO 的 latency 账，
-**26 个字段**，拿不到的记 `-`（「没量到」与「量到 0」分得开）。前三个是 P0-2 加的观测维度：
+**30 个字段**，拿不到的记 `-`（「没量到」与「量到 0」分得开）。P0-7 起多四个**计费口径**的字段
+（`llm_model` / `llm_input_tokens` / `llm_cached_input_tokens` / `llm_output_tokens`，
+消耗报表按它们算钱；**命中缓存那一列单列**，它的单价与未命中差 50 倍）——
+它们与 `tokens`（帧数，给 tps 用）**不是一回事**，谁也不能替谁。前三个是 P0-2 加的观测维度：
 `request_id`（一次请求一个，端到端串起来）、`cold` / `builds`（这一轮**真的构造过**重资源吗 —— 
 它是「冷启动拖慢 p95」这件事唯一的判据，判据是构造动作，不是计时）。
 `chat` 与 `faq` 单通道命令**不记**（账本挂在合流 / 知识库这两条帧流上，见 `docs/deferred.md` §1.3 第 34 条）：
@@ -467,7 +582,8 @@ curl -s "http://127.0.0.1:8080/api/v1/admin/metrics?window=24h&top=5" -H "Author
 grep -h " | latency " logs/app.log | tail -5
 # label=rag channel=rag request_id=97269b3ba505 thinking=off cold=false builds=0 faq_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4
 #   vector_ms=112.8 bm25_ms=1095.5 fuse_ms=0.0 collapse_ms=0.0 rerank_ms=4923.6
-#   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 ttft_ms=6731.2 tokens=54 gen_ms=345.4
+#   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 llm_model=deepseek-flash llm_input_tokens=1980
+#   llm_cached_input_tokens=1200 llm_output_tokens=54 ttft_ms=6731.2 tokens=54 gen_ms=345.4
 #   tps=156.4 total_ms=7077.9 refused=false truncated=false aborted=false
 ```
 
@@ -487,4 +603,4 @@ grep -h " | latency " logs/app.log | tail -5
   （那时还没有任何真实客户端，是唯一不用背兼容包袱的窗口）。映射：`/api/query`→`/api/v1/query`、
   `/api/stream`→`/api/v1/stream`、`/api/create_session`→`/api/v1/create_session`、
   `/api/history/{id}`→`/api/v1/history/{id}`、`/api/sources`→`/api/v1/sources`、
-  `/api/metrics`→`/api/v1/admin/metrics`。有契约（命名空间）与反向测试盯着。
+  `/api/metrics`→`/api/v1/reports/metrics`。有契约（命名空间）与反向测试盯着。

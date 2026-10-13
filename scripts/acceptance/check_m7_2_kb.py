@@ -161,6 +161,9 @@ class _FakeAuth:
 
     def set_password(self, user_id, password_hash) -> None: ...
 
+    def delete_user(self, user_id) -> int:  # pragma: no cover - 本脚本用不到
+        return 0
+
     def list_users(self):
         return [user for user, _ in self.users.values()]
 

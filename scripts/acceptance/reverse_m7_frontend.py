@@ -127,10 +127,12 @@ CASES: tuple[Case, ...] = (
         needle="WebSocket 带 ?token=",
     ),
     Case(
-        title="RT-8  管理页签不再按角色渲染（员工看到必然 403 的按钮）",
+        # P0-6:页签改按**能力**渲染(报表这一页要 can_view_reports —— 运维也看得到)。
+        # 坏版本 = 把能力判断去掉,于是没这个能力的人也看到一个必然 403 的入口。
+        title="RT-8  页签不再按能力渲染（没权限的人也看到必然 403 的入口）",
         target=HEADER_VUE,
-        old='      <RouterLink v-if="isAdmin" class="tab" :to="{ name: \'knowledge\' }">知识库</RouterLink>',
-        new='      <RouterLink class="tab" :to="{ name: \'knowledge\' }">知识库</RouterLink>',
+        old='      <RouterLink v-if="canViewReports" class="tab" :to="{ name: \'reports\' }">报表</RouterLink>',
+        new='      <RouterLink class="tab" :to="{ name: \'reports\' }">报表</RouterLink>',
         needle="角色分流",
     ),
     Case(

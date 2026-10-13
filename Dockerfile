@@ -1,13 +1,3 @@
-# 故意**不写** `# syntax=docker/dockerfile:1.7`:
-#   写它 = 让 BuildKit 先去 registry 拉一个 frontend 镜像(docker.io/docker/dockerfile:1.7),
-# 那是整个构建的**第一个网络请求**,国内网络 / 代理一坏就死在这一行。实测:
-#     failed to resolve source metadata for docker.io/docker/dockerfile:1.7:
-#     ... dial tcp 127.0.0.1:7897: connectex: No connection could be made ...
-#   本文件只用 `RUN --mount=type=cache` 与多阶段 COPY —— **内置 frontend 全都支持**
-#   (cache mount 从 frontend 1.2 起就是稳定语法),所以不需要外挂 frontend。
-#   代价:引擎太老时 `--mount=type=cache` 会报语法错 —— 那时删掉那两个挂载(见文末),
-#   **不要**加回 `# syntax=`。
-# =============================================================================
 # project-rag 应用镜像(服务化)
 #
 # 把「服务本体」装进镜像;Milvus / MySQL / Redis 是**外部依赖**,不进这个镜像

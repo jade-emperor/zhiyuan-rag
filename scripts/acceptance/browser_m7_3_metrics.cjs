@@ -1,14 +1,14 @@
 /**
- * M7.3 的浏览器实测：管理员可观测看板。
+ * M7.3/P0-7 的浏览器实测：报表页（延迟 + 消耗）。运维与管理员可见。
  *
  * 对着 `scripts/acceptance/serve_fake_backend.py`(真 uvicorn + 假账本,18081)跑:
  *
- *   1. 管理员进「可观测」→ 窗口按钮是 capabilities 报的那五个,默认 24h;
+ *   1. 管理员进「报表」→ 窗口按钮是 capabilities 报的那五个,默认 24h;
  *   2. KPI 卡片的数字与假账本对得上,而且**比率带分子分母**(拒答 2/24);
  *   3. 分段表:`total_ms` 的 p95 有值(n=24 ≥ 20),`rerank_ms` 的 p95 是 `—`(n=3 < 20)
  *      —— 而且那一格的 title 说明了门槛;`—` 绝不能被画成 0;
  *   4. 切到 `30d` → 条数变成 25、冷启动 1,最慢榜第一条挂「冷启动」徽章;
- *   5. **直接落在 `#/metrics`**(在这一页按 F5 / 书签 / 上次关在这一页)也自己把能力读回来
+ *   5. **直接落在 `#/reports`**(在这一页按 F5 / 书签 / 上次关在这一页)也自己把能力读回来
  *      —— 不经过「对话」页,不能停在「还没读到 capabilities」那句红字上;
  *   6. **能力那一枪打空了**(后端当时不在)点「刷新」要能自救:先如实说"连不上",
  *      后端回来说话就恢复,而不是拿着一个空的窗口名一直说"还没读到 capabilities";
@@ -65,14 +65,14 @@ async function main() {
     return { value: await node.locator('.value').innerText(), detail: await node.locator('.detail').innerText() }
   }
 
-  // ── 登录 → 可观测 ──────────────────────────────────────────────────────
+  // ── 登录 → 报表 ──────────────────────────────────────────────────────
   await page.goto(BASE, { waitUntil: 'domcontentloaded' })
   await page.getByLabel('用户名').fill('admin')
   await page.getByLabel('密码').fill('admin-pass')
   await page.getByRole('button', { name: '登录' }).click()
   await page.waitForSelector('text=Configuration', { timeout: 15000 })
 
-  await page.getByRole('link', { name: '可观测' }).click()
+  await page.getByRole('link', { name: '报表' }).click()
   await page.waitForSelector('table', { timeout: 15000 })
 
   const windows = await page.locator('.windows button').allInnerTexts()
@@ -135,16 +135,49 @@ async function main() {
   )
   await page.screenshot({ path: `${SHOT}_2_30d.png` })
 
+  // ── 消耗区(P0-7):三档 × 两时段,金额真的算出来了 ──────────────────────
+  const costSection = page.locator('section', { hasText: '消耗' }).first()
+  // 页面上有几处 `**…**` 是**直接写进模板的**(与这一页原有的文案风格一致,不是 markdown
+  // 渲染),所以断言前把它去掉 —— 断言要盯着"数对不对",不是盯着那几个星号。
+  const costText = (await costSection.innerText()).replace(/\n/g, ' ').replace(/\*\*/g, '')
+  // **此刻窗口是 30d**(上面刚切过):假账本在 30d 里是 25 行,其中 24 条热 + 1 条冷启动,
+  // 冷启动那条也是 rag 行、也带 token —— 所以这里数到 25,不是 24。
+  expect(
+    '消耗区给出模型调用次数(跟着窗口走)',
+    /模型调用\s*25\s*次/.test(costText),
+    costText.slice(0, 120),
+  )
+  expect(
+    '输入 token 那一格说明了其中命中缓存多少(单价差 50 倍)',
+    /输入 token/.test(costText) && /其中命中缓存\s*[1-9]/.test(costText),
+    costText.slice(0, 200),
+  )
+  // 时段名**不写死哪一个**:假账本的 25 行按"行龄"分布在最近 10 小时 + 一条 30 小时前,
+  // 它们落高峰还是空闲取决于你**几点**跑这条用例 —— 断言该盯"时段列在、金额非零",
+  // 而不是盯某一个具体时段(那样它在半夜跑就会假红)。
+  expect(
+    '按模型 × 时段列出金额(真金白银,不是 0)',
+    costText.includes('deepseek-flash') &&
+      /(高峰时段|空闲时段)/.test(costText) &&
+      /CNY\s*0\.0[0-9]+/.test(costText),
+    costText.slice(0, 240),
+  )
+  expect(
+    '假后端配了单价 → 不出现「未配置单价」',
+    !costText.includes('未配置单价'),
+    costText.slice(0, 200),
+  )
+
   expect('没有 JS 报错', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || '无')
   expect('没有失败请求', failedRequests.length === 0, failedRequests.slice(0, 2).join(' | ') || '无')
 
-  // ── 直接落在 #/metrics:在可观测页按 F5 也要能用 ──────────────────────────
+  // ── 直接落在 #/reports:在报表页按 F5 也要能用 ──────────────────────────
   // 这条钉的是用户报过的死局:能力自述以前只由「登录页」与「对话页」挂载时拉一次,
-  // 于是"上次关在这一页 / 书签 / 手输 #/metrics"直接进来时,看板读到一个空 store,
+  // 于是"上次关在这一页 / 书签 / 手输 #/reports"直接进来时,看板读到一个空 store,
   // 只回一句「还没读到 capabilities,不知道该请求哪个窗口」—— 而「刷新」读的还是
   // 同一个空 store,救不回来。修法在路由守卫(业务页入场前补拉),这条就是它的反面。
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('h1:has-text("可观测")', { timeout: 15000 })
+  await page.waitForSelector('h1:has-text("报表")', { timeout: 15000 })
   let buttonsAfterReload = []
   try {
     // 坏版本里窗口按钮永远不会出现(store 是空的)→ 等超时,下面那条断言变红
@@ -155,7 +188,7 @@ async function main() {
   buttonsAfterReload = await page.locator('.windows button').allInnerTexts()
   const boxAfterReload = (await page.locator('.alert.error').allInnerTexts()).join(' ')
   expect(
-    '直接落在 #/metrics 也自己补拉能力(不经过对话页)',
+    '直接落在 #/reports 也自己补拉能力(不经过对话页)',
     buttonsAfterReload.join(',') === '1h,6h,24h,7d,30d' && !boxAfterReload.includes('还没读到'),
     `窗口 ${JSON.stringify(buttonsAfterReload)};红字 ${JSON.stringify(boxAfterReload.slice(0, 60))}`,
   )
@@ -173,7 +206,7 @@ async function main() {
     return route.continue()
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('h1:has-text("可观测")', { timeout: 15000 })
+  await page.waitForSelector('h1:has-text("报表")', { timeout: 15000 })
   await page.waitForSelector('.alert.error', { timeout: 15000 })
   const boxWhenDown = (await page.locator('.alert.error').allInnerTexts()).join(' ')
   expect(
@@ -198,7 +231,7 @@ async function main() {
   await page.unroute('**/api/v1/capabilities')
 
   await browser.close()
-  console.log(failures === 0 ? '\n可观测看板浏览器实测:全部通过' : `\n可观测看板浏览器实测:${failures} 条失败`)
+  console.log(failures === 0 ? '\n报表看板浏览器实测:全部通过' : `\n报表看板浏览器实测:${failures} 条失败`)
   process.exit(failures === 0 ? 0 : 1)
 }
 

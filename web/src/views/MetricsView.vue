@@ -1,10 +1,21 @@
 <script setup lang="ts">
 /**
- * 可观测看板(M7.3)。**只对管理员可见**(路由守卫 + 后端 `require_admin`)。
+ * 报表页(M7.3 的延迟 + P0-7 的消耗)。**运维与管理员可见**
+ * (路由 `needs: 'reports'` + 后端 `require_reports`)。
  *
- * 数据来自 `GET /api/v1/admin/metrics`;窗口白名单与分位数的样本量门槛来自
+ * 两半读的是**同一批账本行**:`GET /api/v1/reports/metrics` 给延迟,
+ * `GET /api/v1/reports/cost` 给消耗,窗口是同一个。窗口白名单与分位数的样本量门槛来自
  * `capabilities.metrics` —— 前端一处都不写死(写死的话,后端改了窗口这里会拿着一个
  * 400 的窗口名去打)。
+ *
+ * **消耗那一半最容易画错的三处**(后端 `application/cost.py` 的口径):
+ *
+ * 1. `null` 金额 = **这个模型没配单价**,不是"花了 0 元" —— 显示「未配置单价」并指路
+ *    (config.yaml 的 `cost.models`);
+ * 2. `unmetered_calls > 0` = provider 没回报用量(或那一轮断了)—— 那部分**没有**算进金额,
+ *    必须显眼地说出来,否则这个总数会被当成完整的账;
+ * 3. 金额是"每百万 token"折算出来的,单次调用常常只有 0.000x 元 —— 显示到 6 位小数,
+ *    只留两位会让一整天的账变成 0.00。
  *
  * **这张表最容易画错的三处**(后端 `application/metrics.py` 的口径,画错不会报错,只会骗人):
  *
@@ -27,6 +38,25 @@ const windows = computed(() => caps.data?.metrics.windows ?? [])
 const minN = computed(() => caps.data?.metrics.min_n ?? { p50: 1, p95: 20, p99: 100 })
 const data = computed(() => metrics.data)
 const rows = computed(() => data.value?.rows ?? 0)
+
+const cost = computed(() => metrics.cost)
+
+/** 时段名:provider 的价目表叫"高峰/空闲",界面上就照它说。 */
+function periodLabel(period: string): string {
+  if (period === 'off_peak') return '空闲时段'
+  if (period === 'peak') return '高峰时段'
+  return period
+}
+
+/** 金额:`null` 由调用点显示成「未配置单价」;**保留 6 位小数**(单次调用常常只有 0.000x 元)。 */
+function money(value: number): string {
+  return `${cost.value?.currency ?? ''} ${value.toFixed(6)}`.trim()
+}
+
+/** token 数带千分位:六位数的 token 一眼看不出量级。 */
+function tokens(value: number): string {
+  return value.toLocaleString('en-US')
+}
 
 /** `null` → `—`。**不许折算成 0**(那是这张表最容易犯的错)。 */
 function ms(value: number | null | undefined): string {
@@ -61,7 +91,7 @@ onMounted(() => {
   <div class="page">
     <header class="head">
       <div>
-        <h1>可观测</h1>
+        <h1>报表</h1>
         <p class="faint">
           延迟账本按请求一行;下面是
           <strong>{{ metrics.window || '—' }}</strong> 窗口里的汇总
@@ -129,6 +159,112 @@ onMounted(() => {
           :value="String(data.rag_answers)"
           detail="走 RAG 通道并给出答案的条数"
         />
+      </section>
+
+      <section class="card block">
+        <h2>消耗</h2>
+        <p class="faint">
+          模型调用 <strong>{{ cost?.metered_calls ?? 0 }} 次</strong>(量到 token)
+          <span v-if="(cost?.unmetered_calls ?? 0) > 0">
+            · <strong>{{ cost?.unmetered_calls }} 次没量到 token</strong>(provider 没回报用量,
+            或那一轮中途断了 —— 这部分<strong>没有算进金额</strong>)
+          </span>
+          ;FAQ 命中与检索为空都不调模型,所以不花钱。
+          <span v-if="cost"> · 币种 {{ cost.currency }}</span>
+        </p>
+        <p v-if="metrics.costError" class="alert error">{{ metrics.costError }}</p>
+        <div v-if="cost" class="kpis">
+          <MetricCard
+            label="输入 token"
+            :value="tokens(cost.input_tokens)"
+            :detail="`其中命中缓存 ${tokens(cost.cached_input_tokens)}(命中比未命中便宜 50 倍)`"
+          />
+          <MetricCard
+            label="输出 token"
+            :value="tokens(cost.output_tokens)"
+            detail="含思考内容(provider 的计费口径)"
+          />
+          <MetricCard
+            label="合计消耗"
+            :value="money(cost.total_cost)"
+            :detail="
+              cost.all_priced
+                ? `${cost.currency} · 单价来自 config.yaml 的 cost.models`
+                : '还有模型没配单价 —— 这个数只是已知的部分'
+            "
+            :tone="cost.all_priced ? 'plain' : 'warn'"
+          />
+        </div>
+
+        <!-- 缺口三连:每一种"算不出来"都要有话说,否则那个总数会被当成完整的账 -->
+        <p v-if="cost && cost.unmetered_calls > 0" class="alert warn">
+          有 <strong>{{ cost.unmetered_calls }}</strong> 次调用没量到 token —— 这部分**没有算进金额**。
+        </p>
+        <p v-if="cost && cost.cache_unknown_calls > 0" class="alert warn">
+          有 <strong>{{ cost.cache_unknown_calls }}</strong> 次没回报缓存命中数,
+          整段输入按<strong>未命中价</strong>计 —— 这是**上界**,实际可能更低。
+        </p>
+        <p v-if="cost && cost.period_unknown_calls > 0" class="alert warn">
+          有 <strong>{{ cost.period_unknown_calls }}</strong> 次读不到发生时间,
+          按<strong>高峰价</strong>计(偏保守,不会少报)。
+        </p>
+        <p v-if="cost && cost.unpriced_models.length > 0" class="alert info">
+          这些模型<strong>没配单价</strong>,所以只报了 token、没报钱:
+          <code v-for="model in cost.unpriced_models" :key="model">{{ model }}</code>
+          —— 把名字填进 <code>config.yaml</code> 的 <code>cost.models</code> 就有金额了。
+        </p>
+
+        <!-- 时段合计:与 provider 价目表一行行对得上(高峰/空闲差 2 倍) -->
+        <table v-if="cost && cost.periods.length > 0">
+          <thead>
+            <tr>
+              <th>时段</th>
+              <th class="num">调用</th>
+              <th class="num">输入 token</th>
+              <th class="num">输出 token</th>
+              <th class="num">金额</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in cost.periods" :key="item.period">
+              <td>{{ periodLabel(item.period) }}</td>
+              <td class="num">{{ item.calls }}</td>
+              <td class="num">{{ tokens(item.input_tokens) }}</td>
+              <td class="num">{{ tokens(item.output_tokens) }}</td>
+              <td class="num">{{ money(item.total_cost) }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table v-if="cost && cost.lines.length > 0">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th>时段</th>
+              <th class="num">调用</th>
+              <th class="num">输入 token</th>
+              <th class="num">其中命中缓存</th>
+              <th class="num">输出 token</th>
+              <th class="num">金额</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="line in cost.lines" :key="`${line.model}-${line.period}`">
+              <td><code>{{ line.model }}</code></td>
+              <td>{{ periodLabel(line.period) }}</td>
+              <td class="num">{{ line.calls }}</td>
+              <td class="num">{{ tokens(line.input_tokens) }}</td>
+              <td class="num">{{ tokens(line.cached_input_tokens) }}</td>
+              <td class="num">{{ tokens(line.output_tokens) }}</td>
+              <td class="num" :title="line.total_cost === null ? '这个模型没配单价(不是花了 0 元)' : ''">
+                {{ line.total_cost === null ? '未配置单价' : money(line.total_cost) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else-if="cost" class="faint">
+          这个窗口里没有可算的模型调用 —— 走 FAQ 直答、检索为空拒答、寒暄的请求都不调模型。
+        </p>
       </section>
 
       <section class="card block">

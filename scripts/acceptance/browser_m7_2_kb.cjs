@@ -17,11 +17,11 @@
  *     node scripts/acceptance/browser_m7_2_kb.cjs
  */
 
-// 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
-const REPO_ROOT = path.resolve(__dirname, '../..')
-
 const fs = require('node:fs')
 const path = require('node:path')
+
+// 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
+const REPO_ROOT = path.resolve(__dirname, '../..')
 
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
 // 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
@@ -86,14 +86,59 @@ async function main() {
   )
   await page.screenshot({ path: `${SHOT}_1_list.png` })
 
+  // ── 实时清单:五种 state 都显示出来（登记表会撒谎,磁盘与库才对得上账） ──
+  const cards = await page.locator('.doc').allInnerTexts()
+  const cardOf = (name) => cards.find((text) => text.includes(name)) || ''
+  const expectations = [
+    ['劳动法', '已入库', '三处一致(登记 2 块 = 库内 2 块,磁盘大小也对得上)'],
+    ['员工手册.md', '文件已变更', '登记 4096 字节、磁盘 5000 → 库里的内容是旧的'],
+    ['没有入库成功的.pdf', '库内没有块', '登记说 processed,向量库里一块都没有'],
+    ['已经删掉的文件.md', '文件已不在', '磁盘上找不到这个文件'],
+    ['未登记的语料.md', '未入库', '**只在磁盘上**、登记表里没有它 —— 以前前端根本看不到'],
+    ['reimburse.docx', '处理中', '在途的行原样回状态,不去做一致性判定'],
+  ]
+  for (const [name, badge, why] of expectations) {
+    const text = cardOf(name)
+    expect(`${name} → 「${badge}」`, text.includes(badge), `${why};卡片:${text.replace(/\n/g, ' ').slice(0, 70)}`)
+  }
+  const unregisteredCard = page.locator('.doc', { hasText: '未登记的语料.md' })
+  expect(
+    '未登记的文件没有「删除」按钮(它没有登记行,删不了磁盘文件)',
+    (await unregisteredCard.getByRole('button', { name: '删除' }).count()) === 0,
+    '只有只读的「未登记」按钮',
+  )
+  const summaryLine = await page.locator('.summary').innerText()
+  expect(
+    '汇总把四类不一致分开计数',
+    ['未入库', '库内没块', '文件不在', '文件已变更'].every((word) => summaryLine.includes(word)),
+    summaryLine.replace(/\n/g, ' '),
+  )
+  const notIndexed = cardOf('没有入库成功的.pdf')
+  expect(
+    '不一致的卡片给出可执行的下一步',
+    notIndexed.includes('project-rag ingest'),
+    notIndexed.replace(/\n/g, ' ').slice(0, 90),
+  )
+  const refreshStamp = await page.locator('.head-right .faint').last().innerText()
+  expect('页面上有「上次刷新」时间', /上次刷新\s*\d{1,2}:\d{2}:\d{2}/.test(refreshStamp), refreshStamp)
+  expect(
+    '两个块数并排(登记说的与库里实际的)',
+    cardOf('没有入库成功的.pdf').includes('登记说 12 块'),
+    cardOf('没有入库成功的.pdf').replace(/\n/g, ' ').slice(0, 70),
+  )
+  await page.screenshot({ path: `${SHOT}_1b_live_states.png` })
+
   // ── 上传 → 轮询到「已入库」 ───────────────────────────────────────────
   await page.locator('input[type=file]').setInputFiles(UPLOAD)
   const card = page.locator('.doc', { hasText: 'browser_upload_demo.md' })
   await card.waitFor({ timeout: 15000 })
   const early = await card.innerText()
+  // **只在"还没入库完成"这一点上断言**:入库是异步的(假后端故意慢 1.2 秒),所以此刻
+  // 卡片必然是"在途"或"刚落盘还没登记"之一 —— 断言具体哪一个会与轮询抢跑(3 秒一次的
+  // 清单刷新可能正好采到"文件已落盘、登记行还没写"那一瞬)。
   expect(
-    '上传后先看到在途状态',
-    early.includes('待处理') || early.includes('处理中'),
+    '上传后卡片立刻出现,不必等入库完成',
+    !early.includes('已入库'),
     early.replace(/\n/g, ' ').slice(0, 40),
   )
   await page.waitForFunction(

@@ -64,6 +64,10 @@ class _FakeAuthStore:
             if user.user_id == user_id:
                 self.users[name] = (user, password_hash)
 
+    def delete_user(self, user_id: str) -> int:
+        """P0-6 起端口多了这一条 —— 假件也要跟得上(不然 pyright 说它不满足 AuthStore)。"""
+        return 1 if self.users.pop(user_id, None) is not None else 0
+
     def list_users(self) -> Sequence[User]:
         return [user for user, _ in self.users.values()]
 
@@ -140,12 +144,17 @@ def _login(client, username: str = "boss", password: str = "pw-123456") -> dict[
 
 
 def _seeded_client():
-    """输入:无。行为:造一个已有一个管理员 + 一个员工的客户端。输出:``(client, store)``。"""
+    """输入:无。行为:造一个已有管理员 + 员工 + **运维**的客户端。输出:``(client, store)``。
+
+    运维(P0-6)在这一份里只是"第三个账号":报表那条检查要它,而它必须能登录、能看报表、
+    别处一律 403 —— 这三件事各断言一次。
+    """
     from project_rag.application.security import hash_password
 
     store = _FakeAuthStore()
     store.create_user("boss", hash_password("pw-123456"), "admin")
     store.create_user("worker", hash_password("pw-123456"), "employee")
+    store.create_user("watcher", hash_password("pw-123456"), "ops")
     client, store = _client(store)
     return client, store
 
@@ -228,20 +237,40 @@ def _session_ownership() -> str:
     return "自己的 200 / 别人的 403 / 没主人的 403 / 无令牌 401;归属在 create_session 时绑定"
 
 
-@check("角色：报表只有管理员能看（员工 403），/me 如实报 is_admin")
+@check("角色：报表是运维与管理员的（员工 403、无令牌 401），/me 如实报能力")
 def _admin_only() -> str:
+    """P0-6:报表从 ``/admin/metrics`` 挪到 ``/reports/metrics`` —— 运维不是管理员,
+    让他去打一个 ``/admin/`` 开头的接口,读代码的人会以为权限配错了。
+
+    三个角色各断言一次:管理员 200、**运维 200**、员工 403;无令牌 401(先认证再授权)。
+    ``/me`` 报三个能力布尔值(前端按"能不能"渲染页签,不比较角色字符串)。
+    """
     client, _ = _seeded_client()
-    boss, worker = _login(client, "boss"), _login(client, "worker")
-    if client.get("/api/v1/admin/metrics", headers=boss).status_code != 200:
-        raise AssertionError("管理员该能看报表")
-    if client.get("/api/v1/admin/metrics", headers=worker).status_code != 403:
+    boss = _login(client, "boss")
+    worker = _login(client, "worker")
+    watcher = _login(client, "watcher")
+    for who, headers in (("管理员", boss), ("运维", watcher)):
+        code = client.get("/api/v1/reports/metrics", headers=headers).status_code
+        if code != 200:
+            raise AssertionError(f"{who}该能看报表,实际 {code}")
+    if client.get("/api/v1/reports/metrics", headers=worker).status_code != 403:
         raise AssertionError("员工看报表该 403")
-    if client.get("/api/v1/admin/metrics").status_code != 401:
+    if client.get("/api/v1/reports/metrics").status_code != 401:
         raise AssertionError("不带令牌该 401(先认证再授权)")
     me = client.get("/api/v1/auth/me", headers=worker).json()
-    if me != {"username": "worker", "role": "employee", "is_admin": False}:
-        raise AssertionError(f"/me 该如实报角色,实际 {me}")
-    return "报表:管理员 200 / 员工 403 / 无令牌 401;/me 如实报 is_admin"
+    if me != {
+        "username": "worker",
+        "role": "employee",
+        "is_admin": False,
+        "can_view_reports": False,
+        "can_use_knowledge": True,
+        "can_manage": False,
+    }:
+        raise AssertionError(f"/me 该如实报角色与三个能力,实际 {me}")
+    watcher_me = client.get("/api/v1/auth/me", headers=watcher).json()
+    if (watcher_me["can_view_reports"], watcher_me["can_use_knowledge"]) != (True, False):
+        raise AssertionError(f"运维的能力该是『能看报表、不能用知识库』,实际 {watcher_me}")
+    return "报表:管理员 200 / 运维 200 / 员工 403 / 无令牌 401;/me 三个能力如实"
 
 
 @check("无认证模式：不注入 auth_store 时老接口照常（check_m5_api 那 25 条仍有效的原因）")
@@ -380,6 +409,10 @@ class _RecordingDocs:
         self.calls.append(f"set_status:{status}")
         self.statuses.append(status)
 
+    def upsert(self, record) -> None:
+        self.calls.append(f"upsert:{record.document_id}")
+        self.record = record
+
     def remove(self, document_id):
         self.calls.append("remove")
         self.record = None
@@ -402,17 +435,26 @@ class _RecordingVectors:
             raise RuntimeError("Milvus 连接断了(模拟)")
         return self._inner.delete_by_doc_id(doc_id)
 
-    def upsert(self, chunks, embeddings):
-        return self._inner.upsert(chunks, embeddings)
+    def upsert(self, chunks, embeddings, *, sparse=None):
+        return self._inner.upsert(chunks, embeddings, sparse=sparse)
 
     def search(self, query_embedding, *, k, source=None):
         return self._inner.search(query_embedding, k=k, source=source)
+
+    def search_sparse(self, query_sparse, *, k, source=None):
+        return self._inner.search_sparse(query_sparse, k=k, source=source)
+
+    def has_sparse_column(self) -> bool:
+        return self._inner.has_sparse_column()
 
     def fingerprint(self):
         return self._inner.fingerprint()
 
     def load_all(self):
         return self._inner.load_all()
+
+    def chunk_counts(self):
+        return self._inner.chunk_counts()
 
     def delete_by_source(self, source: str) -> int:
         return self._inner.delete_by_source(source)
@@ -840,6 +882,10 @@ def _doctor_cli() -> str:
             )
 
         def set_status(self, document_id, status, *, chunks=None, error=None) -> None: ...
+
+        def upsert(self, record) -> None:
+            self.records = [row for row in self.records if row.document_id != record.document_id]
+            self.records.append(record)
 
         def remove(self, document_id) -> int:
             self.removed.append(document_id)

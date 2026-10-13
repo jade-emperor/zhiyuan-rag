@@ -197,6 +197,70 @@ class MetricsOut(BaseModel):
     slowest: list[SlowRowOut]
 
 
+# ── 消耗报表(P0-7) ───────────────────────────────────────────────────────────
+# 与 ``application/cost.py`` 的 dataclass 一一对应,口径不在这一层。
+class CostLineOut(BaseModel):
+    """一个模型 + **一个时段**的消耗。
+
+    ``period`` 是 ``peak`` / ``off_peak``(provider 的空闲时段打折,单价差 2 倍),
+    所以同一个模型最多两行;``total_cost`` 为 ``null`` = **这个模型没配单价**(不是花了 0 元)。
+
+    ``cached_input_tokens`` 是输入里命中 **prompt cache** 的那部分 —— 它包含在
+    ``input_tokens`` 里(不是额外的),而它的单价与未命中差 **50 倍**
+    (0.02 vs 1 元/百万),所以必须单独给出来。
+    """
+
+    model: str
+    period: str
+    calls: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    total_cost: float | None = None
+
+
+class PeriodTotalOut(BaseModel):
+    """一个时段的合计(与 provider 的价目表一行行对得上)。"""
+
+    period: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    total_cost: float
+
+
+class CostOut(BaseModel):
+    """一个时间窗的消耗汇总。
+
+    ``all_priced`` 与六个"缺口"计数必须一起读,``total_cost`` 才是可解释的:
+
+    * ``unmetered_calls`` —— 调了模型但没量到 token(provider 没回报 / 那一轮断了 / 老账),**没算进金额**;
+    * ``period_unknown_calls`` —— 读不到账本时间戳,按**高峰**价计(偏保守,不会少报);
+    * ``zone_unknown_calls`` —— 时间戳**没带时区**(老账或后端镜像还没重建),判不出高峰/空闲,同样按**高峰**价计;
+    * ``calendar_unknown_calls`` —— 那一年的法定节假日还没填进配置,按**高峰**价计;
+    * ``cache_unknown_calls`` —— 没回报缓存命中数,整段输入按**未命中**价计(这是上界);
+    * ``unpriced_models`` —— 没配单价的模型,它们**不在**金额里。
+    """
+
+    window: str
+    currency: str
+    metered_calls: int
+    unmetered_calls: int
+    period_unknown_calls: int
+    zone_unknown_calls: int
+    calendar_unknown_calls: int
+    cache_unknown_calls: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    total_cost: float
+    all_priced: bool
+    unpriced_models: list[str]
+    periods: list[PeriodTotalOut]
+    lines: list[CostLineOut]
+
+
 # ── 认证(P0-3a) ──────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     """登录请求。**没有注册接口** —— 建号走 `project-rag user add`(见 cli/commands/user.py)。"""
@@ -221,42 +285,89 @@ class LogoutOut(BaseModel):
 
 
 class MeOut(BaseModel):
-    """当前账号。用来让前端判断"该不该显示上传/删除/报表"。"""
+    """当前账号。用来让前端判断"该不该显示上传/删除/报表"。
+
+    **三个能力布尔值都在这里**(不只是 ``is_admin``):前端要按它们决定显示哪些页签,
+    而"哪些角色能看报表"这件事的真源是 ``domain/auth.py`` 的三张表 ——
+    前端自己写 ``role === 'ops' || role === 'admin'`` 就是第二份真源,
+    哪天加了第四个角色,前端会静默地少一个页签(不报错,只是没人看得到)。
+    """
 
     username: str
     role: str
     is_admin: bool
+    can_view_reports: bool
+    can_use_knowledge: bool
+    can_manage: bool
 
 
 # ── 文档治理(P0-3b) ──────────────────────────────────────────────────────────
 class DocumentOut(BaseModel):
-    """一份已登记文档(前端卡片要显示的东西)。"""
+    """清单上的一行:**登记表说的** + **磁盘上的** + **库里实际有的**。
+
+    ``state`` 是这一行要显示的那一个字段(闭集见 ``domain/documents.DOC_STATES``):
+    登记表是一份没人失效的缓存(CLI 灌完不写它、rm 一个文件不写它、drop 集合更不写它),
+    所以"已入库"这三个字必须由**库里有没有块**说了算。两个块数各有各的名字:
+    ``chunks`` 是登记表记的,``indexed_chunks`` 是库里实际的 —— 只给一个数,
+    用户没法知道该信谁。
+    """
 
     document_id: str
     source: str
     filename: str
+    # 登记表说的状态;"unregistered" = 磁盘上有、登记表没有(那一行不存在,不是状态)
     status: str
+    state: str
     chunks: int
-    size_bytes: int
+    size_bytes: int  # 登记时记下的字节数(0 = 当年没记过,判不了"文件改没改")
+    disk_size_bytes: int  # 磁盘上现在的字节数(0 = 不在)
+    on_disk: bool
     created_at: str
     error: str | None = None
+    # **按库内实际块数算**:登记表说 processed 不算数 —— 那正是"显示已入库却搜不到"的成因。
     searchable: bool
+    indexed_chunks: int
+    # 这份文档有没有被收窄过(P0-6)。**谁看得见是另一回事**:清单已经按可见范围过滤过,
+    # 员工看到的每一行他都能看;这个字段只用来在界面上标一句"这是限定的"。
+    restricted: bool = False
+
+
+class DocumentSummaryOut(BaseModel):
+    """清单的一句话汇总(与逐行 ``state`` 同一个口径:数一遍,不另算一套)。"""
+
+    total: int
+    ok: int
+    changed: int
+    not_indexed: int
+    file_missing: int
+    unregistered: int
+    in_flight: int
 
 
 class DocumentsOut(BaseModel):
-    """文档清单(新→旧)。``uploads_dir`` 一并给出:排障时要知道文件落在哪。"""
+    """文档清单(登记的行新→旧,未登记的文件按 doc_id 排在后面)。
+
+    两个目录一并给出:排障时要知道"磁盘上那几处"分别在哪(前端只显示,不做路径拼接)。
+    """
 
     documents: list[DocumentOut]
+    summary: DocumentSummaryOut
     uploads_dir: str
+    corpus_dir: str
 
 
 class DeletedDocumentOut(BaseModel):
-    """删除结果:**把做了什么如实说清**(删了几块 / 文件在不在 / 登记行在不在)。"""
+    """删除结果:**把做了什么如实说清**(删了几块 / 文件在不在 / 登记行在不在)。
+
+    ``kept_source`` 与 ``removed_file`` 是两种不同的"文件还在":前者是**故意**没动
+    (语料目录是源材料,删库不删源),后者是本来就不在。合成一句话会让用户以为删干净了。
+    """
 
     document_id: str
     deleted_chunks: int
     removed_file: bool
     removed_record: bool
+    kept_source: bool = False
 
 
 class ChunkPreviewOut(BaseModel):
@@ -395,3 +506,111 @@ class SessionsOut(BaseModel):
     """我名下的会话(最近活动在前)。**只列有轮次的** —— 刚建没问过的不占地方。"""
 
     sessions: list[SessionSummaryOut]
+
+
+# ── 账号、分组与文档可见范围(P0-6) ────────────────────────────────────────────
+# 三条口径先写在这里,免得读接口的人以为它们是"随便定的":
+#
+# 1. **密码只进不出**:任何出参里都没有密码或它的哈希,``user add`` 那一份也不回显;
+# 2. **删号不能删自己、不能删最后一个管理员**(守卫在 ``application/accounts.py``,
+#    接口层只把 ``ValueError`` 翻成 400);
+# 3. **可见范围只用来收窄**:一份文档没有任何授权对象 = 人人可见(``restricted`` 为 false)。
+#    所以"取消限制"就是把两个名单都清空,不是"设成只有管理员能看"。
+class UserOut(BaseModel):
+    """账号列表里的一行。``group_ids`` 是他所属的组(**用来在界面上显示"哪一类人"**)。"""
+
+    user_id: str
+    username: str
+    role: str
+    is_admin: bool
+    group_ids: list[str] = []
+
+
+class UsersOut(BaseModel):
+    """全部账号(用户名升序)。只有名字与角色 —— 没有密码,也没有登录时间之类的推测字段。"""
+
+    users: list[UserOut]
+
+
+class CreateUserRequest(BaseModel):
+    """建号请求(管理员专用)。角色必须是 ``USER_ROLES`` 里的一个(校验在用例层,消息给人看)。"""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+    role: str = Field(default="employee", description="employee / ops / admin")
+
+
+class CreateUserOut(BaseModel):
+    """建号结果。**不回显密码**(它不是"确认",是"记下来给谁看"的问题)。"""
+
+    user_id: str
+    username: str
+    role: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """改密码请求(管理员替某个账号改)。"""
+
+    password: str = Field(min_length=1, max_length=256)
+
+
+class DeletedUserOut(BaseModel):
+    """删号结果。``username`` 一起回:界面上的提示语要说清"删掉的是谁"。"""
+
+    user_id: str
+    username: str
+    deleted: bool
+
+
+class GroupOut(BaseModel):
+    """一个组(一类员工):稳定 ID + 名字 + 成员 ID。"""
+
+    group_id: str
+    name: str
+    member_ids: list[str] = []
+
+
+class GroupsOut(BaseModel):
+    """全部组(名字升序)。前端拿它渲染"哪一类员工"的下拉与勾选框。"""
+
+    groups: list[GroupOut]
+
+
+class CreateGroupRequest(BaseModel):
+    """建组请求。名字是管理员唯一认得的标识,所以重名要报错(不覆盖)。"""
+
+    name: str = Field(min_length=1, max_length=64)
+
+
+class SetMembersRequest(BaseModel):
+    """**整份**成员名单(声明式):前端勾完点保存,语义就是"这些人"。"""
+
+    user_ids: list[str] = []
+
+
+class DeletedGroupOut(BaseModel):
+    """删组结果。``deleted=false`` = 本来就没有这个组(删除是幂等的)。"""
+
+    group_id: str
+    deleted: bool
+
+
+class DocumentAclOut(BaseModel):
+    """一份文档的可见范围。
+
+    ``restricted=false`` 且两个名单都空 = **没有规则 = 人人可见**。
+    这个布尔是**算出来的**(名单非空即为真),不是库里另存的一个字段 ——
+    否则会出现"布尔说限制了、名单却是空的"这种自相矛盾的状态。
+    """
+
+    document_id: str
+    restricted: bool
+    user_ids: list[str]
+    group_ids: list[str]
+
+
+class SetDocumentAclRequest(BaseModel):
+    """设置可见范围(**整份**覆盖)。两个名单都空 = 取消限制(回到人人可见)。"""
+
+    user_ids: list[str] = []
+    group_ids: list[str] = []

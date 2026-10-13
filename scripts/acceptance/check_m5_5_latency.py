@@ -13,7 +13,8 @@
 
     from project_rag.observability import StreamTiming
     StreamTiming(label, channel=None)
-        .mark(name) / .token(text) / .finish(channel=, refused=, truncated=) / .line() / .emit()
+        .mark(name) / .token(text) / .think(text) / .finish(channel=, refused=, truncated=)
+        .usage(model=, input_tokens=, output_tokens=) / .line() / .emit()
 
     from project_rag.application.streaming import timed
     timed(events: Iterator[QaEvent], timing: StreamTiming) -> Iterator[QaEvent]
@@ -25,8 +26,14 @@ retrieve_ms=- embed_ms=- vector_ms=- bm25_ms=- fuse_ms=- collapse_ms=- rerank_ms
 llm_think_ms=- llm_ttft_ms=- think_tokens=0 ttft_ms=930.9 tokens=173 gen_ms=3010.9 \
 tps=57.5 total_ms=3944.2 refused=false truncated=false aborted=false
 
-**字段与顺序固定**（26 个），拿不到的一律 ``-`` —— 「没量到」和「量到 0」必须分得开;
+**字段与顺序固定**（30 个），拿不到的一律 ``-`` —— 「没量到」和「量到 0」必须分得开;
 ``awk``/``grep`` 才敢按列取。
+
+P0-7 加的四个是**计费口径**（``llm_model`` / ``llm_input_tokens`` /
+``llm_cached_input_tokens`` / ``llm_output_tokens``）:
+provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它和 ``tokens``/``think_tokens``
+**不许互相替代** —— 那两个是帧数（给 tps 用）,拿它们乘单价会漏掉思考帧与缓存命中的输入。
+**缓存命中那一列单列**:它的单价与未命中差 50 倍(provider 的 prompt cache)。
 
 口径（改口径 = 改契约）::
 
@@ -117,6 +124,13 @@ _FIELD_ORDER = (
     "llm_think_ms",
     "llm_ttft_ms",
     "think_tokens",
+    # provider 回报的**计费口径**(P0-7):模型名 + 输入(含缓存命中)/ 输出 token。
+    # 它和上面那两个「帧数」是两回事:帧数给 tps 用,这四个给报表算钱用。
+    # **命中缓存那一列不能省**:它的单价与未命中差 50 倍(0.02 vs 1 元/百万)。
+    "llm_model",
+    "llm_input_tokens",
+    "llm_cached_input_tokens",
+    "llm_output_tokens",
     "ttft_ms",
     "tokens",
     "gen_ms",
@@ -128,7 +142,7 @@ _FIELD_ORDER = (
 )
 
 # 渲染成**字符串**而不是数字的字段（其余字段要么是 '-'、要么是 true/false、要么能被 float() 吃掉）
-_STRING_FIELDS = ("label", "request_id", "channel", "thinking")
+_STRING_FIELDS = ("label", "request_id", "channel", "thinking", "llm_model")
 
 
 def _require(module_name: str, names: tuple[str, ...]):
@@ -827,7 +841,61 @@ def _() -> str:
 
 
 # ── 6. 行格式（契约的机械部分） ───────────────────────────────────────────────
-@check("格式：字段与顺序固定 23 个，值要么是 '-' 要么可解析（awk 能按列取）")
+@check("用量：provider 回报的 token 落进账本；没回报时是 '-' 而不是 0（两件事不许混）")
+def _() -> str:
+    """P0-7:消耗报表算钱靠的就是这三个字段,所以"没量到"必须是 ``-``。
+
+    三种情形各断言一次:
+
+    1. **报了** —— 模型名与两个数原样进账(账本不换算、不加工);
+    2. **没报** —— 三个字段都是 ``-``。折成 0 会被报表读成"这次不要钱",而真相是"不知道";
+    3. **只报了模型名**(provider 说了是哪一次调用、没给 token 数) —— 模型名照记,
+       两个 token 仍是 ``-``;这一档在消耗报表里算「调了但没量到」。
+    """
+    timing = _stream_timing()("probe")
+    timing.usage(
+        model="deepseek-flash", input_tokens=120, output_tokens=34, cached_input_tokens=100
+    )
+    values = timing.values()
+    if (
+        values["llm_model"],
+        values["llm_input_tokens"],
+        values["llm_cached_input_tokens"],
+        values["llm_output_tokens"],
+    ) != ("deepseek-flash", "120", "100", "34"):
+        raise AssertionError(f"用量的四个字段没照实进账：{values}")
+
+    silent = _stream_timing()("probe").values()
+    if (
+        silent["llm_model"],
+        silent["llm_input_tokens"],
+        silent["llm_cached_input_tokens"],
+        silent["llm_output_tokens"],
+    ) != ("-", "-", "-", "-"):
+        raise AssertionError(
+            f"没回报用量时四个字段都该是 '-'（折成 0 会让报表把它读成『不要钱』）：{silent}"
+        )
+
+    named = _stream_timing()("probe")
+    named.usage(model="deepseek-flash")
+    partial = named.values()
+    if (partial["llm_model"], partial["llm_input_tokens"]) != ("deepseek-flash", "-"):
+        raise AssertionError(f"只报模型名时不该编出 token 数：{partial}")
+
+    # 真链路:用量挂在收尾帧上 → 账本上必须有数(适配器与用例层共用这一个约定)
+    with _capture() as catcher:
+        _drain(_rag_stream(PacedFakeLLM(KB_PARTS, usage=("deepseek-flash", 88, 12))))
+    fields = _parse(catcher.lines[-1])
+    if (fields["llm_input_tokens"], fields["llm_output_tokens"]) != ("88", "12"):
+        raise AssertionError(f"真链路的用量没落账：{fields}")
+    if fields["llm_cached_input_tokens"] != "-":
+        raise AssertionError(
+            f"这一轮没回报缓存明细,那一列必须是 '-'（不是 0 —— 0 会被按命中价计价）：{fields}"
+        )
+    return "报了照记 / 没报是 '-' / 只报模型名不编数；链路 88+12 落账"
+
+
+@check("格式：字段与顺序固定 30 个，值要么是 '-' 要么可解析（awk 能按列取）")
 def _() -> str:
     timing = _stream_timing()("probe", thinking="off")
     timing.mark("faq")
@@ -849,7 +917,7 @@ def _() -> str:
         raise AssertionError(f"布尔字段应照实，实际 {fields}")
     if fields["channel"] != "-":
         raise AssertionError("finish 没给 channel 时应保持 '-'（别编一个）")
-    return f"26 个字段顺序固定；{len(fields)} 个值全部可解析"
+    return f"30 个字段顺序固定；{len(fields)} 个值全部可解析"
 
 
 @check("格式 级别：账走 INFO，且这个 logger 不在 NOISY_LOGGERS 里（否则被抬到 WARNING 就看不见）")

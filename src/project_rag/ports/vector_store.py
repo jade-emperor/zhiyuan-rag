@@ -17,21 +17,31 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from project_rag.domain import Chunk, Embedding, RetrievedChunk
+from project_rag.domain import Chunk, Embedding, RetrievedChunk, SparseVector
 
 
 class VectorStore(Protocol):
     """子块的向量库。"""
 
-    def upsert(self, chunks: Sequence[Chunk], embeddings: Sequence[Embedding]) -> int:
-        """输入:子块 + 对应向量(同序等长)。
+    def upsert(
+        self,
+        chunks: Sequence[Chunk],
+        embeddings: Sequence[Embedding],
+        *,
+        sparse: Sequence[SparseVector] | None = None,
+    ) -> int:
+        """输入:子块 + 对应稠密向量(同序等长)+ 可选的**同序等长**稀疏向量。
 
         行为:按 ``chunk_id`` 幂等写入(已存在则覆盖)。
         输出:写入后集合内的子块**总数** —— 不是本次写入条数,
         幂等重跑时总数不变才是对的行为。
+
+        ``sparse`` 给不给取决于集合有没有稀疏列(见 ``search_sparse``):
+        给了但集合没有那一列 = 静默丢权重,所以实现要**当场拒绝**;反之,
+        集合有那一列却没给 = 那一行写不进去(Milvus 拒收空稀疏行),同样当场拒绝。
         """
         ...
 
@@ -46,6 +56,39 @@ class VectorStore(Protocol):
 
         行为:向量相似检索,按分数降序取前 k。
         输出:命中序列;空库给空序列(不抛错 —— 用例层要能走「没检索到」分支)。
+        """
+        ...
+
+    def search_sparse(
+        self,
+        query_sparse: SparseVector,
+        *,
+        k: int,
+        source: str | None = None,
+    ) -> Sequence[RetrievedChunk]:
+        """输入:查询的稀疏向量(权重口径见 ``ports/sparse_encoder.py``)、返回条数、来源过滤。
+
+        行为:在**同一个集合**的稀疏列上做倒排检索(内积),按分数降序取前 k。
+        输出:命中序列;空库给空序列。
+
+        两条约定:
+
+        * 分数为 0 的行**不算命中**(一个词都没沾上)—— 融合那一步会给"第 1 名"排名分,
+          把 0 分的行当命中返回等于让它挤掉真命中(进程内那一路也是这么判的);
+        * 集合没有稀疏列时**抛错**,不返回空序列 —— "这个集合还没灌稀疏向量"与
+          "检索没命中"是两件事,后者会被当成"知识库里没有"而静默降级。
+        """
+        ...
+
+    def has_sparse_column(self) -> bool:
+        """输入:无。行为:这个库**能不能接**稀疏向量。输出:布尔。
+
+        **注意语义是「能不能接」而不是「现在有没有那一列」**:集合还没建的时候,
+        答案是"按当前配置建出来的会不会带那一列"—— 调用方(ingest 的预检)要的正是这个,
+        否则"第一次写入建集合"这条路会被自己的预检挡下来。
+
+        为什么要它在端口上:稀疏向量算一遍要全库统计 + 全库分词,而"写不进去"要到
+        第一批 upsert 才知道 —— 预检把它提前到**嵌入之前**(那是整个 ingest 里最贵的一步)。
         """
         ...
 
@@ -77,6 +120,18 @@ class VectorStore(Protocol):
         给关键字那一路建索引用的:BM25 要看到全量文本,而向量库里就有唯一的一份,
         不必再维护第二个存储。代价是 O(N) —— 几千块无所谓,上万块时要改成
         ingest 时喂索引 + 持久化(记在 deferred)。
+        """
+        ...
+
+    def chunk_counts(self) -> Mapping[str, int]:
+        """输入:无。行为:每个 ``doc_id`` 在库里有几块。输出:``doc_id -> 块数``(为 0 的不必出现)。
+
+        **比 ``load_all()`` 便宜一个量级**:只取 ``doc_id`` 一列,不拉正文与父块正文。
+        它回答的是「这份文档现在到底搜不搜得到」—— 知识库清单每次刷新都要问,
+        而有文档在入库时那份清单每 3 秒被打一次,不能顺手把几 MB 正文拖回来。
+
+        集合不存在时返回空表(**不是报错**):"库是空的"与"库里有块但没有这一份"
+        是两件事,清单要把它们分开说。
         """
         ...
 

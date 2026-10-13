@@ -788,10 +788,19 @@ def _() -> str:
             "owner：环境（check_env_services.py 能验）"
         ) from exc
     counts = Counter(row.source for row in rows)
+    if not rows:
+        # **空库是"还没灌",不是"契约坏了"**:作者 drop 掉集合、或新克隆的机器上都会走到这里。
+        # 按项目口径:缺数据要 SKIP 并点名 owner,而不是 FAIL(FAIL 会被读成"代码回归")。
+        raise SkipCheck(
+            f"Milvus 里一个块都没有（{get_settings().milvus.collection}）—— 先灌语料："
+            "`uv run project-rag ingest --path data/corpus/<source>_data`；"
+            "owner：数据（M4.1 的入库结果，属于部署动作，不是代码）"
+        )
     missing = [source for source in BAGU_SOURCES if counts.get(source, 0) == 0]
     if missing:
         raise AssertionError(
-            f"库里没有 {missing} 的块：跑 `uv run project-rag ingest --path data/corpus/<source>_data`"
+            f"库里没有 {missing} 的块（别的 source 有、这两个没有 —— 那是**灌错了**，不是没灌）："
+            "跑 `uv run project-rag ingest --path data/corpus/<source>_data`，或 `project-rag doctor` 对账"
         )
     return "、".join(f"{source}={counts[source]}" for source in sorted(counts))
 

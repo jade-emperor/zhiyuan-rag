@@ -96,9 +96,13 @@ async function main() {
   const sessions = await page.locator('.sidebar .item').count()
   expect('管理员会话列表', sessions === 2, `左侧 ${sessions} 条会话`)
   const tabs = await page.locator('header .tab').allInnerTexts()
+  // P0-6:管理员的页签是四个(对话 / 知识库 / 报表 / 账号与权限)
   expect(
-    '管理员看到三个页签',
-    tabs.length === 3 && tabs.includes('知识库') && tabs.includes('可观测'),
+    '管理员看到四个页签',
+    tabs.length === 4 &&
+      tabs.includes('知识库') &&
+      tabs.includes('报表') &&
+      tabs.includes('账号与权限'),
     `页签 ${JSON.stringify(tabs)}`,
   )
   const roleTag = await page.locator('header .who').innerText()
@@ -159,7 +163,7 @@ async function main() {
   await page.getByRole('button', { name: '登录' }).click()
   await page.waitForSelector('text=Configuration', { timeout: 15000 })
   const empTabs = await page.locator('header .tab').allInnerTexts()
-  expect('员工只见「对话」', empTabs.length === 1 && empTabs[0] === '对话', JSON.stringify(empTabs))
+  expect('员工只见「对话」(知识库页里有上传/删除/授权,所以那一页只给管理员)', empTabs.length === 1 && empTabs[0] === '对话', JSON.stringify(empTabs))
   const empSessions = await page.locator('.sidebar .item').count()
   expect('员工的会话列表是自己的', empSessions === 1, `${empSessions} 条`)
   await page.screenshot({ path: `${SHOT}_4_employee.png` })

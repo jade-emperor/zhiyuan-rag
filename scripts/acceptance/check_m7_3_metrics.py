@@ -6,7 +6,7 @@
     uv run python scripts/acceptance/check_m7_3_metrics.py
 
 **这一份在堵什么洞**：M7.1/M7.2 之前，「可观测」也是一张路线图页 —— 报表接口
-（`GET /api/v1/admin/metrics`，P0-2）早就有了，但**没有界面**；而界面要画对，
+（`GET /api/v1/reports/metrics`，P0-2）早就有了，但**没有界面**；而界面要画对，
 得先知道后端的三条口径（`application/metrics.py` 的 docstring）：
 
 * **`null` 不是 0**：`p95` 要 `n ≥ 20`、`p99` 要 `n ≥ 100`，不够就给 `None`。
@@ -23,7 +23,7 @@
 
     GET /api/v1/capabilities -> {…, metrics: {windows, default_window, top_max,
                                               min_n: {p50, p95, p99}}}
-    GET /api/v1/admin/metrics?window=…&top=…
+    GET /api/v1/reports/metrics?window=…&top=…
         # window 必须落在上面的白名单里（否则 400）;top ∈ [1, top_max]（否则 422）
         # 报表本身的口径由 check_m5_9_metrics.py 钉着（10 条），这里只钉"报给前端的那些数"
 
@@ -121,9 +121,9 @@ def _() -> str:
     assert windows == list(_WINDOWS), f"capabilities 报 {windows},路由认 {list(_WINDOWS)}"
 
     for window in windows:
-        response = client.get(f"/api/v1/admin/metrics?window={window}")
+        response = client.get(f"/api/v1/reports/metrics?window={window}")
         assert response.status_code == 200, f"白名单里的 {window} 竟然不是 200:{response.text}"
-    rejected = client.get("/api/v1/admin/metrics?window=42h")
+    rejected = client.get("/api/v1/reports/metrics?window=42h")
     assert rejected.status_code == 400, rejected.text
     return f"白名单 {windows} 逐个 200;42h → 400;默认 {caps['default_window']}"
 
@@ -144,9 +144,9 @@ def _() -> str:
 
     client, _ = _client()
     assert client.get("/api/v1/capabilities").json()["metrics"]["top_max"] == TOP_MAX
-    assert client.get(f"/api/v1/admin/metrics?top={TOP_MAX}").status_code == 200
+    assert client.get(f"/api/v1/reports/metrics?top={TOP_MAX}").status_code == 200
     for bad in ("0", str(TOP_MAX + 1)):
-        response = client.get(f"/api/v1/admin/metrics?top={bad}")
+        response = client.get(f"/api/v1/reports/metrics?top={bad}")
         assert response.status_code == 422, f"top={bad} 应该 422,实际 {response.status_code}"
     return f"top_max={TOP_MAX};0 与 {TOP_MAX + 1} 都 422"
 
@@ -249,8 +249,8 @@ def _() -> str:
         return []
 
     ledger.load_since = load_since  # type: ignore[method-assign]
-    assert client.get("/api/v1/admin/metrics?window=1h").status_code == 200
-    assert client.get("/api/v1/admin/metrics?window=24h").status_code == 200
+    assert client.get("/api/v1/reports/metrics?window=1h").status_code == 200
+    assert client.get("/api/v1/reports/metrics?window=24h").status_code == 200
     assert len(seen) == 2, seen
     now = datetime.now()
     for since, hours in zip(seen, (1, 24)):
@@ -268,7 +268,7 @@ def _() -> str:
     ledger.load_since = lambda since: [  # type: ignore[method-assign]
         _row(request_id=f"r{i}", total_ms=str(100 + i), rerank_ms="20.0") for i in range(3)
     ]
-    body = client.get("/api/v1/admin/metrics?window=24h").json()
+    body = client.get("/api/v1/reports/metrics?window=24h").json()
     segments = {segment["name"]: segment for segment in body["segments"]}
     rerank = segments["rerank_ms"]
     assert rerank["n"] == 3, rerank
@@ -290,7 +290,7 @@ def _() -> str:
         _row(request_id="d", label="faq", channel="faq"),
         _row(request_id="e"),
     ]
-    body = client.get("/api/v1/admin/metrics?window=24h&top=3").json()
+    body = client.get("/api/v1/reports/metrics?window=24h&top=3").json()
     assert body["rows"] == 5, body
     assert (body["refused"], body["truncated"], body["aborted"]) == (1, 1, 1), body
     assert body["faq_hits"] == 1 and body["rag_answers"] == 4, body
