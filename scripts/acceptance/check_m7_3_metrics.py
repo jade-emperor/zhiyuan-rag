@@ -239,7 +239,7 @@ def _() -> str:
 
 @check("报表按窗口取数：1h 与 24h 传给账本的起点真的差 23 小时")
 def _() -> str:
-    from datetime import datetime, timedelta
+    from datetime import UTC, datetime, timedelta
 
     client, ledger = _client()
     seen: list[datetime] = []
@@ -252,13 +252,16 @@ def _() -> str:
     assert client.get("/api/v1/reports/metrics?window=1h").status_code == 200
     assert client.get("/api/v1/reports/metrics?window=24h").status_code == 200
     assert len(seen) == 2, seen
-    now = datetime.now()
+    # 账本表里存的是 **UTC**,所以接口必须给**带时区的绝对时刻**(裸钟点在宿主(CST)
+    # 与容器(UTC)上不是同一个瞬间) —— 判据是"它自己说了是哪个时区的哪一刻"。
+    assert all(since.tzinfo is not None for since in seen), f"窗口下界该带时区:{seen}"
+    now = datetime.now(UTC)
     for since, hours in zip(seen, (1, 24)):
         drift = abs((now - since) - timedelta(hours=hours))
         assert drift < timedelta(minutes=5), f"窗口 {hours}h 的起点偏了 {drift}"
     # 24h 的起点更早,所以是 1h 的起点减它 —— 反过来会得到 -23 小时(第一版就这么写反了)
     assert abs((seen[0] - seen[1]) - timedelta(hours=23)) < timedelta(minutes=5), seen
-    return "1h/24h 的 since 分别落在 now-1h / now-24h(误差 < 5 分钟)"
+    return "1h/24h 的 since 分别落在 now-1h / now-24h(带时区,误差 < 5 分钟)"
 
 
 @check("接口层不把「样本不够」折算成 0：p95 仍是 null，而最大/中位数照常")

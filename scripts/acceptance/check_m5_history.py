@@ -1127,8 +1127,9 @@ def _() -> str:
         if abs((now - moment).total_seconds()) > 300:
             raise AssertionError(f"ts 该是刚刚(±5 分钟),实际 {stamp}(现在 {now.isoformat()})")
 
+        cost = get_settings().cost
         rule = PeriodRule.of(
-            weekdays=[1, 2, 3, 4, 5], windows=[["09:00", "12:00"], ["14:00", "18:00"]]
+            weekdays=cost.peak.weekdays, windows=cost.peak.windows, holidays=cost.holidays
         )
         report_ = summarize_cost(
             mine,
@@ -1146,10 +1147,19 @@ def _() -> str:
             )
         if report_.metered_calls != 1 or report_.cache_unknown_calls:
             raise AssertionError(f"该 1 次调用、缓存明细齐全:{report_}")
-        if report_.zone_unknown_calls or report_.calendar_unknown_calls:
+        if report_.zone_unknown_calls:
+            raise AssertionError(f"真库盖的戳该带时区,不该报『时区不明』:{report_.zone_unknown_calls}")
+        # 日历那一档**分两种情况都要如实**:配置覆盖了这一年 → 不该有缺口;
+        # 没覆盖(新一年的放假通知还没发布)→ 必须报出来,而不是假装那天不放假。
+        from project_rag.application.cost import BEIJING
+
+        year = now.astimezone(BEIJING).year
+        if year in rule.covered_years:
+            if report_.calendar_unknown_calls:
+                raise AssertionError(f"{year} 年已在节假日表里,不该报『日历不明』:{report_}")
+        elif report_.calendar_unknown_calls != 1:
             raise AssertionError(
-                f"真库盖的戳该判得出时段(时区/日历都不该缺):"
-                f"{report_.zone_unknown_calls}/{report_.calendar_unknown_calls}"
+                f"{year} 年不在节假日表里,该如实报『日历不明』并按高峰计:{report_}"
             )
         period = report_.lines[0].period
         # 判出来的时段必须与"这一笔实际发生的北京时间"一致(自己按同一条规则手算一遍)
@@ -1160,6 +1170,80 @@ def _() -> str:
             f"表 {table}:四个 token 字段 + 带时区的 ts 往返;{period} 时段算出 "
             f"{report_.total_cost} 元"
         )
+    finally:
+        _drop_table(table)
+
+
+@check("真实链路：老账本表(没有 ts_offset 列)能被 init_schema 就地补上，老行的时段判不出来")
+def _() -> str:
+    """**这条盯的是作者那张已有的表**:``CREATE TABLE IF NOT EXISTS`` 不会给老表加列,
+    所以 ``init_schema`` 里显式补一次。补不上的话,重建镜像后服务启动即报
+    "Unknown column 'ts_offset'",而那是**生产启动路径**。
+
+    老行必须读成**不带时区**的时间戳(那时只存了裸钟点):报表据此按高峰价 + 计数,
+    而不是把 UTC 的钟点当成北京时间(8 小时差 = 高峰判成空闲)。
+    """
+    import uuid as _uuid
+
+    from project_rag.adapters.ledger_mysql import MySQLLedgerStore
+    from project_rag.config import get_settings
+    from project_rag.ports.ledger import LEDGER_TS
+
+    table = f"ledger_old_{_uuid.uuid4().hex[:8]}"
+    conn = _mysql_connect()
+    try:
+        with conn.cursor() as cur:
+            # 老表的样子:没有 ts_offset(与加这一列之前的 DDL 一致)
+            cur.execute(
+                f"CREATE TABLE {table} ("
+                "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                "  request_id VARCHAR(64) NOT NULL,"
+                "  ts DATETIME(3) NOT NULL,"
+                "  label VARCHAR(16) NOT NULL,"
+                "  channel VARCHAR(16) NULL,"
+                "  cold TINYINT(1) NOT NULL,"
+                "  builds INT NOT NULL,"
+                "  total_ms DOUBLE NULL,"
+                "  ttft_ms DOUBLE NULL,"
+                "  refused TINYINT(1) NOT NULL,"
+                "  truncated TINYINT(1) NOT NULL,"
+                "  aborted TINYINT(1) NOT NULL,"
+                "  payload JSON NOT NULL"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+            )
+            cur.execute(
+                f"INSERT INTO {table} (ts, request_id, label, cold, builds, "
+                "refused, truncated, aborted, payload) VALUES "
+                "(NOW(3), 'old-row', 'rag', 0, 0, 0, 0, 0, '{\"request_id\": \"old-row\", "
+                "\"llm_model\": \"DeepSeek-V4.1-Flash\", \"llm_input_tokens\": \"1000000\"}')"
+            )
+    finally:
+        conn.close()
+
+    store = MySQLLedgerStore(get_settings().mysql, table)
+    try:
+        store.init_schema()  # 补列(幂等:再跑一次也不该炸)
+        store.init_schema()
+        rows = store.load_since(datetime.now(UTC) - timedelta(minutes=5))
+        old = [row for row in rows if row.get("request_id") == "old-row"]
+        if len(old) != 1:
+            raise AssertionError(f"老行该读回来 1 行,实际 {len(old)}")
+        if datetime.fromisoformat(old[0][LEDGER_TS]).tzinfo is not None:
+            raise AssertionError(
+                f"老行的裸钟点不该被猜成某个时区:{old[0][LEDGER_TS]!r} —— "
+                "它只说明写它的是某个钟,而那张表里容器(UTC)与宿主(CST)的历史行都有"
+            )
+        # 补列之后新写的行必须带上时区偏移
+        store.record({"label": "rag", "request_id": "new-row", "channel": "rag"})
+        fresh = [
+            row
+            for row in store.load_since(datetime.now(UTC) - timedelta(minutes=5))
+            if row.get("request_id") == "new-row"
+        ]
+        stamp = datetime.fromisoformat(fresh[0][LEDGER_TS])
+        if stamp.tzinfo is None:
+            raise AssertionError(f"补列之后写的行该带时区:{fresh[0][LEDGER_TS]!r}")
+        return f"表 {table}:老表补上 ts_offset;老行裸钟点(判不出来)/ 新行 {stamp.isoformat()}"
     finally:
         _drop_table(table)
 

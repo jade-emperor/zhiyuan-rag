@@ -1026,6 +1026,7 @@ def _cost_endpoint() -> str:
         "zone_unknown_calls", "calendar_unknown_calls", "cache_unknown_calls",
         "input_tokens", "cached_input_tokens", "output_tokens",
         "total_tokens", "total_cost", "all_priced", "unpriced_models", "periods", "lines",
+        "peak_weekdays", "peak_windows", "holiday_years",
     }
     if set(body) != expected_keys:
         raise AssertionError(
@@ -1039,6 +1040,11 @@ def _cost_endpoint() -> str:
         True,
     ):
         raise AssertionError(f"1M 输入(0.8M 命中)+ 0.1M 输出 该是 1.232 元:{body}")
+    # 界面要照这份口径解释"为什么这一行算空闲" —— 出参里必须带着它,而不是让界面抄一份
+    if body["peak_weekdays"] != WEEKDAYS or body["peak_windows"] != WINDOWS:
+        raise AssertionError(f"出参该带上时段口径:{body['peak_weekdays']}/{body['peak_windows']}")
+    if body["holiday_years"] != [2026]:
+        raise AssertionError(f"节假日表覆盖的年份该如实报:{body['holiday_years']}")
     if client.get("/api/v1/reports/cost?window=42h", headers=ops).status_code != 400:
         raise AssertionError("窗口白名单外的值该 400")
     if client.get("/api/v1/reports/cost").status_code != 401:

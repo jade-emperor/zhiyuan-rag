@@ -43,6 +43,20 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     return parser
 
 
+# ISO 星期 → 中文。报表里写"工作日"而不是"星期12345":后者要读者自己数,
+# 而这一行存在的意义正是"让人一眼看懂这条账为什么算高峰"。
+_WEEKDAY_NAMES = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
+
+
+def _weekdays_text(weekdays) -> str:  # noqa: ANN001 - frozenset[int]
+    """输入:高峰星期集合(ISO 1–7)。行为:说成人话。输出:文本。"""
+    if not weekdays:
+        return "每天"
+    if set(weekdays) == {1, 2, 3, 4, 5}:
+        return "工作日"
+    return "、".join(_WEEKDAY_NAMES[day] for day in sorted(weekdays))
+
+
 def _ms(value: float | None) -> str:
     """输入:毫秒或 None。行为:渲染成一位小数。输出:文本;None 给 ``-``(不编数)。"""
     return "-" if value is None else f"{value:.1f}"
@@ -147,8 +161,8 @@ def _print_cost(args: argparse.Namespace, rows) -> None:  # noqa: ANN001 - rows 
             f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
             for start, end in deps.cost_rule.windows
         )
-        days = "".join(str(day) for day in sorted(deps.cost_rule.weekdays)) or "每天"
-        print(f"  时段口径：北京时间 星期{days} 的 {windows} 为高峰；法定节假日全天空闲")
+        days = _weekdays_text(deps.cost_rule.weekdays)
+        print(f"  时段口径：北京时间 {days} 的 {windows} 为高峰；法定节假日全天空闲")
     if not report.lines:
         print("  窗口内没有可算的模型调用（FAQ 命中与检索为空都不调模型）。")
         return

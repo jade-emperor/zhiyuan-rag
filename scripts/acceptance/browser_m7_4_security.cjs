@@ -11,7 +11,9 @@
  *   2. 登录页渲染、后端「已连通」——**跨源**(file:// 的 Origin 是 null)也连得上；
  *   3. 用 admin 登录 → 提问 → 流式答案出来（WS 跨源也通）；
  *   4. 退出登录 → **服务端那枚令牌立刻 401**（不是只删了本地副本）；
- *   5. 登录连错到超限 → 界面显示「请求过于频繁」并给出等待秒数（限流在界面上看得见）。
+ *   5. 登录连错到超限 → 界面显示「…过于频繁」并给出等待秒数（限流在界面上看得见）。
+ *      （这句文案住在 `api/app.py:_throttle_text`：**登录/上传是 429 的拦截话术**，
+ *       与问答那条 200 的兜底话术（「问得有点密集」）不是同一句。）
  *
  * 跑法(准备见 docs/frontend.md §7)::
  *
@@ -74,6 +76,20 @@ async function main() {
   await page.screenshot({ path: `${SHOT}_1_file_login.png` })
 
   // ── 2. 登录 + 提问(WS 跨源) ───────────────────────────────────────────
+  // **先等登录那一档的空额回来**:这条用例自己会用 11 次错误口令把那个 IP 的额度打光,
+  // 而限额窗口内**连正确密码也进不去**(限流的应有之义,不是 bug)。于是"紧接着再跑一次"
+  // 会卡在登录后那一页(实测:第二次跑就卡住了)。探到还能失败一次(401)再开始。
+  for (let waited = 0; ; waited += 5) {
+    const probe = await page.request.post(`${BACKEND}/api/v1/auth/login`, {
+      data: { username: 'admin', password: 'bucket-probe' },
+    })
+    if (probe.status() === 401) break
+    if (probe.status() !== 429) throw new Error(`探测登录额度时收到 ${probe.status()}`)
+    if (waited >= 90) throw new Error('登录额度等了一分半还没回来 —— 限流器是不是卡住了?')
+    console.log(`  … 上一次把登录额度用光了,等 ${5} 秒(累计 ${waited + 5}s)`)
+    await page.waitForTimeout(5000)
+  }
+
   await page.getByLabel('用户名').fill('admin')
   await page.getByLabel('密码').fill('admin-pass')
   await page.getByRole('button', { name: '登录' }).click()
@@ -117,14 +133,14 @@ async function main() {
     await page.waitForTimeout(120)
   }
   await page.waitForFunction(
-    () => document.body.innerText.includes('请求过于频繁'),
+    () => /过于频繁/.test(document.body.innerText),
     undefined,
     { timeout: 10000 },
   )
   const alertText = await page.locator('.alert.error').first().innerText()
   expect(
     '超限时界面说的是「等几秒」(可执行)',
-    alertText.includes('请求过于频繁') && /等 \d+ 秒/.test(alertText),
+    /过于频繁/.test(alertText) && /等\s*约?\s*\d+\s*秒/.test(alertText),
     alertText.slice(0, 48),
   )
   await page.screenshot({ path: `${SHOT}_3_rate_limited.png` })

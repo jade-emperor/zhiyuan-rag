@@ -330,8 +330,10 @@ export interface PeriodTotal {
 /**
  * `GET /api/v1/reports/cost` —— 一个时间窗的消耗。
  *
- * `all_priced` 与四个"缺口"计数必须一起读,`total_cost` 才是可解释的:
+ * `all_priced` 与六个"缺口"计数必须一起读,`total_cost` 才是可解释的:
  * `unmetered_calls`(没量到 token)、`period_unknown_calls`(读不到发生时间 → 按高峰计)、
+ * `zone_unknown_calls`(时间戳没带时区 → 按高峰计)、
+ * `calendar_unknown_calls`(那一年没填节假日 → 按高峰计)、
  * `cache_unknown_calls`(没回报缓存命中数 → 整段按未命中价计)、`unpriced_models`(没配单价)。
  */
 export interface CostOut {
@@ -340,6 +342,8 @@ export interface CostOut {
   metered_calls: number
   unmetered_calls: number
   period_unknown_calls: number
+  zone_unknown_calls: number
+  calendar_unknown_calls: number
   cache_unknown_calls: number
   input_tokens: number
   cached_input_tokens: number
@@ -350,6 +354,12 @@ export interface CostOut {
   unpriced_models: string[]
   periods: PeriodTotal[]
   lines: CostLine[]
+  /** 高峰是星期几(ISO:1=周一 … 7=周日);空数组 = 不按星期过滤。 */
+  peak_weekdays: number[]
+  /** 高峰钟点窗口(`["09:00","12:00"]`,左闭右开);空 = 这个部署不分时段。 */
+  peak_windows: string[][]
+  /** 法定节假日表覆盖了哪些年(界面据此说明"为什么这一行算空闲")。 */
+  holiday_years: number[]
 }
 
 /** 账号列表里的一行(管理员页)。**不含密码或它的哈希**。 */

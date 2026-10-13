@@ -299,9 +299,17 @@ def _throttle_text(bucket: str, limit: int, retry_after: int, window_s: float) -
     """输入:档位、上限、建议等待秒数、窗口。行为:拼一句**可执行**的话。输出:文本。
 
     **必须带秒数**:只说"请求过于频繁"的话,用户只能靠反复重试去猜(法律 39 的同一条规矩)。
+
+    **问答与另外两档的说法不一样**,因为场景不一样:问答是"我在跟你聊天,先缓一下"(那是
+    兜底话术,200);登录与上传是要**说清这是被拦了**(429)。第一版三档共用问答那句,
+    于是**登录页上出现了"问得有点密集"** —— 登录页上没有人"问"什么(实测:浏览器用例
+    期望的是"请求过于频繁",而那两条断言因为假后端一直没接限流器而长期没人跑到)。
     """
     minutes = max(1, int(window_s // 60)) if window_s >= 60 else None
     quota = f"{minutes} 分钟最多 {limit} 次" if minutes else f"{int(window_s)} 秒内最多 {limit} 次"
+    if bucket != "query":
+        what = _BUCKET_NAMES.get(bucket, "请求")
+        return f"{what}过于频繁,请等约 {retry_after} 秒再试(这一档上限:{quota})。"
     return (
         f"问得有点密集,我需要缓一下 —— 请等约 {retry_after} 秒再试(这一档上限:{quota})。"
     )
@@ -952,6 +960,12 @@ def _cost(deps: Deps, window: str) -> CostOut:
             )
             for line in report.lines
         ],
+        peak_weekdays=sorted(deps.cost_rule.weekdays),
+        peak_windows=[
+            [start.strftime("%H:%M"), end.strftime("%H:%M")]
+            for start, end in deps.cost_rule.windows
+        ],
+        holiday_years=sorted(deps.cost_rule.covered_years),
     )
 
 

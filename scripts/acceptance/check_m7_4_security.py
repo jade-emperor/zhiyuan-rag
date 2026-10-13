@@ -467,6 +467,11 @@ def _() -> str:
     blocked = attempt("wrong-password")
     assert blocked.status_code == 429, f"第 {limit + 1} 次爆破该被挡住,实际 {blocked.status_code}"
     assert blocked.headers.get("retry-after"), "429 要带 Retry-After"
+    # 文案要**说清是被拦了 + 等几秒**,而且**不能是问答那句"问得有点密集"**
+    # (登录页上没有人"问"什么;三档共用一句话是第一版的错,浏览器用例的期望正是"请求过于频繁")
+    detail = blocked.json().get("detail", "")
+    assert "过于频繁" in detail and "秒" in detail, f"429 的话术要可执行:{detail!r}"
+    assert "问得有点密集" not in detail, f"登录页不该出现聊天式兜底话术:{detail!r}"
 
     # 换一个**新的 app** 验"登录成功清计数":先错 limit-1 次,再成功一次,
     # 之后还能连着成功 limit-1 次 —— 没有 forget 的话第一次就会被自己的失败次数挡住。

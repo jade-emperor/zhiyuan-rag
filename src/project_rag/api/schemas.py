@@ -259,6 +259,12 @@ class CostOut(BaseModel):
     unpriced_models: list[str]
     periods: list[PeriodTotalOut]
     lines: list[CostLineOut]
+    # **时段口径本身**(来自 config,不是界面自己写的一句话):哪几天、哪几个钟点是高峰,
+    # 以及节假日表覆盖了哪些年。报表把"为什么这一行算空闲"讲清楚,否则读者只能猜;
+    # 而口径放在这一份出参里,界面就不必再抄一遍(抄的那一份迟早与配置不一致)。
+    peak_weekdays: list[int]
+    peak_windows: list[list[str]]
+    holiday_years: list[int]
 
 
 # ── 认证(P0-3a) ──────────────────────────────────────────────────────────────

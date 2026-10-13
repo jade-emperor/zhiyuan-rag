@@ -67,7 +67,8 @@ OFF_PEAK = "off_peak"
 
 # 价目表里的"北京时间"。**写死 +08:00**:中国自 1991 年起没有夏令时,固定偏移就是准确的,
 # 而且不需要 IANA 时区库(容器里不一定有 tzdata,`ZoneInfo("Asia/Shanghai")` 会直接抛)。
-BEIJING = timezone(timedelta(hours=8), "CST")
+# 名字就叫 `UTC+8`(不写 CST —— 那个缩写在大洋两岸指两个不同的钟,排障时会误导)。
+BEIJING = timezone(timedelta(hours=8), "UTC+8")
 
 
 def parse_windows(windows: Sequence[Sequence[str]]) -> tuple[tuple[time, time], ...]:

@@ -468,7 +468,8 @@ curl -s "http://127.0.0.1:8080/api/v1/reports/cost?window=24h" -H "Authorization
 {
   "window": "24h", "currency": "CNY",
   "metered_calls": 24, "unmetered_calls": 0,
-  "period_unknown_calls": 0, "cache_unknown_calls": 0,
+  "period_unknown_calls": 0, "zone_unknown_calls": 0, "calendar_unknown_calls": 0,
+  "cache_unknown_calls": 0,
   "input_tokens": 29412, "cached_input_tokens": 17638, "output_tokens": 16848,
   "total_tokens": 46260, "total_cost": 0.071582,
   "all_priced": true, "unpriced_models": [],
@@ -476,7 +477,10 @@ curl -s "http://127.0.0.1:8080/api/v1/reports/cost?window=24h" -H "Authorization
                "output_tokens": 16848, "total_cost": 0.071582}],
   "lines": [{"model": "deepseek-flash", "period": "peak", "calls": 24,
              "input_tokens": 29412, "cached_input_tokens": 17638,
-             "output_tokens": 16848, "total_cost": 0.071582}]
+             "output_tokens": 16848, "total_cost": 0.071582}],
+  "peak_weekdays": [1, 2, 3, 4, 5],
+  "peak_windows": [["09:00", "12:00"], ["14:00", "18:00"]],
+  "holiday_years": [2025, 2026]
 }
 ```
 
@@ -496,17 +500,24 @@ curl -s "http://127.0.0.1:8080/api/v1/reports/cost?window=24h" -H "Authorization
 | | |
 |---|---|
 | token 从哪来 | **provider 回报的那一份**（`llm.stream_usage: true` → 流末尾一帧的用量），账本记 `llm_model` / `llm_input_tokens` / `llm_cached_input_tokens` / `llm_output_tokens`。**不按字数估** —— 估出来的金额永远看着合理，然后和账单对不上 |
-| 时段怎么判 | 按**账本行的时间戳**（存储层盖的 `ts`）落在不在 `cost.off_peak` 的窗口里（默认北京时间 00:30–08:30，支持跨午夜）。账本本体只有单调时钟，墙上时间只有存储层有 |
+| 时段怎么判 | **三个条件同时成立才算高峰**：北京时间**工作日**（`cost.peak.weekdays`）∩ 落在 `cost.peak.windows` 的钟点窗口里（09:00–12:00 / 14:00–18:00，左闭右开）∩ **不是**法定节假日（`cost.holidays`）。其余全部空闲（半价）—— 包括**周末**、午休、夜间、节假日全天。调休上班的周末仍算周末（价目表说的是"周末"，不是调休日历） |
+| 时间戳 | 按账本行的 `ts`（存储层盖的）。**它必须带时区**（`2026-10-13T06:00:00+00:00`）：价目表按**北京时间**分段，而"14:00"离开时区就不是一个时刻 —— 实测同一张表里容器（UTC）与宿主（CST）写的行都有过，判错 8 小时 = 高峰算成空闲 |
 | 钱怎么算 | 先按 **（模型 × 时段）** 把 token 加起来，再按三档分别乘，最后四舍五入到 **6 位小数**（单次调用常常只有 0.000x 元，只留两位会被抹成 0.00） |
 | `null` 单价 | 那个模型**没配单价**：金额 `null`、进 `unpriced_models`、`all_priced=false`。**不是 0 元** |
 | `unmetered_calls` | 调了模型但没量到 token（provider 没回报 / 那一轮断了 / 老账）。**没算进金额** |
-| `period_unknown_calls` | 读不到时间戳 → 按**高峰**价计（贵的那个，偏保守，不会少报） |
+| `period_unknown_calls` | 连时间戳都没有 → 按**高峰**价计（贵的那个，偏保守，不会少报） |
+| `zone_unknown_calls` | 时间戳**没带时区**（老账，或后端镜像还没重建）→ 判不出来，同样按**高峰**价计。三种"判不出来"分开计数，因为它们的修法不一样（补时间戳 / 让写入方盖上时区 / 补节假日表） |
+| `calendar_unknown_calls` | 那一年**没填进 `cost.holidays`**（国务院每年 11 月前后才发布）→ 按**高峰**价计，不假装那天不放假 |
 | `cache_unknown_calls` | 没回报缓存命中数 → 整段输入按**未命中**价计（**上界**，实际可能更低） |
 | 哪些调用计入 | 只有**真调 provider** 的那一行账。一次合流请求写两条账（外层 `qa` + 内层 `rag`），用量只记在内层 —— 两行都算就是双倍金额 |
 | 不花钱的路径 | FAQ 直答、检索为空拒答、寒暄都不调模型，因此不出现在消耗报表里 |
 
-> 三个"缺口"计数是**故意的**:报表宁可说"这一段我不知道"，也不把它画成 0 ——
-> 一个看起来完整的错误金额比一句"不知道"糟得多。
+> 六个"缺口"计数/标记（没量到 / 无时间戳 / 无时区 / 无日历 / 缓存不明 / 没配单价）是**故意的**:
+> 报表宁可说"这一段我不知道"，也不把它画成 0 —— 一个看起来完整的错误金额比一句"不知道"糟得多。
+>
+> 出参里的 `peak_weekdays` / `peak_windows` / `holiday_years` 是**口径本身**（来自 config）:
+> 界面拿它解释"这一行为什么算空闲"。放在出参里而不是让界面写死一句话，
+> 是因为写死的那份迟早与配置不一致。
 >
 > `project-rag metrics --window 24h` 打的是同一份口径（同一次读表、同一个 `application/cost.py`），
 > 命令行与网页不会各说一套。**`project-rag faq`（FAQ 单通道 + 模型兜底）不写账本**，

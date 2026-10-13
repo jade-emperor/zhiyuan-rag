@@ -8,10 +8,11 @@
 这一批坏版本的共同点:**报表上会出现一个看起来合理的数字**,而它其实是错的 ——
 少算一半、双倍计入、把"没量到"当 0、把"没配单价"当免费。改的是:
 
-* ``application/cost.py`` —— 口径本身(哪些行算调用、单价缺失、四舍五入);
+* ``application/cost.py`` —— 口径本身(哪些行算调用、单价缺失、四舍五入、**时段三条件**);
 * ``adapters/llm_deepseek.py`` —— 采集(用量形状、模型名、开关接线);
+* ``adapters/ledger_mysql.py`` —— 墙上时间戳(带不带时区);
 * ``api/app.py`` —— 出参(`all_priced` / `unpriced_models` 如实)与权限;
-* ``cli/commands/metrics.py`` —— 命令行那一份报表。
+* ``cli/commands/metrics.py`` —— 命令行那一份报表(含"时段规则传没传下去")。
 
 锚点是**逐字符照抄**源码里的那几行(含缩进);``main`` 会先核对"锚点在文件里恰好出现 1 次"——
 不核对的话,一个对不上的锚点会让什么都没改的源码跑出一片绿,然后被读成"这个检查是摆设"。
@@ -114,11 +115,12 @@ CASES: tuple[Case, ...] = (
         title="RT-12 老账本(有调用、没 token)被报成『未配单价的模型 -』",
         target=APP / "cost.py",
         old="""            unmetered += 1
-            continue""",
+            continue
+
+        # 判时段""",
         new="""            unmetered += 1
-            calls.setdefault(model, 0)
-            per_model.setdefault(model, [0, 0])
-            continue""",
+
+        # 判时段""",
         needle="缺口 老账本",
     ),
     Case(
@@ -131,18 +133,18 @@ CASES: tuple[Case, ...] = (
         needle="算钱 高峰",
     ),
     Case(
-        title="RT-14 空闲时段不生效（窗口恒判高峰，一整晚的账按贵的那档算）",
+        title="RT-14 时段判定恒给高峰（一整晚的账都按贵的那档算）",
         target=APP / "cost.py",
-        old="""    if moment is None or not windows:
-        return False""",
-        new="""    if True:
-        return False""",
+        old="""        if not self.windows:
+            return PEAK, None""",
+        new="""        if True:
+            return PEAK, None""",
         needle="算钱 空闲",
     ),
     Case(
         title="RT-15 存储层不再把时间戳附在行里（分时段计价整段失效，且没人报『时段不明』）",
         target=ADAPTERS / "ledger_mysql.py",
-        old="                out.append({**loaded, LEDGER_TS: ts.isoformat()})",
+        old="                out.append({**loaded, LEDGER_TS: _stamp(ts, offset)})",
         new="                out.append(loaded)",
         needle="真实链路：账本带 token(含缓存命中)",
         script="check_m5_history.py",
@@ -193,6 +195,54 @@ CASES: tuple[Case, ...] = (
         old="    _print_cost(args, rows)",
         new="    return 0",
         needle="入口 CLI",
+    ),
+    Case(
+        title="RT-16 法定节假日不生效（春节/国庆里的工作日按高峰价算，贵一倍）",
+        target=APP / "cost.py",
+        old="""        if any(start <= local.date() <= end for start, end in self.holidays):
+            return OFF_PEAK, None""",
+        new="""        if False:
+            return OFF_PEAK, None""",
+        needle="时段 三条件",
+    ),
+    Case(
+        title="RT-17 周末不生效（周六上午按高峰价算，贵一倍）",
+        target=APP / "cost.py",
+        old="""        if self.weekdays and local.isoweekday() not in self.weekdays:
+            return OFF_PEAK, None""",
+        new="""        if False:
+            return OFF_PEAK, None""",
+        needle="时段 三条件",
+    ),
+    Case(
+        title="RT-18 裸钟点被当成北京时间用（容器写的 UTC 行整体差 8 小时，且不报『时区不明』）",
+        target=APP / "cost.py",
+        old="""        if moment.tzinfo is None:
+            # 有钟点、没时区 = 不知道是哪一刻。**不许拿它当北京时间用**:容器里的进程钟
+            # 是 UTC,宿主是 CST,差 8 小时足以把高峰判成空闲(少报一半的钱)。
+            return PEAK, "zone\"""",
+        new="""        if False:
+            return PEAK, "zone\"""",
+        needle="缺口 时区不明",
+    ),
+    Case(
+        title="RT-19 命令行漏传时段规则（HTTP 会说空闲、CLI 全按高峰算 —— 实测踩过的那个坑）",
+        target=CLI / "metrics.py",
+        old="""        # **时段规则必须传下去**:不传的话所有调用都按高峰价算(贵一倍),
+        # 而报表上只会显示一个"合理"的金额 —— 这条有契约盯着(CLI 与 HTTP 同口径)。
+        rule=deps.cost_rule,
+    )""",
+        new="""    )""",
+        needle="入口 CLI",
+    ),
+    Case(
+        title="RT-20 存储层只盖裸钟点不记时区（进程钟是 UTC 时，高峰/空闲整段判错）",
+        target=ADAPTERS / "ledger_mysql.py",
+        old="""    total = (1 if offset[0] == "+" else -1) * (int(offset[1:3]) * 60 + int(offset[4:6]))
+    return ts.replace(tzinfo=timezone(timedelta(minutes=total))).isoformat()""",
+        new="""    return ts.isoformat()""",
+        needle="真实链路：账本带 token(含缓存命中)",
+        script="check_m5_history.py",
     ),
 )
 

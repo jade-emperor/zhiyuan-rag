@@ -42,6 +42,26 @@ const rows = computed(() => data.value?.rows ?? 0)
 const cost = computed(() => metrics.cost)
 
 /** 时段名:provider 的价目表叫"高峰/空闲",界面上就照它说。 */
+/**
+ * 把接口带回来的时段口径说成一句人话。
+ *
+ * **口径来自后端出参,不是这里写死的一句话**:界面另抄一份的话,配置改了而界面没改,
+ * 就会指着一条"空闲时段"说"高峰时段是 09–12"—— 而这种错没人会发现。
+ */
+const WEEKDAY_NAMES = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
+function periodRuleText(cost: { peak_weekdays: number[]; peak_windows: string[][] }): string {
+  if (cost.peak_windows.length === 0) return '这个部署不分时段(所有调用都按高峰价计)'
+  const days =
+    cost.peak_weekdays.length === 0
+      ? '每天'
+      : cost.peak_weekdays.length === 5 && cost.peak_weekdays.every((day) => day <= 5)
+        ? '工作日'
+        : cost.peak_weekdays.map((day) => WEEKDAY_NAMES[day - 1] ?? `星期${day}`).join('、')
+  const windows = cost.peak_windows.map(([start, end]) => `${start}–${end}`).join(' / ')
+  return `北京时间 ${days} 的 ${windows} 为高峰(法定节假日除外);其余时段半价`
+}
+
 function periodLabel(period: string): string {
   if (period === 'off_peak') return '空闲时段'
   if (period === 'peak') return '高峰时段'
@@ -196,7 +216,7 @@ onMounted(() => {
           />
         </div>
 
-        <!-- 缺口三连:每一种"算不出来"都要有话说,否则那个总数会被当成完整的账 -->
+        <!-- 缺口六连:每一种"算不出来"都要有话说,否则那个总数会被当成完整的账 -->
         <p v-if="cost && cost.unmetered_calls > 0" class="alert warn">
           有 <strong>{{ cost.unmetered_calls }}</strong> 次调用没量到 token —— 这部分**没有算进金额**。
         </p>
@@ -208,6 +228,16 @@ onMounted(() => {
           有 <strong>{{ cost.period_unknown_calls }}</strong> 次读不到发生时间,
           按<strong>高峰价</strong>计(偏保守,不会少报)。
         </p>
+        <p v-if="cost && cost.zone_unknown_calls > 0" class="alert warn">
+          有 <strong>{{ cost.zone_unknown_calls }}</strong> 次的时间戳<strong>没带时区</strong>
+          (老账,或后端镜像还没重建),判不出高峰/空闲,一律按<strong>高峰价</strong>计 ——
+          这部分是上界。
+        </p>
+        <p v-if="cost && cost.calendar_unknown_calls > 0" class="alert warn">
+          有 <strong>{{ cost.calendar_unknown_calls }}</strong> 次落在那一年
+          <strong>没填法定节假日</strong>的日子里,按<strong>高峰价</strong>计 ——
+          把那一年的放假通知填进 <code>config.yaml</code> 的 <code>cost.holidays</code> 就能判准。
+        </p>
         <p v-if="cost && cost.unpriced_models.length > 0" class="alert info">
           这些模型<strong>没配单价</strong>,所以只报了 token、没报钱:
           <code v-for="model in cost.unpriced_models" :key="model">{{ model }}</code>
@@ -215,6 +245,8 @@ onMounted(() => {
         </p>
 
         <!-- 时段合计:与 provider 价目表一行行对得上(高峰/空闲差 2 倍) -->
+        <p v-if="cost" class="faint">时段口径:{{ periodRuleText(cost) }}</p>
+
         <table v-if="cost && cost.periods.length > 0">
           <thead>
             <tr>

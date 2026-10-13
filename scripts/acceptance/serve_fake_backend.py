@@ -648,6 +648,13 @@ class FakeAccess:
         return removed
 
 
+def _memory_limiter():
+    """输入:无。行为:造一个进程内存限流器(与真容器同一套判定,只是计数不共享)。输出:限流器。"""
+    from project_rag.adapters.ratelimit_memory import MemoryRateLimiter
+
+    return MemoryRateLimiter()
+
+
 def _period_rule():
     """输入:无。行为:造一条与 config.yaml 同口径的高峰规则。输出:``PeriodRule``。
 
@@ -787,6 +794,13 @@ def build():
         },
         "cost_currency": "CNY",
         "cost_rule": _period_rule(),
+        # 限流:用**进程内存**那一档(自包含,不需要 Redis;真容器用 Redis,判定口径同一个
+        # `_rate_limit_check`)。上限仍取 config 的 `api.rate_limit`。
+        # **不接它的话,`browser_m7_4_security.cjs` 最后两条断言（登录连错 → 界面说「请求过于频繁,
+        # 等 N 秒」）永远红** —— 那两条一直是红的（假后端从建起来就没有限流器），
+        # 而它不在回归里，所以没人发现（同 STATUS §0.3 第 53 条④、§5 第 59 条④那一家族）。
+        # 对其它浏览器用例无影响:登录**成功**会 `forget` 掉那个 IP 的计数,只有连续失败才累积。
+        "rate_limiter_factory": _memory_limiter,
     }
     return create_app(Deps(**fields))
 
