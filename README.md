@@ -491,8 +491,8 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 报表 / 账号与权限四页，hash 路由）；**能力接口与 `/auth/me` 是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
 | 桌面壳 | `project-rag-desktop` 一个窗口套在这份产物上；本地模式用回环 HTTP 托管随包产物、`--remote` 直接开后端那份界面 | `src/project_rag/desktop.py` |
 | 延迟观测 | 一次回答一行账：检索六段 + TTFT + 吐字速率 + **思考三字段** | `observability/latency.py` |
-| 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（本地） |
-| 验收体系 | 每个能力配一份可执行契约，PASS/FAIL/SKIP 三态；另有反向测试证明检查真的会红 | `scripts/acceptance/`（本地） |
+| 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（作者的离线工具，**不随仓库发布**；要复现得自备语料） |
+| 验收体系 | 每个能力配一份可执行契约，PASS/FAIL/SKIP 三态；另有反向测试证明检查真的会红 | `scripts/acceptance/`（**在仓库里**，克隆下来就能跑） |
 
 ### 界面与角色（一份 Vue 单页应用）
 
@@ -608,8 +608,8 @@ API.md               HTTP / WebSocket / CLI 接口文档
 
 | | 内容 |
 |---|---|
-| **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` 与离线工具 `scripts/tools/` |
-| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原） |
+| **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` |
+| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原）、`scripts/tools/`（作者的**离线工具**：造评估集 / 灌 FAQ / 下模型 / 跑 RAGAS / A-B 读数。它们跑在 `data/` 与本地表上，所以**不随仓库发布** —— 下面提到 `scripts/tools/xxx.py` 的命令，公开 clone 上跑不了；README 里凡是能公开复现的步骤都给了等价的内置命令） |
 
 后两条是**刻意的**，不是忘了：
 
@@ -619,5 +619,6 @@ API.md               HTTP / WebSocket / CLI 接口文档
 2. **`web/node_modules` 不入库**：它是 `npm ci` 的产物（和 `.venv` 一个性质），而且里面装着
    **平台相关的二进制**（esbuild / rollup 的 linux-x64 构建）。真值来源是
    `web/package.json` + `web/package-lock.json` —— 有这两个，任何机器都能还原出一样的依赖树。
-   （这段是 开源化时补的：它在 `.gitignore` 里写着"别提交"，但文件比那条规则更早进仓库，
-   忽略规则**不会**自动取消已跟踪的文件，所以一直躺在版本库里。）
+   （这段是 开源化时补的：它曾经比 `.gitignore` 那条规则更早进仓库 —— 而**忽略规则不会自动
+   取消已跟踪的文件**，所以一度真的躺在版本库里；后来连同其它不公开路径一起从提交历史里
+   抹掉了，现在 `.git/` 里也不再有它。）

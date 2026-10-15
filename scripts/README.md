@@ -298,7 +298,7 @@ uv run python scripts/acceptance/reverse_m5_9.py            # 反向测试：6 �
 uv run project-rag metrics --window 24h                     # 人看的报表：分段 p50/p95/p99 + 比率 + 最慢几条
 ```
 
-**权威 = `check_m5_9_metrics.py` 的 docstring**。账本字段本身（27 个）仍由
+**权威 = `check_m5_9_metrics.py` 的 docstring**。账本字段本身（31 个）仍由
 `check_m5_5_latency.py` 钉住；这里钉的是**聚合口径**，重点是"数字在什么条件下才有意义"：
 最近秩不插值、样本不够就不给数（p95 要 20 条、p99 要 100 条）、`-` 不折算成 0、
 **分段只算热行**（冷启动被模型加载主导，混进来 p95 就变成"冷启动有多慢"）。

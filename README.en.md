@@ -40,7 +40,9 @@ cp .env.example .env                                      # fill in the 3 requir
 mkdir -p logs data/uploads                                # the two dirs the container writes to
 uv run project-rag user add -u <name> --role admin         # no sign-up endpoint; --role employee / ops
 docker compose up -d standalone mysql redis                # Milvus + MySQL + Redis
-uv run python scripts/tools/fetch_models.py --with-reranker   # 4.4 GB (BGE-M3 + reranker)
+uv run python -c "from modelscope import snapshot_download as d; \
+  d('BAAI/bge-m3', local_dir='models/bge-m3'); \
+  d('BAAI/bge-reranker-v2-m3', local_dir='models/bge-reranker-v2-m3')"   # 4.4 GB (BGE-M3 + reranker; `modelscope` is a declared dependency)
 uv run project-rag ingest --path data/corpus/<your_corpus>    # md / txt / docx / pptx / pdf
 uv run project-rag-api                                     # http://127.0.0.1:18080/ (config.yaml default)
 # Same thing as a short command (adds a port guard): ./scripts/dev.sh serve
@@ -70,16 +72,16 @@ Open `http://127.0.0.1:18080/` (307 → `/static/app/`) for the SPA: **chat** fo
 | Frontend | Vue 3 + TS SPA (chat / knowledge base / reports / accounts views; tabs rendered from the capabilities reported by `/auth/me`), hash router, artifact committed so the Python side and the image need no Node |
 | Desktop | `project-rag-desktop`: a native window (pywebview) around the same artifact — local mode serves it over loopback HTTP, `--remote URL` opens the backend-hosted copy |
 | Index knobs | `milvus.index.type` = `FLAT` (exact, default) or `IVF_FLAT` (+`nlist`/`nprobe`); switching rebuilds the index in place (`project-rag collections --reindex --yes`). Measured: at 3.9k chunks both are 5.5 ms with recall 1.000; at 20k synthetic vectors IVF_FLAT is 3.8× faster. `keyword.backend=milvus` moves BM25 into the collection as sparse vectors (schema-level: needs a re-ingest) |
-| Ops | One log line with 26 fields per request (TTFT, six retrieval segments, cold/warm, refusal/truncation), ledger in MySQL, healthcheck, non-root container |
-| Engineering | 25 executable contracts + 16 reverse-test runners (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
+| Ops | One log line with **31 fields** per request (TTFT, six retrieval segments, the rewrite segment, cold/warm, refusal/truncation), ledger in MySQL, healthcheck, non-root container |
+| Engineering | **30 executable contracts + 21 reverse-test runners** (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
 
 ## Repository layout
 
 ```text
 src/project_rag/     domain / ports / adapters / application / observability / cli / api
 web/                 Vue 3 + Vite frontend (build output goes into src/project_rag/api/static/app/)
-scripts/acceptance/  25 contracts + 16 reverse runners + fake ports (published: it's how we verify)
-scripts/tools/       offline tools: fetch models, load FAQ CSV, build eval sets, run RAGAS
+scripts/acceptance/  30 contracts + 21 reverse runners + fake ports (published: it's how we verify)
+                     (not shipped: scripts/tools/ — the author's offline tools, they run on data/ and local tables)
 demo/                self-written bagu-style interview Q&A for the 5-minute demo (no third-party content)
 config/config.yaml   every knob (retrieval, models, device, thresholds, rate limits)
 docker-compose.yaml  Milvus (etcd+minio) / MySQL / Redis / Attu + the app service
@@ -91,7 +93,7 @@ CHANGELOG.md         Keep a Changelog + semver
 ## Verification
 
 ```bash
-./scripts/dev.sh ci        # pyright + 17 contracts + 16 reverse runners, no containers needed (~10 min)
+./scripts/dev.sh ci        # pyright + 22 contracts + 21 reverse runners, no containers needed (~20 min)
 ./scripts/dev.sh all       # + the checks that need real middleware / corpus / a real provider key
 ```
 

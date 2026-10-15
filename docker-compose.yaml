@@ -177,11 +177,6 @@ services:
       - ./models:/app/models:ro
       - ./data:/app/data:ro
       # 上传落盘目录**单独给一条可写 bind**:config.yaml 的 api.uploads_dir 就是 data/uploads,
-      # 而它落在上面那条只读挂载里 —— 少了这一行,容器里的「上传文档」必然失败
-      # (`_stream_to_file` 报 OSError [Errno 30] Read-only file system,实测于，
-      # 见 STATUS.md §0.3 第 43 条)。只开这一个写入口,语料其余部分仍然只读。
-      # ⚠️ 宿主侧 `data/uploads` 必须先存在(README 的 quickstart 与 `./scripts/dev.sh up` 都会
-      # `mkdir -p`):否则 Docker 会替你建一个 root 属主的目录,容器里的 uid 1000 写不进去。
       - ./data/uploads:/app/data/uploads
       - ./logs:/app/logs                # 另一个需要写的挂载点(镜像里 /app/logs 属于 uid 1000)
     depends_on:

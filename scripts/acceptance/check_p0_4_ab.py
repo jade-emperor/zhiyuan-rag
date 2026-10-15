@@ -170,7 +170,8 @@ def _faq_threshold() -> str:
         ) from exc
     if len(entries) < 30:
         raise SkipCheck(
-            f"FAQ 表只有 {len(entries)} 条,标不出可用区间；先跑 scripts/tools/load_faq.py 灌种子数据"
+            f"FAQ 表只有 {len(entries)} 条,标不出可用区间；先灌 FAQ 语料"
+            "(装载脚本 `scripts/tools/load_faq_csv.py` **不随仓库发布**,owner：数据装载)"
         )
 
     matcher = BM25TextMatcher()

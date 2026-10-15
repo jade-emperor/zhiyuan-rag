@@ -32,7 +32,9 @@ docker compose up -d standalone mysql redis
 cp .env.example .env      # 填 RAG_LLM__DEEPSEEK_API_KEY / MySQL / Redis 密码
 
 # 4) 模型（4.4G，不进仓库；不下载也能跑大部分验收，见下）
-uv run python scripts/tools/fetch_models.py --with-reranker
+uv run python -c "from modelscope import snapshot_download as d; \
+  d('BAAI/bge-m3', local_dir='models/bge-m3'); \
+  d('BAAI/bge-reranker-v2-m3', local_dir='models/bge-reranker-v2-m3')"
 
 # 5) 起服务（两个角色别混：18080 = 宿主上的代码后端；8080 = 容器里的 app）
 uv run project-rag-api            # 裸跑读 config.yaml，绑 0.0.0.0:18080

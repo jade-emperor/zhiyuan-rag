@@ -329,7 +329,7 @@ def main() -> int:
     # ── 语料规模漂移：同一批提问在不同规模的库上还判得一样吗 ────────────────────
     # 作者的追问："分数不再是 0~1 之后,随着语料漂移怎么办?" 这一节就是答案：
     # 比值会漂（分子分母都含 idf），覆盖率不漂（纯 token 计数）。把库撑大再量一遍。
-    print("\n▸ 语料规模漂移（库从 %d 条撑到 %d 条：把 FAQ 表与 demo/JP 池拼起来）" % (len(live), len(live) + len(extra)))
+    print("\n▸ 语料规模漂移（库从 %d 条撑到 %d 条：把 FAQ 表与扩充池拼起来）" % (len(live), len(live) + len(extra)))
     corpora: list[tuple[str, list[FaqEntry]]] = [(f"{len(live)}（现状）", live)]
     for take in (args.sample, len(extra_pool)):  # 用**整份**池子,不是抽样后的那一份
         if take and len(extra_pool) >= take:

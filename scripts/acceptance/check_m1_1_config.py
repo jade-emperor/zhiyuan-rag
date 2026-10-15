@@ -52,7 +52,7 @@ def _public():
     if missing:
         raise AssertionError(
             f"project_rag.config 缺少公开成员 {missing}；"
-            "请在 src/project_rag/config/__init__.py 里显式 re-export"
+            "请在 src/project_rag/config.py 里显式 re-export"
         )
     return module
 

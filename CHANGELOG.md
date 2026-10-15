@@ -232,8 +232,9 @@
 - `CONTRIBUTING.md` / `SECURITY.md` / `CODE_OF_CONDUCT.md` / issue 与 PR 模板 / dependabot
 
 ### 变更
-- 公开验收脚本 `scripts/acceptance/**` 与离线工具 `scripts/tools/**`；
-  `docs/**`（维护者的决策与状态文档）、`data/**`、`models/**` **不公开**
+- 公开验收脚本 `scripts/acceptance/**`；
+  `docs/**`（维护者的决策与状态文档）、`data/**`、`models/**`、`scripts/tools/**`（离线工具，
+  跑在 `data/` 与本地表上）**不公开**
 - 新增聚合入口 `scripts/acceptance/run_all.py`（按外部依赖分 `ci`/`services`/`local` 三档）
   与短命令入口 `./scripts/dev.sh`
 
