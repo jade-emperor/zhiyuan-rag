@@ -264,9 +264,17 @@ class _World:
             truncated=self.rag.truncated,
         )
 
-    def session(self, session_id: str = SESSION_A, rounds: int = DEFAULT_ROUNDS):
+    def session(
+        self,
+        session_id: str = SESSION_A,
+        rounds: int = DEFAULT_ROUNDS,
+        max_chars: int = 0,
+    ):
         return _session_type()(
-            store=self.conversation, session_id=session_id, rounds=rounds
+            store=self.conversation,
+            session_id=session_id,
+            rounds=rounds,
+            max_chars=max_chars,
         )
 
     def ask(self, query: str = FAQ_QUESTION, *, session=None, threshold: float = 0.85):
@@ -488,7 +496,7 @@ def _() -> str:
     return "三个方法签名与契约一致"
 
 
-@check("配置：conversation 段默认值 + 可被环境变量覆盖（RAG_CONVERSATION__HISTORY_ROUNDS）")
+@check("配置：conversation 段默认值 + 字符预算默认 0（= 现状）+ 两个旋钮都能被环境变量覆盖")
 def _() -> str:
     ConversationConfig = _conversation_config_type()
     defaults = ConversationConfig()
@@ -496,17 +504,29 @@ def _() -> str:
         raise AssertionError(f"默认表名应为 conversations，实际 {defaults.table!r}")
     if defaults.history_rounds != DEFAULT_ROUNDS:
         raise AssertionError(f"默认保留轮数应为 {DEFAULT_ROUNDS}，实际 {defaults.history_rounds!r}")
+    if defaults.history_max_chars != 0:
+        raise AssertionError(
+            "字符预算的**代码默认值**应为 0（不限）—— 默认值一律取「这段代码一直以来的行为」，"
+            "要收紧就在 config.yaml 里写（§5 法律 57③）"
+        )
+    try:
+        ConversationConfig(history_max_chars=-1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("负的字符预算该被拒 —— 它会让历史永远为空(静默失忆)")
 
-    with env(RAG_CONVERSATION__HISTORY_ROUNDS="3"):
-        from project_rag.config import get_settings
+    from project_rag.config import get_settings
 
+    with env(RAG_CONVERSATION__HISTORY_ROUNDS="3", RAG_CONVERSATION__HISTORY_MAX_CHARS="800"):
         get_settings.cache_clear()
         try:
-            if get_settings().conversation.history_rounds != 3:
-                raise AssertionError("环境变量没能覆盖 history_rounds")
+            conversation = get_settings().conversation
+            if conversation.history_rounds != 3 or conversation.history_max_chars != 800:
+                raise AssertionError(f"环境变量没能覆盖:{conversation}")
         finally:
             get_settings.cache_clear()
-    return "默认 conversations / 5，env 可覆盖"
+    return "默认 conversations / 5 / 不限;负数被拒;两个旋钮 env 都能覆盖"
 
 
 @check("配置：config.yaml 里确实写了 conversation 段（代码里有默认值 ≠ 配置文件里有）")
@@ -514,13 +534,21 @@ def _() -> str:
     from project_rag.config import CONFIG_FILE, get_settings
 
     text = CONFIG_FILE.read_text(encoding="utf-8")
-    missing = [key for key in ("conversation:", "table:", "history_rounds:") if key not in text]
+    missing = [
+        key
+        for key in ("conversation:", "table:", "history_rounds:", "history_max_chars:")
+        if key not in text
+    ]
     if missing:
         raise AssertionError(f"config/config.yaml 里缺 {missing}")
     settings = get_settings()
     if settings.conversation.table != "conversations":
         raise AssertionError(f"生效的表名是 {settings.conversation.table!r}")
-    return f"yaml 与生效值一致（{settings.conversation.table} / {settings.conversation.history_rounds} 轮）"
+    return (
+        f"yaml 与生效值一致（{settings.conversation.table} / "
+        f"{settings.conversation.history_rounds} 轮 / "
+        f"{settings.conversation.history_max_chars} 字符）"
+    )
 
 
 @check("组合根：Deps.conversation_store_factory 默认 None（惰性：不给就不造）")
@@ -595,15 +623,20 @@ def _() -> str:
     ) or not getattr(_session_type(), "__dataclass_params__").frozen:
         raise AssertionError("Session 应为 frozen dataclass")
     names = [field.name for field in dataclasses.fields(_session_type())]
-    if names != ["store", "session_id", "rounds"]:
-        raise AssertionError(f"字段应为 ['store','session_id','rounds']，实际 {names}")
+    if names != ["store", "session_id", "rounds", "max_chars"]:
+        raise AssertionError(
+            f"字段应为 ['store','session_id','rounds','max_chars']，实际 {names}"
+        )
     if dataclasses.fields(_session_type())[2].default != DEFAULT_ROUNDS:
         raise AssertionError("rounds 默认值应为 5（与配置默认一致）")
+    if dataclasses.fields(_session_type())[3].default != 0:
+        raise AssertionError("max_chars 默认值应为 0 = 不限（默认值取「代码一直以来的行为」）")
 
     store = FakeConversationStore()
     for kwargs, why in (
         ({"session_id": "  "}, "空白 session_id"),
         ({"session_id": SESSION_A, "rounds": 0}, "rounds=0"),
+        ({"session_id": SESSION_A, "max_chars": -1}, "max_chars=-1"),
     ):
         try:
             Session(store=store, **kwargs)
@@ -933,6 +966,79 @@ def _() -> str:
     if turn.answer != result.answer:
         raise AssertionError("记下来的应该是用户看到的那句话")
     return "拒答也进历史，内容与用户看到的一致"
+
+
+@check("滑动窗口：从最新往回装、装不下整轮丢、0 = 不限、最新一轮必留")
+def _() -> str:
+    """光按轮数限不住大小:一轮可以很长(用户贴文档来问、或模型答满 4096 token)。
+
+    5 轮 × 几千字 = 几十万字符的提示词,而那是**每一轮都要重发的输入 token**。
+    所以窗口要能按大小滑:从最新往回装,装不下的**整轮**丢掉(不截断半轮 ——
+    半个答案进提示词,模型会把断句当结论)。
+    """
+    from project_rag.application.answer_question import window_history
+
+    Turn = _require("project_rag.domain", ("ConversationTurn",)).ConversationTurn
+    # 每轮 4 字符(问 2 + 答 2),5 轮共 20 字符 —— 预算的算式要能手算复核
+    turns = tuple(Turn(question=f"问{i}", answer=f"答{i}") for i in range(1, 6))
+    size = 4
+
+    if window_history(turns, max_chars=0) != turns:
+        raise AssertionError("0 = 不限,要原样返回")
+    if window_history(turns, max_chars=1000) != turns:
+        raise AssertionError("预算够就该全带上")
+    if [turn.question for turn in window_history(turns, max_chars=3 * size)] != [
+        "问3",
+        "问4",
+        "问5",
+    ]:
+        raise AssertionError("正好装下 3 轮时该留下(判据是「超过才丢」,不是「达到就丢」)")
+    if [turn.question for turn in window_history(turns, max_chars=3 * size - 1)] != [
+        "问4",
+        "问5",
+    ]:
+        raise AssertionError("少 1 个字符就该丢掉最旧的那一轮(整轮丢,不是截断)")
+    if [turn.question for turn in window_history(turns, max_chars=size)] != ["问5"]:
+        raise AssertionError("只装得下 1 轮时给最新那一轮")
+    if [turn.question for turn in window_history(turns, max_chars=size - 1)] != ["问5"]:
+        raise AssertionError("最新一轮自己就超预算时也要留着 —— 窗口空了等于静默失忆")
+    if window_history(turns, max_chars=size * 5) != turns:
+        raise AssertionError("正好装下全部 5 轮时不该丢任何一轮")
+    if window_history((), max_chars=10) != ():
+        raise AssertionError("空历史给空")
+    return "最新往回装 / 整轮丢 / 边界 3×4 留 3 轮、11 留 2 轮 / 最新一轮必留"
+
+
+@check("滑动窗口接线：Session.max_chars 裁的是**进提示词的那一份**，库里仍是 5 轮")
+def _() -> str:
+    from project_rag.domain import ConversationTurn
+
+    long_answer = "长" * 100
+    turns = {
+        SESSION_A: [
+            ConversationTurn(question=f"问{i}", answer=long_answer) for i in range(1, 7)
+        ]
+    }
+    world = _World(0.2, turns=turns)
+    # 预算只够最新的 2 轮(每轮 101 字符)
+    world.ask(session=world.session(rounds=5, max_chars=250))
+    got = world.knowledge_history
+    if [turn.question for turn in got] != ["问5", "问6"]:
+        raise AssertionError(f"该只带最新 2 轮进提示词,实际 {[t.question for t in got]}")
+    if world.conversation.reads != [(SESSION_A, 5)]:
+        raise AssertionError(
+            f"存储那一段该按**轮数**取(库里留几轮是存储的口径),实际 {world.conversation.reads}"
+        )
+    if world.conversation.records[0][2] != 5:
+        raise AssertionError("写回时的 keep 该仍是轮数(预算不影响库里留几轮)")
+    # 不限大小(0)时,拿到的就是存储给的那 5 轮
+    world2 = _World(0.2, turns=turns)
+    world2.ask(session=world2.session(rounds=5, max_chars=0))
+    if [turn.question for turn in world2.knowledge_history] != ["问2", "问3", "问4", "问5", "问6"]:
+        raise AssertionError(
+            f"0 = 不限,该原样带 5 轮,实际 {[t.question for t in world2.knowledge_history]}"
+        )
+    return "预算 250 → 只带最新 2 轮进提示词;存储仍按 5 轮读、写回也是 5;0 = 不限"
 
 
 @check("轮数来自 Session.rounds，不是写死的 5（读和写用的是同一个值）")

@@ -181,14 +181,33 @@ class CacheConfig(BaseModel):
 
 
 class ConversationConfig(BaseModel):
-    """会话历史:表名与保留轮数。
+    """会话历史:表名、保留轮数、**整个历史块的字符预算**。
 
     轮数走配置,不在读、写两处各硬编码一个 5 —— 两边用的是同一个值,改一处两处都变。
     0 或负数由读侧拒绝(见 Session)。
+
+    **字符预算是第二道闸,也是"滑动窗口"里真正会滑的那一半**:只按轮数限的话,
+    一轮可以很长(用户贴一份文档来问、或模型答满 4096 个 token),5 轮就能把提示词撑到
+    几十万字符 —— 那是**真金白银的输入 token**(每一轮都要把它重发一遍),还可能顶穿
+    模型的上下文。所以:先按轮数取最近 N 轮,再从**最新**往回装进 ``history_max_chars``,
+    装不下的**整轮丢掉**(不截断半轮:半个答案进提示词比没有更糟),至少保留最新一轮。
+    ``0`` = 只按轮数(这个部署不限大小)。
+
+    **单位是字符,不是 token**:算 token 要装 provider 的分词器,而估出来的数会漂 ——
+    字符数是精确、可复核、换模型也不变的。想更省就在这里调小。
     """
 
     table: str = "conversations"
     history_rounds: int = 5
+    history_max_chars: int = 0
+
+    @field_validator("history_max_chars")
+    @classmethod
+    def _check_chars(cls, value: int) -> int:
+        """输入:字符预算。行为:不许为负(负预算会让历史永远为空,而那是"静默失忆")。输出:原值。"""
+        if value < 0:
+            raise ValueError(f"conversation.history_max_chars 不能为负(0 = 不限),收到 {value}")
+        return value
 
 
 class RateLimitConfig(BaseModel):

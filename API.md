@@ -36,7 +36,7 @@ uv run project-rag-api            # 绑 config.yaml 里的 0.0.0.0:18080（宿�
 启动顺序是「装日志 → 预热 → 起 uvicorn」，预热**失败不拦启动**（只记 warning，首个请求会自己补做）。
 uvicorn **只起一个 worker**：嵌入 / 重排是进程内单例，多 worker 会各加载一份、内存翻倍。
 
-其他相关配置：`conversation.history_rounds`（历史轮数，默认 5，读与写共用）、`faq.threshold` / `faq.min_query_coverage` / `faq.min_entry_coverage`（FAQ 命中口径：阈值 + 两个覆盖率门槛，默认 0.85 / 0.5 / 0.8）、`faq.min_question_tokens` / `faq.min_question_chars`（数据侧：什么样的「问题」才准进 `faq` 表，装载时校验；默认 2 个实词 或 8 个字，0 = 关）、
+其他相关配置：`conversation.history_rounds`（滑动窗口的**轮数**，默认 5，读与写共用）、`conversation.history_max_chars`（滑动窗口的**字符预算**，默认 0 = 不限；从最新往回装，装不下的整轮丢掉、至少留最新一轮 —— 只限轮数挡不住「一轮很长」：用户贴一份文档来问，5 轮就能把提示词撑到几十万字符，那是每一轮都要重发的输入 token）、`faq.threshold` / `faq.min_query_coverage` / `faq.min_entry_coverage`（FAQ 命中口径：阈值 + 两个覆盖率门槛，默认 0.85 / 0.5 / 0.8）、`faq.min_question_tokens` / `faq.min_question_chars`（数据侧：什么样的「问题」才准进 `faq` 表，装载时校验；默认 2 个实词 或 8 个字，0 = 关）、
 `rag.*`（检索旋钮）。配置优先级：**环境变量 > `.env` > `config/config.yaml`**，前缀 `RAG_`、嵌套用 `__`
 （例如 `RAG_API__PORT=9000`）。
 

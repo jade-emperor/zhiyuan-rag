@@ -1,6 +1,6 @@
 # CI：三件事，按"需要什么外部条件"分层
 #
-#   ① `contracts`  —— **零容器、零网络、零模型**：pyright + 20 套契约 + 20 份反向 runner。
+#   ① `contracts`  —— **零容器、零网络、零模型**：pyright + 20 套契约 + 21 份反向 runner。
 #                     分组依据是实测（scripts/acceptance/run_all.py 的 docstring 记了探测方法），
 #                     缺模型/语料的检查会 SKIP 并点名 owner，不是 FAIL。这一层是 required。
 #   ② `frontend`   —— 前端：typecheck + build + **断言产物与源码同源**（构建后 git diff 必须为空）。
@@ -52,7 +52,7 @@ jobs:
       - name: 类型检查
         run: uv run pyright src scripts
 
-      - name: 验收（ci 集合：20 套契约 + 20 份反向 runner）
+      - name: 验收（ci 集合：20 套契约 + 21 份反向 runner）
         run: uv run python scripts/acceptance/run_all.py --set ci
 
   frontend:

@@ -238,10 +238,13 @@ def _session(deps: Deps, session_id: str | None) -> Session | None:
     """输入:依赖 + 会话 ID。行为:给了 ID 就绑一个 Session。输出:Session;没给 ID 给 None。"""
     if not session_id:
         return None
+    conversation = get_settings().conversation
     return Session(
         store=_factory(deps, "conversation_store_factory"),
         session_id=session_id,
-        rounds=get_settings().conversation.history_rounds,
+        # 滑动窗口的两半:轮数(读写共用)+ 整个历史块的字符预算(只影响进提示词的那一份)
+        rounds=conversation.history_rounds,
+        max_chars=conversation.history_max_chars,
     )
 
 

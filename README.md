@@ -208,7 +208,8 @@ uv run project-rag faq  -q "mac电脑 打不开乌班图 虚拟机"     # 只走
 uv run project-rag rag  -q "装饰器有什么用？"               # 只走知识库通道：检索 + 生成 + [1][2] 引用
 uv run project-rag qa   -q "mac电脑 打不开乌班图 虚拟机"     # 合流：FAQ 优先 → 知识库兜底（日常用的就是它）
 uv run project-rag qa   -q "装饰器有什么用？"               # 同一入口，FAQ 未命中时走知识库
-uv run project-rag qa   -q "它有什么用？" --session u1       # 多轮：最近几轮历史进提示词，这一轮也记下来
+uv run project-rag qa   -q "它有什么用？" --session u1       # 多轮：滑动窗口(最近 N 轮且不超过
+                                                       #   字符预算)进提示词，这一轮也记下来
 uv run project-rag qa   -q "装饰器有什么用？" --stream       # 逐字流式打印（边生成边出）
 uv run project-rag search -q "装饰器" --route bm25           # 只跑关键字那一路（不加载嵌入模型，最快）
 uv run project-rag-api                                      # HTTP + WebSocket 服务（config.yaml 的 0.0.0.0:18080）

@@ -159,6 +159,7 @@ def run(args) -> int:
             store=deps.conversation_store_factory(),
             session_id=args.session,
             rounds=settings.conversation.history_rounds,
+            max_chars=settings.conversation.history_max_chars,
         )
         if args.session
         else None

@@ -32,32 +32,81 @@ _logger = get_logger("application.answer_question")
 
 @dataclass(frozen=True, slots=True)
 class Session:
-    """一次带会话的提问:历史存哪、是哪一段、读写几轮。
+    """一次带会话的提问:历史存哪、是哪一段、读写几轮、最多带多少字符。
 
     为什么绑成一个对象:光有一个 ``session_id``、没有 store 就没法读写;有 store
     却没有 id 则是半成品。绑起来之后,那种半成品在类型上就构造不出来,用例里也就
     不用再写「这两个参数必须同时给」的运行时检查。
+
+    ``rounds`` 与 ``max_chars`` 是滑动窗口的两半:前者限轮数(读与写共用),
+    后者限**整个历史块的大小**(只影响读进提示词的那一份,不影响库里留几轮)。
     """
 
     store: ConversationStore
     session_id: str
     rounds: int = 5
+    max_chars: int = 0
 
     def __post_init__(self) -> None:
         if not self.session_id.strip():
             raise ValueError("session_id 不能为空 —— 否则所有匿名提问会挤进同一段历史")
         if self.rounds <= 0:
             raise ValueError(f"rounds 必须为正数,收到 {self.rounds}")
+        if self.max_chars < 0:
+            raise ValueError(f"max_chars 不能为负(0 = 不限),收到 {self.max_chars}")
+
+
+def window_history(
+    history: Sequence[ConversationTurn], *, max_chars: int = 0
+) -> tuple[ConversationTurn, ...]:
+    """输入:历史轮次(时间正序)、整个历史块的字符预算(0 = 不限)。
+
+    行为:从**最新**一轮往回装,装不下的**整轮丢掉**。输出:仍然时间正序的那一段。
+
+    三条刻意的口径:
+
+    * **整轮丢,不截断半轮** —— 半个答案进了提示词,模型会把断句当结论(上下文里读不出
+      "这里被我剪了");而且提示词块是按轮渲染的,截断还会破坏 ``Q: … / A: …`` 的形状;
+    * **至少保留最新一轮**,哪怕它自己就超预算:窗口的作用是"给模型上一句上下文",
+      把它减成空等于静默失忆 —— 那种错在对话里表现为"答非所问",查起来极难;
+    * **预算按字符算**(问题 + 答案的字符数),不是 token:精确、可复核、换模型不变。
+    """
+    if max_chars <= 0 or not history:
+        return tuple(history)
+    kept: list[ConversationTurn] = []
+    used = 0
+    for turn in reversed(history):
+        size = len(turn.question) + len(turn.answer)
+        if kept and used + size > max_chars:
+            break
+        kept.append(turn)
+        used += size
+    kept.reverse()
+    return tuple(kept)
 
 
 def _history(session: Session | None) -> tuple[ConversationTurn, ...]:
-    """输入:会话(可为 None)。行为:读最近 rounds 轮。输出:时间正序的历史;无会话给空元组。
+    """输入:会话(可为 None)。行为:读最近 rounds 轮,再按字符预算滑一次窗口。输出:时间正序的历史。
 
     只有**要走知识库通道**时才调它 —— 命中 FAQ 那条分支不读历史。
+
+    **读是两段**:先让存储按 ``rounds`` 取(那是 SQL 那一层的窗口,也是库里保留的轮数),
+    再在用例层按 ``max_chars`` 从最新往回裁(那一层存储不该管:它是提示词的成本口径,
+    换个存储也成立)。裁掉了几轮要记一条日志 —— 否则"模型怎么忘了"只能靠猜。
     """
     if session is None:
         return ()
-    return tuple(session.store.recent(session.session_id, limit=session.rounds))
+    loaded = tuple(session.store.recent(session.session_id, limit=session.rounds))
+    kept = window_history(loaded, max_chars=session.max_chars)
+    if len(kept) < len(loaded):
+        _logger.info(
+            "历史按字符预算裁剪:%d 轮 → %d 轮(预算 %d 字符;丢掉最旧的 %d 轮)",
+            len(loaded),
+            len(kept),
+            session.max_chars,
+            len(loaded) - len(kept),
+        )
+    return kept
 
 
 def _record(session: Session | None, question: str, answer: str) -> None:
