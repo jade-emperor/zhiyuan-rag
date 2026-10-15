@@ -56,6 +56,7 @@ _FIELDS = (
     "cold",
     "builds",
     "faq_ms",
+    "rewrite_ms",
     "sources_ms",
     "retrieve_ms",
     "embed_ms",
@@ -83,6 +84,12 @@ _FIELDS = (
 _NONE = "-"
 # 吐字窗口的下限:短于它算出来的「速率」是噪声(几帧挤在同一毫秒里到手时的产物)
 _MIN_GEN_MS = 1.0
+
+# 这几个打点问的是「**检索**那一段花了多久」,所以开了查询改写之后,它们的起点是
+# **改写结束的时刻**,不是开账时刻:一次 LLM 改写能花掉一秒多,把它算进 `retrieve_ms`,
+# 这个数就再也回答不了"检索本身有没有变慢"。改写自己花了多久由 `rewrite_ms` 单独报。
+# 没改写时这些点压根不存在,起点自然还是开账时刻 —— 口径与以前逐字一致。
+_AFTER_REWRITE = ("embed", "retrieve")
 
 # ── 冷启动证据 ───────────────────────────────────────────────────────────────
 # 组合根里那四个 `@lru_cache` 重资源工厂(嵌入 / 重排 / 向量库 / BM25 索引)**每次真正构造**
@@ -140,6 +147,9 @@ class StreamTiming:
     打点用 ``mark(名字)``,名字是自由字符串,当前约定这几个:
 
     - ``"faq"``:FAQ 匹配那一段结束(合流入口的第一个动作);
+    - ``"rewrite"``:查询改写结束(知识库通道的第一个动作, **配了改写才有这个点**)。
+      它是 ``rewrite_ms`` 的定义,同时也是 ``embed``/``retrieve`` 两个点的起点(见
+      ``_AFTER_REWRITE``):那两格问的是"检索花了多久",不该把一次 LLM 改写算进去;
     - ``"sources"``:不用手动打 —— ``streaming.timed`` 收到 sources 帧时自动记;
     - ``"retrieve"``:整个检索返回(``stream_rag`` 里 ``retrieve()`` 的下一步);
     - ``"embed"`` / ``"vector"`` / ``"bm25"`` / ``"fuse"`` / ``"collapse"`` / ``"rerank"``:
@@ -329,9 +339,18 @@ class StreamTiming:
         return (time.perf_counter() - self.started) * 1000.0
 
     def _offset(self, name: str) -> float | None:
-        """输入:打点名。行为:算「从本段开始到该打点」。输出:毫秒;没打过给 None。"""
+        """输入:打点名。行为:算「从本段开始到该打点」。输出:毫秒;没打过给 None。
+
+        「本段开始」对 ``_AFTER_REWRITE`` 里那几个点是**改写结束的时刻**(理由见那个常量的注释);
+        其余字段一律从开账算起。
+        """
         at = self.marks.get(name)
-        return None if at is None else (at - self.started) * 1000.0
+        if at is None:
+            return None
+        origin = self.started
+        if name in _AFTER_REWRITE:
+            origin = self.marks.get("rewrite", origin)
+        return (at - origin) * 1000.0
 
     def _since(self, name: str, at: float | None) -> float | None:
         """输入:打点名 + 另一个时刻。行为:算两点之间的间隔。输出:毫秒;缺任一端给 None。"""
@@ -352,8 +371,10 @@ class StreamTiming:
 
         ``line()`` 与落表**共用这一份**:两处各渲染一次迟早会漂(日志里有、表里没有)。
 
-        每个字段的口径:``faq_ms``/``sources_ms``/``retrieve_ms``/``embed_ms`` 是**从本段开始**
+        每个字段的口径:``faq_ms``/``rewrite_ms``/``sources_ms``/``retrieve_ms``/``embed_ms`` 是**从本段开始**
         到该打点(``retrieve_ms`` 是检索总时长;``embed_ms`` 是检索的第一件事,所以累计=本段时长);
+        ``embed_ms``/``retrieve_ms`` 有一个例外:开了查询改写时它们从**改写结束**算起
+        (见 ``_AFTER_REWRITE``),``rewrite_ms`` 单独报改写那段;
         ``vector_ms``/``bm25_ms``/``fuse_ms``/``collapse_ms``/``rerank_ms`` 是**相邻两个打点之差**
         (段耗时,六段之和 ≈ ``retrieve_ms``);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
         ``llm_ttft_ms`` 是 ``llm_start`` 到第一帧 token;``think_tokens``/``tokens`` 是帧数;
@@ -371,6 +392,8 @@ class StreamTiming:
             "cold": _flag(self.cold),
             "builds": str(self.builds),
             "faq_ms": _ms(self._offset("faq")),
+            # 改写耗时 = 开账 → 改写结束(它是知识库通道里的第一件事)。没开改写就是 '-'
+            "rewrite_ms": _ms(self._offset("rewrite")),
             "sources_ms": _ms(self._offset("sources")),
             "retrieve_ms": _ms(self._offset("retrieve")),
             "embed_ms": _ms(self._offset("embed")),

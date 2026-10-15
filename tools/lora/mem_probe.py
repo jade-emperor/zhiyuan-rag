@@ -9,11 +9,6 @@
 2. **理论账**（``param_ledger``）：从 ``model.named_parameters()`` 按板块汇总参数量，
    再按 dtype 折算字节 —— 权重、梯度、AdamW 两阶状态各占多少，用来解释实测数字，
    也能在没有 CUDA 的机器上给出可预期的量级。
-
-⚠️ **本机/沙箱的 GPU 可见性**：agent 的 shell 挂的是私有 ``/dev``，``torch.cuda.is_available()``
-会返回 False —— 那是视角问题，不是机器没有 GPU（见仓库根 ``AGENTS.md``）。本模块在没有 CUDA 时
-自动降级成「RSS + 理论账」，并在报告首行明确标注，绝不把"我看不到"写成"不存在"。
-要看真实 GPU 数字：在容器里跑（``docker run --gpus all``），或直接在宿主终端跑。
 """
 
 from __future__ import annotations
@@ -23,7 +18,7 @@ import json
 import os
 import resource
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import torch
@@ -136,7 +131,9 @@ class MemProbe:
             device_used_mb=used,
             device_total_mb=total,
             rss_mb=_rss_mb(),
-            delta_allocated_mb=(allocated - self._last_alloc) if allocated == allocated else float("nan"),
+            delta_allocated_mb=(allocated - self._last_alloc)
+            if allocated == allocated
+            else float("nan"),
             t=time.perf_counter() - self._t0,
         )
         if allocated == allocated:
@@ -160,15 +157,23 @@ class MemProbe:
             for snap in self.snapshots:
                 lines.append(snap.as_row(cuda=True))
         else:
-            lines.append("  ⚠️ 本进程看不到 CUDA（沙箱私有 /dev，见 AGENTS.md）—— 下面只有进程 RSS，")
-            lines.append("     它 ≠ 显存；要看真实显存请在容器里跑：docker run --rm --gpus all ...")
+            lines.append(
+                "  ⚠️ 本进程看不到 CUDA（沙箱私有 /dev，见 AGENTS.md）—— 下面只有进程 RSS，"
+            )
+            lines.append(
+                "     它 ≠ 显存；要看真实显存请在容器里跑：docker run --rm --gpus all ..."
+            )
             lines.append(f"  {'板块':<28s} {'进程RSS_MB':>12s} {'ΔRSS_MB':>10s}")
             previous = 0.0
             for snap in self.snapshots:
-                lines.append(f"{snap.as_row(cuda=False)}{snap.rss_mb - previous:>+10.1f}")
+                lines.append(
+                    f"{snap.as_row(cuda=False)}{snap.rss_mb - previous:>+10.1f}"
+                )
                 previous = snap.rss_mb
         if self.marks:
-            lines.append("  元信息: " + json.dumps(self.marks, ensure_ascii=False, default=str))
+            lines.append(
+                "  元信息: " + json.dumps(self.marks, ensure_ascii=False, default=str)
+            )
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -195,6 +200,7 @@ class MemProbe:
 # ---------------------------------------------------------------------------
 # 理论账本：参数量 → 字节数
 # ---------------------------------------------------------------------------
+
 
 def _group_of(name: str) -> str:
     """输入:参数名。行为:按命名归到板块。输出:板块名。"""
@@ -238,7 +244,9 @@ def param_ledger(model: torch.nn.Module) -> dict[str, Any]:
         "trainable_params": int(trainable),
         "trainable_ratio": (trainable / total) if total else 0.0,
         "weights_only_mb": sum(s["weights_mb"] for s in groups.values()),
-        "peak_train_mb_theoretical": sum(s["weights_mb"] + s["train_mb"] for s in groups.values()),
+        "peak_train_mb_theoretical": sum(
+            s["weights_mb"] + s["train_mb"] for s in groups.values()
+        ),
         "full_finetune_mb_theoretical": total * 16 / MB,
     }
 
@@ -270,11 +278,15 @@ def ledger_table(ledger: dict[str, Any], mode: str = "train") -> str:
             f"  推理**不需要**梯度与 AdamW 状态：权重 {ledger['weights_only_mb']:.0f} MB 就是全部；"
             f"同一模型若做全参微调训练要 ≈ {ledger['full_finetune_mb_theoretical']:.0f} MB"
         )
-    lines.append("  注：**激活**不在这张表里（随 batch×seq 走），实测看上一张表的「前向激活」行。")
+    lines.append(
+        "  注：**激活**不在这张表里（随 batch×seq 走），实测看上一张表的「前向激活」行。"
+    )
     return "\n".join(lines)
 
 
-def activation_formula(batch_size: int, seq_len: int, hidden: int, layers: int, dtype_bytes: int = 2) -> str:
+def activation_formula(
+    batch_size: int, seq_len: int, hidden: int, layers: int, dtype_bytes: int = 2
+) -> str:
     """输入:训练形状。行为:给出激活量级的估算式（不精确，用来判断趋势）。输出:str。"""
     per_layer = batch_size * seq_len * hidden * dtype_bytes
     return (
@@ -308,7 +320,9 @@ class MemProbeCallback(TrainerCallback):
       * ``on_save``      ：保存 checkpoint 的瞬时峰值（``state_dict`` 会额外复制一份权重）
     """
 
-    def __init__(self, probe: MemProbe, log_every: int = 20, keep_steps: int = 40) -> None:
+    def __init__(
+        self, probe: MemProbe, log_every: int = 20, keep_steps: int = 40
+    ) -> None:
         self.probe = probe
         self.log_every = max(1, log_every)
         self.keep_steps = keep_steps
@@ -333,7 +347,9 @@ class MemProbeCallback(TrainerCallback):
         self.probe.snap("优化器状态就绪")
         self.probe.note("train_batch_size", args.per_device_train_batch_size)
         self.probe.note("grad_accum", args.gradient_accumulation_steps)
-        self.probe.note("amp", "bf16" if args.bf16 else ("fp16" if args.fp16 else "fp32"))
+        self.probe.note(
+            "amp", "bf16" if args.bf16 else ("fp16" if args.fp16 else "fp32")
+        )
         self.probe.note("optim", args.optim)
         return control
 
@@ -359,14 +375,19 @@ class MemProbeCallback(TrainerCallback):
         return control
 
     def _finalize(self) -> None:
-        if self._finalized or not self.step_samples:
-            self._finalized = True
+        if self._finalized:
             return
-        alloc = [s["allocated_mb"] for s in self.step_samples]
-        peak = [s["peak_mb"] for s in self.step_samples]
-        self.probe.note("步内均值(allocated_mb)", round(sum(alloc) / len(alloc), 1))
-        self.probe.note("步内最大值(allocated_mb)", round(max(alloc), 1))
-        self.probe.note("全程峰值(peak_mb)", round(max(peak), 1))
+        # ⚠️ 「全程峰值」必须取**全部打点**里的最大 peak，而不是前 keep_steps 个采样的最大值 ——
+        # 后者只覆盖前面几十步，会把全程峰值记小（本仓库真踩过：记成 1045.8，实际 1086.5，
+        # 与最终快照对不上，是报告数字回查时才发现的）。
+        peaks = [s.peak_mb for s in self.probe.snapshots if s.peak_mb == s.peak_mb]
+        if peaks:
+            self.probe.note("全程峰值(peak_mb)", round(max(peaks), 1))
+        if self.step_samples:
+            alloc = [s["allocated_mb"] for s in self.step_samples]
+            tag = f"前 {len(alloc)} 个采样步"
+            self.probe.note(f"步内均值({tag},allocated_mb)", round(sum(alloc) / len(alloc), 1))
+            self.probe.note(f"步内最大值({tag},allocated_mb)", round(max(alloc), 1))
         self._finalized = True
 
 
@@ -405,7 +426,12 @@ class ActivationHook:
             self._handle = None
 
 
-def save_report(probe: MemProbe, ledger: dict[str, Any] | None, path: str, extra: dict[str, Any] | None = None) -> None:
+def save_report(
+    probe: MemProbe,
+    ledger: dict[str, Any] | None,
+    path: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
     """输入:探针/账本/路径。行为:把显存报告落成 json + 追加可读文本。输出:无。"""
     payload = {"mem": probe.to_dict(), "ledger": ledger, "extra": extra or {}}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

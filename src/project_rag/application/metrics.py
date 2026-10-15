@@ -26,6 +26,9 @@ from dataclasses import dataclass
 # 默认统计哪些分段(顺序 = 报表里的顺序)。名字必须与账本字段一一对应。
 DEFAULT_SEGMENTS = (
     "faq_ms",
+    # 查询改写那段(有改写时才有值)。它和 retrieve_ms 是**并列**的两段:
+    # 开了改写之后 retrieve_ms 从改写结束算起,所以这两格相加才是"检索前 + 检索"。
+    "rewrite_ms",
     "sources_ms",
     "retrieve_ms",
     "embed_ms",

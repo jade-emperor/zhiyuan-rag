@@ -37,12 +37,24 @@ from .models import (
     SparseVector,
 )
 from .pages import PageSpans, page_of
+from .rewrite import (
+    NUM_STRATEGIES,
+    STRATEGIES,
+    STRATEGY_NAMES,
+    QueryRewrite,
+    RewriteStrategy,
+    StrategyPrediction,
+    direct_rewrite,
+    label_of,
+    strategy_of,
+)
 from .sessions import TITLE_CHARS, SessionSummary, session_title
 
 __all__ = [
     "DOC_STATES",
     "DOC_STATUSES",
     "FUSION_MODES",
+    "NUM_STRATEGIES",
     "STATE_IN_FLIGHT",
     "STATE_MISMATCHES",
     "STATE_OK",
@@ -71,14 +83,22 @@ __all__ = [
     "PageSpans",
     "QaAnswer",
     "QaEvent",
+    "QueryRewrite",
     "RETRIEVAL_MODES",
     "RagAnswer",
     "RetrievalMode",
     "RetrievalOptions",
     "RetrievedChunk",
+    "RewriteStrategy",
     "Role",
+    "STRATEGIES",
+    "STRATEGY_NAMES",
     "SessionSummary",
     "SparseVector",
+    "StrategyPrediction",
+    "direct_rewrite",
+    "label_of",
     "page_of",
     "session_title",
+    "strategy_of",
 ]

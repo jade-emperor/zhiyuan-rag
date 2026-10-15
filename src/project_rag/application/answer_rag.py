@@ -22,6 +22,11 @@
 
 5. **引用跟着答案一起返回**:``[1][2]`` 是给人核对用的;``routes`` 还告诉你
    这一条是单路捞到的还是两路都捞到了 —— 两路都命中通常更可信。
+6. **改写只发生在检索这一侧**(``rewriter``,默认 None = 不改写):它把用户原话规划成
+   一组检索语句(直接检索 / 假设答案 / 子查询分解 / 去噪改写),但**回答的仍然是原话**。
+   合流通道里这段天然落在「FAQ 未命中 → 向量检索」之间 —— FAQ 命中时压根走不到这里。
+   改写失败一律退回原话(见 ``application/query_rewrite.py``):它是锦上添花,
+   不该成为「答不出来」的新原因。
 """
 
 from __future__ import annotations
@@ -40,7 +45,14 @@ from project_rag.domain import (
     RetrievedChunk,
 )
 from project_rag.observability import StreamTiming, get_logger
-from project_rag.ports import Embedder, KeywordIndex, LLMClient, Reranker, VectorStore
+from project_rag.ports import (
+    Embedder,
+    KeywordIndex,
+    LLMClient,
+    QueryRewriter,
+    Reranker,
+    VectorStore,
+)
 
 # 同包用相对导入:项目的分层扫描规则把「绝对导入 project_rag.application.*」
 # 当成跨层依赖拦下来(它只看模块前缀),相对导入才表达得出「同一个包内」
@@ -169,36 +181,28 @@ def _noop(name: str) -> None:
     return None
 
 
-def retrieve(
+def _gather(
     query: str,
     *,
     embedder: Embedder,
     store: VectorStore,
-    keyword_index: KeywordIndex | None = None,
-    reranker: Reranker | None = None,
-    options: RetrievalOptions | None = None,
-    timing: StreamTiming | None = None,
+    keyword_index: KeywordIndex | None,
+    options: RetrievalOptions,
+    mark: Callable[[str], None],
 ) -> tuple[Citation, ...]:
-    """输入:问题 + 向量库 + 可选的关键字索引 + 可选的重排器 + 检索旋钮 + 可选计时账本。
+    """输入:一句检索语句 + 端口 + 旋钮 + 打点函数。
 
-    行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重排(给了重排器才做)
-          → 截断到 max_context。
-    输出:引用序列;没检索到给空序列。
+    行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重新编号。
+    输出:引用序列(已折叠,**未重排、未截断**);没检索到给空序列。
 
     **权重 ≤ 0 的那一路不跑**(连检索都不做,不只是融合时跳过)。两个权重同时 ≤ 0 时
     结果是空序列 —— 而"什么都没检索"与"检索了但没命中"在这一层看不出区别,
     所以这种组合要由**边界**拦住(HTTP 出参层直接 422)。
 
-    **重排开不开由「有没有传重排器」表达**,不另设开关 —— 和 ``keyword_index=None``
-    表示「没有 BM25 那一路」是同一个道理。两处都能表达就有两个真值来源:
-    options 说不要重排、却又传了重排器时,谁赢?
-
-    ``timing`` 给了就在六处打点(嵌入 / 向量检索 / 关键字 / 融合 / 折叠 / 重排):
-    「检索一共 1.8 秒」是一回事,「这 1.8 秒花在哪」是另一回事 —— 没有分段就只能猜。
-    不给就空转(验收与脚本常常不需要账本)。
+    **为什么从 ``retrieve`` 里拆出来**:「子查询分解」把一句话拆成几句各检索一遍,
+    那几句必须**各自召回、合并之后再统一重排**。重排塞在循环里的话每句各截断一次,
+    合并时已经没有候选可挑了 —— 而重排的全部意义就是"在全部候选里挑"。
     """
-    options = options or RetrievalOptions()
-    mark = timing.mark if timing is not None else _noop
 
     # 可见范围(见 application/access.py):被禁止的文档**不许出现在任何一条路上**。
     # 过滤放在这里(两路结果汇齐之后、融合之前)而不是各家适配器里,是因为"谁能看什么"
@@ -258,16 +262,157 @@ def retrieve(
     )
     collapsed = collapse_parents(citations)
     mark("collapse")
+    return collapsed
+
+
+def _finish(
+    rerank_query: str,
+    citations: tuple[Citation, ...],
+    *,
+    reranker: Reranker | None,
+    options: RetrievalOptions,
+    mark: Callable[[str], None],
+) -> tuple[Citation, ...]:
+    """输入:重排用的那句原话 + 候选 + 重排器 + 旋钮 + 打点函数。
+
+    行为:重排(给了重排器才做) → 截断到 ``max_context``。
+    输出:最终引用序列。
+
+    **重排开不开由「有没有传重排器」表达**,不另设开关 —— 和 ``keyword_index=None``
+    表示「没有 BM25 那一路」是同一个道理。两处都能表达就有两个真值来源:
+    options 说不要重排、却又传了重排器时,谁赢?
+    """
     if reranker is not None:
-        collapsed = rerank_citations(
-            query, collapsed, reranker=reranker, rerank_input=options.rerank_input
+        citations = rerank_citations(
+            rerank_query, citations, reranker=reranker, rerank_input=options.rerank_input
         )
         # 只在真装了重排器时打点:没装的时候这一格留 '-' 而不是 0.0 ——
         # 「没做」和「很快」在排查时是两件事
         mark("rerank")
-    if options.max_context is not None and len(collapsed) > options.max_context:
-        collapsed = _renumber(collapsed[: options.max_context])
-    return collapsed
+    if options.max_context is not None and len(citations) > options.max_context:
+        citations = _renumber(citations[: options.max_context])
+    return citations
+
+
+def retrieve(
+    query: str,
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    keyword_index: KeywordIndex | None = None,
+    reranker: Reranker | None = None,
+    options: RetrievalOptions | None = None,
+    timing: StreamTiming | None = None,
+) -> tuple[Citation, ...]:
+    """输入:问题 + 向量库 + 可选的关键字索引 + 可选的重排器 + 检索旋钮 + 可选计时账本。
+
+    行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重排(给了重排器才做)
+          → 截断到 max_context。
+    输出:引用序列;没检索到给空序列。
+
+    ``timing`` 给了就在六处打点(嵌入 / 向量检索 / 关键字 / 融合 / 折叠 / 重排):
+    「检索一共 1.8 秒」是一回事,「这 1.8 秒花在哪」是另一回事 —— 没有分段就只能猜。
+    不给就空转(验收与脚本常常不需要账本)。
+
+    这是**单句检索**的入口。开了查询改写之后,真正被调的是 ``retrieve_many``
+    (它可能带回来好几句);``retrieve_many([q])`` 与 ``retrieve(q)`` 逐字等价。
+    """
+    options = options or RetrievalOptions()
+    mark = timing.mark if timing is not None else _noop
+    citations = _gather(
+        query,
+        embedder=embedder,
+        store=store,
+        keyword_index=keyword_index,
+        options=options,
+        mark=mark,
+    )
+    return _finish(query, citations, reranker=reranker, options=options, mark=mark)
+
+
+def retrieve_many(
+    queries: Sequence[str],
+    *,
+    embedder: Embedder,
+    store: VectorStore,
+    keyword_index: KeywordIndex | None = None,
+    reranker: Reranker | None = None,
+    options: RetrievalOptions | None = None,
+    timing: StreamTiming | None = None,
+    rerank_query: str | None = None,
+) -> tuple[Citation, ...]:
+    """输入:一句或多句检索语句 + 端口 + 旋钮 + 可选账本 + 可选的重排用原话。
+
+    行为:每句各跑一遍召回→融合→折叠 → 按 ``chunk_id`` 合并(同一条留最高分)→
+          用 ``rerank_query``(默认第一句)重排一次 → 截断。
+    输出:引用序列;全都召不到给空序列。
+
+    ``retrieve_many([q])`` 与 ``retrieve(q)`` **逐字等价**(两句走的是同一对
+    ``_gather``/``_finish``,不是"看起来差不多"的两段实现)—— 这条恒等式是刻意的:
+    开不开改写,不该改变"这一句检索本来会召回什么"。
+
+    **合并为什么按 chunk_id 取最大分,而不是把这 N 句当成 N 路做 RRF**:
+    「子查询分解」拆出来的 N 句是**不同的问题**,各自的融合分不在一个量纲上
+    (第二句问的是另一个子话题,它的第 1 名未必比第一句的第 3 名更相关)。
+    真正的可比性由**重排**给:``rerank_query`` 传的是**用户原话**,所有候选在同一把
+    尺子下重排一次 —— 于是排序既照顾了"各子问题都召回到",又回到"用户到底问了什么"。
+    合并只负责去重(N 句常常都召回到同一条,留两条会让同一个父块在上下文里出现两遍)。
+
+    **代价说清楚**:没装重排器时最终顺序就是"各句分数直接比大小",那是近似的。
+    日志里记了这次是几句召回,排查时对得上。
+
+    **六段子打点仍只记第一句**(``mark`` 只认第一次到达):所以 N>1 时它们不再与
+    ``retrieve_ms`` 相加相等。这是刻意的 —— "第一句花在哪"比"N 句的平均"更能解释问题,
+    而"这次是 N 句"在日志里有。
+    """
+    cleaned = [one for one in (queries or ()) if one and one.strip()]
+    if not cleaned:
+        # 空 = 没有可检索的句子。这里**不猜**(不拿原话顶上):调用方给的是一组检索语句,
+        # 它给了空表就是它那边出了问题,猜一句去检索只会把问题埋起来。
+        return ()
+    options = options or RetrievalOptions()
+    mark = timing.mark if timing is not None else _noop
+
+    best: dict[str, Citation] = {}
+    for one in cleaned:
+        for citation in _gather(
+            one,
+            embedder=embedder,
+            store=store,
+            keyword_index=keyword_index,
+            options=options,
+            mark=mark,
+        ):
+            current = best.get(citation.chunk.chunk_id)
+            if current is None:
+                best[citation.chunk.chunk_id] = citation
+                continue
+            best[citation.chunk.chunk_id] = Citation(
+                index=0,
+                chunk=citation.chunk,
+                score=max(current.score, citation.score),
+                # routes 取并集:哪几句捞到了它是条线索(和"两路都命中"同一个用法)
+                routes=tuple(dict.fromkeys(current.routes + citation.routes)),
+                rerank_score=current.rerank_score or citation.rerank_score,
+            )
+    # 同分按 chunk_id 兜底:顺序稳定,验收才写得死断言(与 rerank_citations 同一套)
+    merged = _renumber(
+        sorted(best.values(), key=lambda item: (-item.score, item.chunk.chunk_id))
+    )
+    if len(cleaned) > 1:
+        _logger.info(
+            "多句检索:%d 句 → 去重后 %d 条候选(%s)",
+            len(cleaned),
+            len(merged),
+            " | ".join(cleaned),
+        )
+    return _finish(
+        rerank_query or cleaned[0],
+        merged,
+        reranker=reranker,
+        options=options,
+        mark=mark,
+    )
 
 
 def stream_rag(
@@ -281,6 +426,7 @@ def stream_rag(
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
     thinking: str | None = None,
+    rewriter: QueryRewriter | None = None,
 ) -> Iterator[QaEvent]:
     """输入/输出同 ``_rag_frames``,额外做一件事:**计时并记一条 latency 日志**。
 
@@ -291,6 +437,10 @@ def stream_rag(
     ``thinking`` 是**给日志用的静态标签**(配置里的档位,组合根从 config 读出来交进来):
     用例层不认识 config,账本更不认识 —— 账本只负责渲染。默认 None → 账里是 ``-``,
     于是注入式调用(验收、直调)不会被编一个假档位出来。
+
+    ``rewriter`` = 查询改写端口,**默认 None = 不改写**。合流通道里它只会在这条路上
+    被用到(FAQ 命中时压根不会走到 ``stream_rag``),所以「FAQ 未命中 → 改写 →
+    向量检索」这个顺序是**结构上**成立的,不靠调用方记得先调改写。
     """
     timing = StreamTiming(label="rag", channel="rag", thinking=thinking)
     yield from timed(
@@ -304,6 +454,7 @@ def stream_rag(
             options=options,
             history=history,
             timing=timing,
+            rewriter=rewriter,
         ),
         timing,
     )
@@ -320,11 +471,13 @@ def _rag_frames(
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
     timing: StreamTiming,
+    rewriter: QueryRewriter | None = None,
 ) -> Iterator[QaEvent]:
-    """输入:问题 + 四个端口 + 可选的关键字索引/重排器 + 检索旋钮 + 可选的历史轮次 + 计时账本。
+    """输入:问题 + 四个端口 + 可选的关键字索引/重排器 + 检索旋钮 + 可选的历史轮次 + 计时账本
+    + 可选的查询改写端口。
 
-    行为:检索并还原父块 → 有资料就先发一帧 sources(前端可以先渲染来源),再逐帧发 token;
-          没资料就直接把拒答话术当一帧 token 发出去(答案一律走 token 帧,见下)。
+    行为:改写(配了才做)→ 检索并还原父块 → 有资料就先发一帧 sources(前端可以先渲染来源),
+          再逐帧发 token;没资料就直接把拒答话术当一帧 token 发出去(答案一律走 token 帧,见下)。
     输出:帧序列,**恰好一帧 done 收尾**,它带答案、证据链与结束状态。
 
     帧协议在 ``application/streaming.py``;两条要记住的:
@@ -334,18 +487,44 @@ def _rag_frames(
 
     历史只进提示词、不参与检索:它不该改变召回什么,只该改变「怎么读这个问题」。
 
+    **改写只改"拿什么去检索",不改"回答的是哪个问题"**:生成答案用的仍然是
+    ``query``(用户原话)。拿假设答案的正文去当 prompt 里的「问题」,模型会开始回答那个
+    假设答案 —— 用户看到的就成了"自问自答",而且看不出哪里不对。
+
     **这是内部的帧生产者**:公开入口是 ``stream_rag``(它多包了一层计时与日志)。
-    这里只多做一件事 —— 把账本往 ``retrieve()`` 里带(那里面有六段子打点),
-    并在检索返回、准备调 provider 两处收口(TTFT 的两个分解项)。
+    这里只多做两件事 —— 在检索之前把 query 规划成一组检索语句,并把账本往
+    ``retrieve_many()`` 里带(那里面有六段子打点),再在检索返回、准备调 provider
+    两处收口(TTFT 的两个分解项)。
     """
-    citations = retrieve(
-        query,
+    queries: tuple[str, ...] = (query,)
+    if rewriter is not None:
+        plan = rewriter.rewrite(query)
+        # 端口约定 queries 永不为空;真拿到空表是适配器违约,这里兜最后一道 ——
+        # 空表一路传下去就是"召回到空 → 拒答",而那看着像"知识库里没有"
+        queries = plan.queries or (query,)
+        # 打点在**改写结束之后**:``rewrite_ms`` 因此是"改写了多久"。
+        # 检索那几段(embed/retrieve)以这个点为起点,免得一次 LLM 改写的耗时
+        # 混进"检索花了多久"里(见 observability/latency.py 的 _AFTER_REWRITE)。
+        timing.mark("rewrite")
+        _logger.info(
+            "查询改写[%s/%s]%s:%s → %s",
+            plan.strategy,
+            plan.decided_by,
+            plan.note or "ok",
+            query,
+            " | ".join(queries),
+        )
+    citations = retrieve_many(
+        queries,
         embedder=embedder,
         store=store,
         keyword_index=keyword_index,
         reranker=reranker,
         options=options,
         timing=timing,
+        # 重排用**用户原话**:所有候选在同一把尺子下比一次,答案里 [1][2] 的顺序
+        # 才对应得到"哪条更答得上用户问的那件事"
+        rerank_query=query,
     )
     timing.mark("retrieve")
     if not citations:
@@ -414,6 +593,7 @@ def answer_rag(
     options: RetrievalOptions | None = None,
     history: Sequence[ConversationTurn] = (),
     thinking: str | None = None,
+    rewriter: QueryRewriter | None = None,
 ) -> RagAnswer:
     """输入/输出同 ``stream_rag``,只是把流**收拢**成一句答案。
 
@@ -431,6 +611,7 @@ def answer_rag(
             options=options,
             history=history,
             thinking=thinking,
+            rewriter=rewriter,
         )
     )
     return RagAnswer(

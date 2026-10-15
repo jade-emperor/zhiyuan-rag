@@ -385,6 +385,40 @@ ingest（一次性）:  文档 → 按标题切父块 → 父块切子块 → BG
 正文，引用清单上的分数才能逐字核对）；结束原因（`finish_reason`）一路透传到用户 ——
 半截答案**照原样返回但会提示「被截断」**，不悄悄换成拒答话术。
 
+### 查询改写：FAQ 未命中之后、向量检索之前那一步（默认关）
+
+`qa` 在 FAQ 未命中、转知识库**之前**可以插一步**查询改写**：先用微调过的 4 分类器
+（`chinese-roberta-wwm-ext` + LoRA，见 `tools/lora/`）判断这句话属于哪一类，
+再按那一类把用户原话变成**真正拿去检索的句子**：
+
+| 标签 | 策略 | 什么时候用 | 检索什么 |
+|---|---|---|---|
+| 0 | 直接检索 | 问题标准、术语明确 | 原话，**一个字都不改**（这一类不调模型） |
+| 1 | 假设答案 | 问题空泛、缺可检索的实体 | 先编一段假设答案（HyDE），拿它去检索 |
+| 2 | 子查询分解 | 一句话里塞了两个独立问题 | 拆成 2~3 个子问题，**各检索一遍再合并** |
+| 3 | 去噪改写 | 混了寒暄/情绪/元指令 | 去掉噪声后的干净语句 |
+
+```bash
+# 先看它会把一句话判成哪一类、改写成什么（不检索、不生成，只跑这一步）
+project-rag rewrite -q "我是刚转行的特别焦虑，麻烦详细说，Python的GIL是什么？"
+#   → denoise（去噪改写）0.9935  →  "Python的GIL是什么"
+
+# 真正打开它：config.yaml 里 rewrite.enabled: true（要 multi-agent 的 key 与适配器目录）
+```
+
+三条刻意的设计：
+
+1. **默认关**。除"直接检索"外每一类都要**多花一次 LLM 调用**，收益取决于语料 ——
+   它是消融开关，与 `rag.rerank` 同一套规矩，开之前先在评估集上量一次。
+2. **改写只改检索，不改回答**。生成答案用的仍然是用户原话：拿假设答案的正文当
+   prompt 里的「问题」，模型会开始回答那个假设答案，用户看到的是自问自答。
+3. **失败一律退回原话**。分类器权重不在版本库里（换台机器就可能没有）、模型可能不吐
+   json —— 这些的正确表现是"原样检索 + 日志里留原因"，而不是让一次问答挂掉。
+   空 `queries` 尤其危险：那会让检索召空、伪装成「知识库里没有」。
+
+改写耗时在账上单独一格 `rewrite_ms`，且它之后的 `embed_ms`/`retrieve_ms`
+**从改写结束算起** —— 否则一次 LLM 改写的耗时会被算进"检索花了多久"，那个数就废了。
+
 ### 索引与关键字那一路：两个旋钮
 
 **稠密索引**（`milvus.index.type`）在 `FLAT`（暴力精确）与 `IVF_FLAT`（分簇近似）之间选。
@@ -479,7 +513,7 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 
 ```bash
 grep -h " | latency " logs/app.log | tail -20
-# label=rag channel=rag thinking=off faq_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4 \
+# label=rag channel=rag thinking=off faq_ms=- rewrite_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4 \
 #   vector_ms=112.8 bm25_ms=1095.5 fuse_ms=0.0 collapse_ms=0.0 rerank_ms=4923.6 \
 #   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 ttft_ms=6731.2 tokens=54 gen_ms=345.4 \
 #   tps=156.4 total_ms=7077.9 refused=false truncated=false aborted=false
@@ -555,7 +589,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
   「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
 - 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 26 套契约 + 17 份反向 runner，
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 29 套契约 + 21 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---

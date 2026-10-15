@@ -591,7 +591,7 @@ curl -s -X PUT … -d '{"user_ids": [], "group_ids": []}'
 
 ```bash
 grep -h " | latency " logs/app.log | tail -5
-# label=rag channel=rag request_id=97269b3ba505 thinking=off cold=false builds=0 faq_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4
+# label=rag channel=rag request_id=97269b3ba505 thinking=off cold=false builds=0 faq_ms=- rewrite_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4
 #   vector_ms=112.8 bm25_ms=1095.5 fuse_ms=0.0 collapse_ms=0.0 rerank_ms=4923.6
 #   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 llm_model=deepseek-flash llm_input_tokens=1980
 #   llm_cached_input_tokens=1200 llm_output_tokens=54 ttft_ms=6731.2 tokens=54 gen_ms=345.4

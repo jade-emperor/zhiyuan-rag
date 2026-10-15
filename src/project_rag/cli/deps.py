@@ -30,6 +30,7 @@ from project_rag.ports import (
     FaqStore,
     LedgerStore,
     LLMClient,
+    QueryRewriter,
     RateLimiter,
     Reranker,
     SessionCatalog,
@@ -178,6 +179,13 @@ class Deps:
     # "不注入就不造"。`build_real_deps` 永远接上(Redis 那一份),
     # 只有显式注入的验收/本机才可能是 None;契约里有一条盯着这件事。
     rate_limiter_factory: Callable[[], RateLimiter] | None = None
+    # 查询改写(FAQ 未命中 → 向量检索之间那一步)。默认 None = **不改写** ——
+    # 与 rate_limiter_factory 同一条口径,但这里的默认是**真的默认**:
+    # `build_real_deps` 只在 `rewrite.enabled=true` 时才接上,因为这一步要多花
+    # 一次 LLM 调用(见 config.RewriteConfig)。启用了但装配不起来时**不返回 None**,
+    # 而是返回一个"原样检索"的实现 —— 那种情况下服务的可用性不变,只是改写没生效,
+    # 所以必须在日志里喊一声(见 `_query_rewriter`)。
+    query_rewriter_factory: Callable[[], QueryRewriter] | None = None
 
 
 def build_real_deps() -> Deps:
@@ -275,6 +283,37 @@ def build_real_deps() -> Deps:
             settings.cache.corpus_fp_ttl_s,
         )
 
+    @lru_cache(maxsize=1)
+    def _strategy_classifier():
+        """查询改写的判定器。**进程级单例**:它抱着一份 BERT 权重(几百兆)。
+
+        ``note_build`` 记在这里而不是适配器里:冷启动账本的调用方全是组合根
+        (与嵌入 / 重排 / 向量库那三个同一套做法),适配器不该认识可观测层。
+        """
+        from project_rag.adapters.strategy_lora import LoraStrategyClassifier
+        from project_rag.adapters.strategy_rule import RuleStrategyClassifier
+
+        if settings.rewrite.classifier == "rule":
+            return RuleStrategyClassifier()
+        note_build("strategy_classifier")
+        return LoraStrategyClassifier(
+            adapter_dir=settings.rewrite.adapter_dir,
+            model_dir=settings.rewrite.model_dir or None,
+            device=settings.rewrite.device,
+            max_length=settings.rewrite.max_length,
+        )
+
+    @lru_cache(maxsize=1)
+    def _query_rewriter() -> QueryRewriter:
+        """查询改写端口(进程级单例:改写用的模型客户端也常驻这一个)。"""
+        from project_rag.adapters.llm_deepseek import DeepSeekLLM
+
+        return build_query_rewriter(
+            _strategy_classifier,
+            lambda: DeepSeekLLM(settings.llm),
+            settings.rewrite,
+        )
+
     # lambda是为了构建闭包形式,让函数记住参数,后面调用不用传参,也可以在前面def定义,但是不够优雅
     # 这些变量都指向函数和类而不是直接实现,Deps.属性()才真正执行的,惰性加载策略类(懒汉模式)
     return Deps(
@@ -331,6 +370,9 @@ def build_real_deps() -> Deps:
         # 限流:默认 Redis(跨进程共享 / 重启不清零 / 时钟以 Redis 为准);
         # `enabled: false` 或 `backend: memory` 时退到单进程内存那一份,或干脆不接(不限流)。
         rate_limiter_factory=_rate_limiter(settings),
+        # 查询改写:配置说开才接上。不接 = 检索直接用原话,与"没有这个功能"行为一致 ——
+        # 所以关掉它不会改变任何已有读数,这也正是它能当消融开关的前提。
+        query_rewriter_factory=_query_rewriter if settings.rewrite.enabled else None,
         faq_threshold=settings.faq.threshold,
         cache_ttl=settings.cache.ttl_s,
         cost_prices=settings.cost.prices(),
@@ -341,6 +383,49 @@ def build_real_deps() -> Deps:
             holidays=settings.cost.holidays,
         ),
         thinking=settings.llm.thinking,
+    )
+
+
+def build_query_rewriter(
+    classifier_factory: Callable[[], Any],
+    llm_factory: Callable[[], Any],
+    config: Any,
+) -> QueryRewriter:
+    """输入:分类器工厂 + LLM 工厂 + ``config.RewriteConfig``。
+
+    行为:拼出「判策略 → 生成检索语句」这条链。
+    输出:检索侧要的 ``QueryRewriter``(**永不抛**)。
+
+    **装配失败退化成"原样检索",不往上抛**:分类器是可选件 —— 权重没同步、换了机器
+    没有 GPU、适配器目录被清掉,这些都不该让整个问答答不出来。代价是"改写静默失效",
+    所以这里必须 WARNING,而且每一条改写日志里都带着 ``decided_by=fallback`` 与原因,
+    不会表现成"效果一般"。
+
+    **为什么单独一个模块级函数**:失败路径也得能被验收直接跑一遍 ——
+    埋在 ``build_real_deps`` 的闭包里就只能靠"改 config 再重载模块"去够它,
+    而那种测法既慢又不稳。
+    """
+    from project_rag.application import PassthroughRewriter, PlannedRewriter
+
+    try:
+        classifier = classifier_factory()
+        llm = llm_factory()
+    except Exception as exc:  # noqa: BLE001 - 见 docstring:可选件坏掉不该拖垮问答
+        _logger.warning(
+            "查询改写的分类器装配失败(%s: %s),本进程内改写退化为**原样检索** —— "
+            "检查 rewrite.adapter_dir / model_dir / device,"
+            "并确认 `python tools/lora/infer.py --test` 能跑通",
+            type(exc).__name__,
+            exc,
+        )
+        return PassthroughRewriter(reason=f"分类器装配失败:{type(exc).__name__}")
+
+    return PlannedRewriter(
+        classifier=classifier,
+        llm=llm,
+        max_subqueries=config.max_subqueries,
+        max_query_chars=config.max_query_chars,
+        confidence_threshold=config.confidence_threshold,
     )
 
 
@@ -446,6 +531,13 @@ def knowledge_callable(
             options=options,
             history=history,
             thinking=deps.thinking,
+            # 查询改写正好落在这一步之前:这个闭包**只在 FAQ 未命中时**被调用,
+            # 所以「FAQ 未命中 → 改写 → 向量检索」是结构上的顺序,
+            # 不靠调用方记得先改写(而 FAQ 命中那条路一次都不会碰到它)。
+            # 没装配(= 配置没开)就是 None,检索直接用原话。
+            rewriter=deps.query_rewriter_factory()
+            if deps.query_rewriter_factory is not None
+            else None,
         )
 
     return call

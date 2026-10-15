@@ -11,6 +11,7 @@ from .keyword_index import KeywordIndex
 from .ledger import LedgerStore
 from .llm import LLMClient
 from .matcher import TextMatcher
+from .query_rewrite import QueryRewriter, StrategyClassifier
 from .ratelimit import RateLimiter
 from .reranker import Reranker
 from .sessions import SessionCatalog
@@ -30,11 +31,13 @@ __all__ = [
     "KeywordIndex",
     "LedgerStore",
     "LLMClient",
+    "QueryRewriter",
     "RateLimiter",
     "Reranker",
     "SessionCatalog",
     "SparseEncoder",
     "SparseStats",
+    "StrategyClassifier",
     "TextChunker",
     "TextMatcher",
     "VectorStore",

@@ -186,11 +186,6 @@ embedding:
   model_dir: models/bge-m3
   # 重排模型,现在只把位置定下来
   rerank_model_dir: models/bge-reranker-v2-m3
-  # device 只对**容器**有意义(compose 里 gpus: all + RAG_EMBEDDING__DEVICE: cuda 成对)。
-  # ⚠️ 宿主侧脚本(ingest / build_eval_dataset / run_ragas_eval)在 agent 沙箱里跑时看不见 GPU
-  #    (沙箱挂私有 /dev,无 /dev/dxg → 报 "Found no NVIDIA driver on your system")——
-  #    那是视角问题,**不是这台机器没有 GPU**(实测容器内 torch.cuda.is_available() = True)。
-  #    在沙箱里跑就覆盖成 CPU:RAG_EMBEDDING__DEVICE=cpu(详见 AGENTS.md「环境事实」)。
   device: cuda
   # 是否开启半精度
   use_f16: true
@@ -213,8 +208,6 @@ rag:
   chunk_overlap: 50
   # ingest 的嵌入批大小:CPU 上批量越大越划算,显存小的机器反而要调小。
   ingest_batch_size: 64
-  # 用评估集量过一次:5/2 vs 10/3(112 条,同一套 judge)。
-  # 10/3 把 recall 从 0.9654 抬到 0.9844,但 precision 0.9732→0.9595、
   retrieval_k: 5          # 每一路各召回多少条(BM25 路 / 向量路)
   candidate_m: 2          # 融合后最终进上下文的块数,也就是大模型收到的父块数量
   # 融合:两路(进程内 BM25 关键字 + Milvus 稠密向量)合并成一个排序。
@@ -229,17 +222,31 @@ rag:
   #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
   rerank: true
 
+rewrite:
+  # 查询改写:合流通道里「FAQ 未命中 → 向量检索」之间那一步。
+  # 四类策略(与 data/intent/strategy_v1 的训练数据同一套编号):
+  #   0 直接检索 / 1 假设答案(HyDE) / 2 子查询分解 / 3 去噪改写
+  #
+  # **默认关**:除"直接检索"外每一条都要多花一次 LLM 调用生成检索语句,收益取决于语料
+  # —— 它是消融开关,开之前先在评估集上量一次(与 rag.rerank 同一套规矩)。
+  # 打开前确认下面两个路径在本机真的存在,否则日志里会有一条 WARNING 说
+  # 「分类器装配失败,退化回原样检索」—— 那时改写等于没开。
+  enabled: false
+  # lora = tools/lora 微调出的模型 / rule = 规则兜底(准确率差得多,只用来应急)
+  classifier: lora
+  adapter_dir: logs/lora/run1/lora_adapter
+  model_dir: ""              # 空 = 读 adapter_dir 旁边的 run_meta.json,再退 models/chinese-roberta-wwm-ext
+  device: cpu                # 显存留给嵌入与重排;4 分类短句在 CPU 上十几毫秒
+  max_length: 64             # 必须与训练时一致(tools/lora/train.py)
+  max_subqueries: 3          # 子查询分解最多拆几句(每句各跑一路召回,直接乘在耗时上)
+  max_query_chars: 400       # 单句检索语句的长度上限,防假设答案写成一整篇
+  confidence_threshold: 0.0  # 0 = 不做低置信回退(实测回退会让准确率变差,见 tools/lora/finetune_report.md)
+
 conversation:
   # 会话历史 = **滑动窗口**,两半一起看:
   #   ① history_rounds(N 轮):读写共用 —— 读最近 N 轮进提示词,写的时候把库里裁到最近 N 轮;
-  #   ② history_max_chars(字符预算):只影响**进提示词的那一份** —— 从最新往回装,装不下的
+  #   ② history_max_chars(字符预算):只影响进提示词的那一份
   #      **整轮丢掉**(不截断半轮),至少保留最新一轮。
-  # 为什么两道都要:只限轮数挡不住"一轮很长"(用户贴一份文档来问、或模型答满 4096 token),
-  # 5 轮就能把提示词撑到几十万字符 —— 那是**每一轮都要重发的输入 token**(真金白银),
-  # 还可能顶穿模型上下文。正常一问一答(问题 ~50 字 + 答案 ~500 字)5 轮约 3000 字符,
-  # 所以 12000 这个预算平时用不到,只在病态输入时兜底。
-  # 单位是**字符不是 token**(算 token 要装 provider 的分词器,估出来的数会漂);
-  # 写 0 = 只按轮数、不限大小。
   table: conversations
   history_rounds: 5
   history_max_chars: 12000

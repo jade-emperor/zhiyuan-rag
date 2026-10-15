@@ -11,9 +11,17 @@
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 20 套契约 + 21 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：28 套契约 + 21 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 21 套契约 + 21 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：29 套契约 + 21 份反向（要中间件 + 语料 + key）
 ```
+
+> **这四个数（21 / 29 / 21 / 21）同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
+> `.github/workflows/ci.yml`（顶部注释 + 那个 step 的 name）、`CONTRIBUTING.md` 第三节、
+> `docs/STATUS.md` §0。**它们已经漂过好几次**（17/6 → 26/17 → 28/21 → 现在），
+> 因为 `run_all.py` 是**动态扫目录**的、这些注释是**手抄**的 —— 后者才是会错的那个。
+> 加/删一份 `check_*.py` 之后，用 `ls scripts/acceptance/check_*.py | wc -l` 和
+> `ls scripts/acceptance/reverse_*.py | wc -l` 数一遍再改这五处（`--set ci` 的数 =
+> 总数 − `run_all.py` 里 `SERVICES` 与 `LOCAL_ONLY` 那两份名单，别自己减）。
 
 **「启动」有四个入口，前端在不在取决于你走哪个**（作者报过"有时候起前端、有时候不起"）：
 
@@ -59,7 +67,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 28 份检查 + 21 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 29 份检查 + 21 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标
@@ -141,7 +149,7 @@ uv run python scripts/acceptance/check_m5_history.py     # 32 通过 / 0 失败 
 uv run python scripts/acceptance/check_m5_stream.py      # 37 通过 / 0 失败 / 0 跳过（6.2：截断可见 + 流式入口 + 思考开关/思考与正文分家）
 uv run python scripts/acceptance/check_m5_api.py         # 26 通过 / 0 失败 / 0 跳过（6.3：M5 那九条路由 + 命名空间 + 事件循环不被占住 + 起服务姿势，无需容器）
 uv run python scripts/acceptance/reverse_m5_api.py       # 反向测试：3 条全红（漏带 /api/v1 前缀的新端点 / 静态挂载漏掉 html=True / 删掉路由装饰器）
-uv run python scripts/acceptance/check_m5_5_latency.py   # 26 通过 / 0 失败 / 0 跳过（M5.5/M5.8：TTFT/tps/检索六段/思考三字段，不联网、无需容器）
+uv run python scripts/acceptance/check_m5_5_latency.py   # 27 通过 / 0 失败 / 0 跳过（M5.5/M5.8：TTFT/tps/检索六段/思考三字段/改写一段，不联网、无需容器）
 uv run python scripts/acceptance/reverse_m5_8.py         # 反向测试：7 条全红（临时改 src/，finally 里还原；--only RT-1 可单选）
 #   ⚠️ check_m5_stream 里有 3 次极小真调（各一个问题、上限 16/32 token）：钉「provider 把
 #      finish_reason 放在哪个字段」「thinking=off 真的不思考（0 个 reasoning 帧）」以及
@@ -169,6 +177,26 @@ RAG_EMBEDDING__DEVICE=cpu uv run python scripts/acceptance/check_m5_qa.py   # 33
 会被用例层的日志满足 —— 那条假检查是反向测试揪出来的）。
 
 设计理由写在各脚本的 docstring 里。
+
+## M8 查询改写（FAQ 未命中 → 向量检索之间那一步，默认关）
+
+```bash
+uv run python scripts/acceptance/check_m8_rewrite.py     # 36 通过 / 0 失败 / 0 跳过（零容器零模型零网络）
+
+# 真模型那条路要 GPU + 适配器目录（logs/ 不在版本库里）:
+docker run --rm --gpus all -v "$PWD":/work -w /work --entrypoint python \
+  -e RAG_REWRITE__ENABLED=true -e RAG_REWRITE__DEVICE=cuda \
+  project-rag:0.1.0 -m project_rag rewrite -q "我是刚转行的特别焦虑，麻烦详细说，Python的GIL是什么？"
+#   → denoise（去噪改写）0.9935 → 「Python的GIL是什么」
+```
+
+**权威 = `check_m8_rewrite.py` 的 docstring**：两条不变式（`queries` 永不为空、
+`direct ⟺ queries == (original,)`）、四种策略各自调不调模型、**五种坏法**都退回原话、
+`retrieve_many` 的单句等价与按 `chunk_id` 去重合并、**「改写只改检索、不改回答」**、
+账本 `rewrite_ms` 与 `embed_ms`/`retrieve_ms` 的起点口径、三条分层静态扫描。
+
+设计理由与真机读数见 `docs/STATUS.md` §10.19；判定口径的已知冲突（"宽泛领域词 + 有哪些"
+算 0 类还是 1 类）也记在那里 —— **没动数据**。
 
 ## 多格式入库（装载 / 分派 / 命名）
 
@@ -265,7 +293,7 @@ uv run python scripts/acceptance/reverse_m5_9.py            # 反向测试：6 �
 uv run project-rag metrics --window 24h                     # 人看的报表：分段 p50/p95/p99 + 比率 + 最慢几条
 ```
 
-**权威 = `check_m5_9_metrics.py` 的 docstring**。账本字段本身（26 个）仍由
+**权威 = `check_m5_9_metrics.py` 的 docstring**。账本字段本身（27 个）仍由
 `check_m5_5_latency.py` 钉住；这里钉的是**聚合口径**，重点是"数字在什么条件下才有意义"：
 最近秩不插值、样本不够就不给数（p95 要 20 条、p99 要 100 条）、`-` 不折算成 0、
 **分段只算热行**（冷启动被模型加载主导，混进来 p95 就变成"冷启动有多慢"）。

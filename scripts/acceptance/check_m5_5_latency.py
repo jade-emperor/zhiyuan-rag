@@ -113,6 +113,9 @@ _FIELD_ORDER = (
     "cold",
     "builds",
     "faq_ms",
+    # 查询改写那一段(开了改写才有值)。它与 retrieve_ms 并列:改写之后
+    # embed/retrieve 从**改写结束**算起,所以"检索花了多久"不会被一次 LLM 改写污染。
+    "rewrite_ms",
     "sources_ms",
     "retrieve_ms",
     "embed_ms",

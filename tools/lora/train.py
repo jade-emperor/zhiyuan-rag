@@ -43,7 +43,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from data_utils import LABELS, NUM_LABELS, describe, load_jsonl, stratified_dev_split, to_datasets  # noqa: E402
+from data_utils import (  # noqa: E402
+    LABELS,
+    NUM_LABELS,
+    describe,
+    load_jsonl,
+    stratified_dev_split,
+    to_datasets,
+)
 from mem_probe import (  # noqa: E402
     ActivationHook,
     MemProbe,
@@ -85,15 +92,15 @@ def build_argparser() -> argparse.ArgumentParser:
 
     train = parser.add_argument_group("训练（主流默认值）")
     train.add_argument("--output-dir", default="logs/lora/strategy", help="产物目录")
-    train.add_argument("--epochs", type=float, default=5.0, help="训练轮数（配早停，宁多勿少）")
+    train.add_argument("--epochs", type=float, default=10.0, help="训练轮数（配早停，宁多勿少）")
     train.add_argument("--batch-size", type=int, default=32, help="单卡 batch（序列短，32 很轻松）")
     train.add_argument("--grad-accum", type=int, default=1, help="梯度累积步数（等效放大 batch）")
     train.add_argument("--lr", type=float, default=2e-4, help="学习率（LoRA 常用 1e-4~3e-4）")
-    train.add_argument("--weight-decay", type=float, default=0.01, help="AdamW 权重衰减（正则化）")
+    train.add_argument("--weight-decay", type=float, default=0.01, help="AdamW 权重衰减（   正则化）")
     train.add_argument("--adam-beta1", type=float, default=0.9)
     train.add_argument("--adam-beta2", type=float, default=0.999)
     train.add_argument("--adam-epsilon", type=float, default=1e-8)
-    train.add_argument("--max-grad-norm", type=float, default=1.0, help="梯度裁剪（防炸）")
+    train.add_argument("--max-grad-norm", type=float, default=1.0, help="梯度裁剪（防梯度爆炸）")
     train.add_argument("--scheduler", default="cosine", help="学习率调度：cosine / linear / constant_with_warmup")
     train.add_argument("--warmup-ratio", type=float, default=0.1, help="warmup 占总步数比例")
     train.add_argument("--label-smoothing", type=float, default=0.0, help="标签平滑（想抗噪可设 0.05）")
@@ -183,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         args.early_stopping_patience = 0
         print("== 冒烟模式：小样本 / 1 轮 / 短序列 ==")
 
+    from peft import LoraConfig, TaskType, get_peft_model
     from transformers import (
         AutoModelForSequenceClassification,
         AutoTokenizer,
@@ -192,7 +200,6 @@ def main(argv: list[str] | None = None) -> int:
         TrainingArguments,
         set_seed,
     )
-    from peft import LoraConfig, TaskType, get_peft_model
 
     set_seed(args.seed)
     if cuda_visible():
@@ -374,12 +381,27 @@ def main(argv: list[str] | None = None) -> int:
         "model": args.model_name_or_path,
         "data_dir": str(data_dir),
         "labels": LABELS,
-        "lora": {"r": args.lora_r, "alpha": args.lora_alpha, "dropout": args.lora_dropout, "targets": target_modules},
+        "lora": {
+            "r": args.lora_r,
+            "alpha": args.lora_alpha,
+            "dropout": args.lora_dropout,
+            "targets": target_modules,
+            "modules_to_save": [] if args.no_modules_to_save else ["classifier"],
+        },
         "train": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,
             "grad_accum": args.grad_accum,
             "lr": args.lr,
+            "optim": "adamw_torch",
+            "adam_beta1": args.adam_beta1,
+            "adam_beta2": args.adam_beta2,
+            "adam_epsilon": args.adam_epsilon,
+            "early_stopping_patience": args.early_stopping_patience,
+            "early_stopping_threshold": args.early_stopping_threshold,
+            "label_smoothing": args.label_smoothing,
+            "tf32": cuda_visible(),
+            "num_workers": args.num_workers,
             "scheduler": args.scheduler,
             "warmup_ratio": args.warmup_ratio,
             "weight_decay": args.weight_decay,

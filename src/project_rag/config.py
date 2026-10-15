@@ -638,6 +638,67 @@ class RagConfig(BaseModel):
         return self
 
 
+class RewriteConfig(BaseModel):
+    """查询改写:合流通道里 FAQ 未命中之后、向量检索之前那一步。
+
+    四类策略(与训练数据同一套编号,见 ``domain/rewrite.py``):0 直接检索 /
+    1 假设答案 / 2 子查询分解 / 3 去噪改写。
+
+    **默认关**(``enabled=false``)。这不是保守,是因为它每一步都要**多花一次 LLM 调用**
+    来生成检索语句,而收益取决于语料本身 —— 开之前该像 ``rag.rerank`` 那样先量一次,
+    它是消融开关,不是"装了就该开"的开关。
+    """
+
+    enabled: bool = False
+    # 判定器:``lora`` = `tools/lora` 微调出来的那个模型;``rule`` = 规则兜底
+    # (准确率差得多,只在没有权重时用;见 `adapters/strategy_rule.py`)。
+    classifier: Literal["lora", "rule"] = "lora"
+    # 微调产出物与基座。**两份都不在版本库里**(`logs/`、`models/` 都在 .gitignore),
+    # 所以"换了机器忘了同步"是最常见的失败形状 —— 缺了就在组合根降级成"原样检索"
+    # 并记一条 WARNING,不让一个可选模块把整个问答拖下水。
+    adapter_dir: str = "logs/lora/run1/lora_adapter"
+    # 空 = 读 adapter_dir 旁边的 run_meta.json(训练时自己写下的那个基座路径),
+    # 再退到 models/chinese-roberta-wwm-ext。人记得不如训练记录准。
+    model_dir: str = ""
+    # 分类器放哪跑。**默认 cpu**:卡上那点显存要留给嵌入与重排(BGE-M3 + reranker
+    # 已经占着大头),而 4 分类的短句推理在 CPU 上是十几毫秒,不值得去抢。
+    device: str = "cpu"
+    # 与训练时一致(tools/lora/train.py)。不一致不会报错,只会让长短句的判定悄悄变样。
+    max_length: int = 64
+    # 子查询分解最多拆几句。上限防的是"模型把一句话拆成八段"——
+    # 句数直接乘在检索耗时上(每句各跑一路召回)。
+    max_subqueries: int = 3
+    # 单句检索语句的长度上限(字符)。防模型吐一整篇假设答案把嵌入预算吃光。
+    max_query_chars: int = 400
+    # 低置信兜底阈值。**默认 0 = 不兜底**,这是实测结论不是偷懒:1000 条测试集上把
+    # 低置信样本回退到"直接检索",准确率从 0.9700 掉到 0.9590(阈值 0.7)/ 0.9460(0.9),
+    # 因为判错的样本真值大多落在第二位,回退没利用这个信息。
+    # 读数见 `tools/lora/finetune_report.md`;换分类器时可以再调它。
+    confidence_threshold: float = 0.0
+
+    @model_validator(mode="after")
+    def _check_knobs(self) -> RewriteConfig:
+        """输入:无。行为:拦下会让改写变成"白花钱"或"改坏"的取值。输出:self。
+
+        为什么在配置层拦:这三个旋钮错了都不会当场报错 —— 拆 0 句会让改写产出空表
+        (检索直接空转),长度上限太小会把假设答案截成半句。等到评估集上掉点才发现,
+        中间隔着好几轮"是不是语料的问题"。
+        """
+        if self.max_subqueries < 1:
+            raise ValueError(f"max_subqueries 至少为 1,收到 {self.max_subqueries}")
+        if self.max_query_chars < 16:
+            raise ValueError(
+                f"max_query_chars 太小({self.max_query_chars}):假设答案会被截成半句,"
+                "至少给 16"
+            )
+        if not 0.0 <= self.confidence_threshold < 1.0:
+            raise ValueError(
+                f"confidence_threshold 是概率阈值,必须落在 [0, 1)，收到 "
+                f"{self.confidence_threshold}"
+            )
+        return self
+
+
 # pydantic的写法,也是配置类的标准写法,比__init__(self.env="dev"....)强大的多,可以设置内部去读取.env和yaml文件中的配置
 # 优先级是根据SettingsConfigDict写的关键字顺序定的,越靠前的优先级越高
 # 关于字段名的匹配,显式传入的参数字段名必须一一对应,.env中的字段大小写不敏感,但是要对应上.__表示层级
@@ -673,6 +734,8 @@ class Settings(BaseSettings):
     keyword: KeywordConfig = KeywordConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     rag: RagConfig = RagConfig()
+    # 查询改写(FAQ 未命中 → 向量检索之间那一步)。默认关,理由见 RewriteConfig。
+    rewrite: RewriteConfig = RewriteConfig()
     conversation: ConversationConfig = ConversationConfig()
     api: ApiConfig = ApiConfig()
     # 消耗报表的单价表(见 CostConfig)。**与 llm 分开**:llm 说的是"怎么调模型",

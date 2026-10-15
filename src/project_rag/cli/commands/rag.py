@@ -78,6 +78,11 @@ def run(args) -> int:
             reranker=deps.reranker_factory() if settings.rag.rerank else None,
             options=options,
             thinking=deps.thinking,  # 只进延迟账,不影响答案
+            # 查询改写(默认关,见 config.RewriteConfig)。组合根没装配就是 None = 不改写,
+            # 检索直接用原话 —— 于是"关掉它"与"没有这个功能"逐字等价。
+            rewriter=deps.query_rewriter_factory()
+            if deps.query_rewriter_factory is not None
+            else None,
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("知识库问答失败:%s", exc)
