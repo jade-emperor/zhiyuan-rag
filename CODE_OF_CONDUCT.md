@@ -28,8 +28,8 @@
 
 ## 执行
 
-发现问题请**私信**维护者（Gitee [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)
-或邮件 `The_Jade_Emperor@noreply.gitee.com`），不要在公开区对线。维护者的处理包括：
+发现问题请**私信**维护者（Gitee [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)），
+不要在公开区对线。维护者的处理包括：
 提醒 → 警告 → 临时禁言 → 永久移出。**维护者自己也受本准则约束**。
 
 ---

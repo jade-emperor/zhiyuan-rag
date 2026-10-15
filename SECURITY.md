@@ -11,8 +11,9 @@
 
 优先走私密渠道，收到后我会在 **72 小时内**确认、并在修好之后与你商量要不要公开致谢：
 
-- 邮件：`The_Jade_Emperor@noreply.gitee.com`（标题请带 `[SECURITY]`）
-- 或在 Gitee 上私信 [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)
+- Gitee 上私信 [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)（标题请带 `[SECURITY]`）
+
+> 仓库里**刻意不留邮箱**：那属于维护者的个人信息，不是你报漏洞必须付的成本。
 
 请尽量给出：影响版本 / 复现步骤 / 影响面（能读到什么、能改什么）/ 你建议的修法。
 **不要**在报告里贴真实的密钥、真实语料或别人的会话内容。

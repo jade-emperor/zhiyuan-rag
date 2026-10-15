@@ -1208,7 +1208,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
     app = FastAPI(
         title="project-rag",
-        description="知识库问答问答:FAQ 优先,未命中转知识库(答案带引用)",
+        description="知识库问答:FAQ 优先,未命中转知识库(答案带引用)",
         version="0.1.0",
     )
     # 本机开发默认全开(api.cors_origins = ["*"]);要对外就得收紧到具体来源

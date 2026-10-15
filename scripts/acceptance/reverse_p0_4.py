@@ -119,8 +119,17 @@ def main() -> int:
     if stale:
         print(f"⚠️  上次被打断时留下的坏源码,已自动还原:{stale}\n")
     bad = 0
+    skipped: list[str] = []
     for title, rel, old, new, needle, script in CASES:
         target = ROOT / rel
+        if not target.is_file():
+            # 这条用例要改的文件**不随仓库发布**（`scripts/tools/` 整目录，见 .gitignore）。
+            # 跳过它并**单独计数** —— 既不算红、也不算绿：混进任何一边都是在骗人
+            # （「反向测试要能单独打红」是本项目最贵的那条纪律，见 §5 法律 67③）。
+            # 与 `reverse_m4_eval` 对「data/ 不发布」的处理是同一个约定。
+            skipped.append(f"{title}（缺 {rel}）")
+            print(f"○ 跳过  {title}\n      缺 {rel} —— 该文件不随仓库发布（见 .gitignore）")
+            continue
         original = target.read_text(encoding="utf-8")
         hits = original.count(old)
         if hits != 1:
@@ -133,7 +142,13 @@ def main() -> int:
             bad += 1
         print(f"{'✔ 红了(检查有效)' if red else '✘ 还是绿的(检查是摆设)'}  {title}\n      {line}")
     print("─" * 68)
-    print("全部反向测试都红了" if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    ran = len(CASES) - len(skipped)
+    if bad:
+        print(f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    elif skipped:
+        print(f"{ran} 条全红；{len(skipped)} 条**跳过**（前置文件不随仓库发布，见上）")
+    else:
+        print("全部反向测试都红了")
     return 1 if bad else 0
 
 

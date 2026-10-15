@@ -7,15 +7,20 @@
 | `acceptance/` | `check_m*.py`、`calibrate_threshold.py`、`run_all.py`（分组跑全部） | 它回答"**应该是什么样**"。跑一次就知道当前代码离契约有多远 |
 | `tools/` | 造评估集、灌 FAQ、下模型、跑 RAGAS、比多次运行 | 它回答"**把数据变成什么样**"。一次性或按需重复，产出落在 `data/` |
 
+> ⚠️ **`tools/` 整目录不公开**（作者要求，见 `.gitignore`）：里面基本是一次性的个人工具，
+> 命令只有这台机器上跑得通。**公开 clone 上下面提到 `scripts/tools/*.py` 的命令你敲不了** ——
+> 那几条验收也会相应变成 `SKIP` 并点名 owner（不会红）。恢复某个工具就往 `.gitignore`
+> 里单独加一条 `!/scripts/tools/<名字>`。
+
 **先记三个入口**（一条命令，别背下面那些长命令）::
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 21 套契约 + 21 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：29 套契约 + 21 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 22 套契约 + 21 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：30 套契约 + 21 份反向（要中间件 + 语料 + key）
 ```
 
-> **这四个数（21 / 29 / 21 / 21）同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
+> **这四个数（22 / 30 / 21 / 21）同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
 > `.github/workflows/ci.yml`（顶部注释 + 那个 step 的 name）、`CONTRIBUTING.md` 第三节、
 > `docs/STATUS.md` §0。**它们已经漂过好几次**（17/6 → 26/17 → 28/21 → 现在），
 > 因为 `run_all.py` 是**动态扫目录**的、这些注释是**手抄**的 —— 后者才是会错的那个。
@@ -39,7 +44,7 @@
 
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
 分组依据是**一次实测探测**：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
-再跑全部 28 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
+再跑全部 30 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
 
@@ -67,7 +72,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 29 份检查 + 21 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 30 份检查 + 21 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标

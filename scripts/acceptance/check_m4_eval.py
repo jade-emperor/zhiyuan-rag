@@ -263,7 +263,12 @@ def _m4_script_texts() -> dict[str, str]:
         if path.exists():
             texts[name] = path.read_text(encoding="utf-8")
     if not texts:
-        raise SkipCheck("M4 的脚本都还没落地；owner：M4")
+        # `scripts/tools/` **整目录不公开**（见 .gitignore），公开 clone 上这里必然为空。
+        # 空表**不许静默通过**（那等于「这条检查没跑却算绿」）—— 按项目口径 SKIP 并点名 owner。
+        raise SkipCheck(
+            "scripts/tools/ 下没有 M4 的脚本（该目录不公开，见 .gitignore）；"
+            "owner：数据装载 / M4"
+        )
     return texts
 
 
@@ -473,8 +478,17 @@ def _() -> str:
 
 @check("builder：检索旋钮与 cli/commands/rag.py 逐字对齐（评的必须是同一个系统）")
 def _() -> str:
+    builder = _tool("build_eval_dataset.py")
+    if not builder.exists():
+        # `scripts/tools/` **整目录不公开**（见 .gitignore）。公开 clone 上没有这个 builder,
+        # 「评的是不是同一个系统」就无从对比 —— SKIP 并点名 owner,
+        # 别红一条谁也修不了的 FAIL（`_help_ok` / `_read_tool` 一直是这么做的,这里漏了）。
+        raise SkipCheck(
+            "scripts/tools/build_eval_dataset.py 不在这份检出里（该目录不公开）；"
+            "owner：数据装载 / M4"
+        )
     want = _options_kwargs(SRC / "cli" / "commands" / "rag.py")
-    got = _options_kwargs(_tool("build_eval_dataset.py"))
+    got = _options_kwargs(builder)
     if not want or not got:
         raise AssertionError(f"有一边没构造 RetrievalOptions：rag.py={sorted(want)} builder={sorted(got)}")
     if want != got:

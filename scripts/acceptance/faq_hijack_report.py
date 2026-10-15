@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -46,7 +47,10 @@ from project_rag.config import get_settings  # noqa: E402
 from project_rag.domain import FaqEntry  # noqa: E402
 
 QA_PAIRS = ROOT / "data" / "eval" / "qa_bagu_pdf_v1.json"
-EXTRA_POOL = ROOT / "data" / "faq" / "pool-faq.csv"
+# 扩充语料池的路径**从环境变量来**（理由同 check_m2_faq：那份语料不公开,
+# 文件名本身会泄露它的来源机构）。没设就是 None = 不做那一组对照。
+_extra = os.environ.get("RAG_EXTRA_FAQ_POOL", "").strip()
+EXTRA_POOL: Path | None = Path(_extra) if _extra else None
 HIJACK_QUERY = "线程、进程、协程的对比"
 NOISE_PROBES = ["公司年会在哪天", "今天天气怎么样", "午饭吃什么", "帮我写一首诗", "怎么养猫"]
 
@@ -174,7 +178,7 @@ def main() -> int:
     rows = corpus["rows"]
     faq_rows = [(r["question"], r["answer"]) for r in rows if r["bucket"] == "faq"]
     held_out = [r["question"] for r in rows if r["bucket"] == "eval"]
-    extra_pool = load_extra_pool(EXTRA_POOL)
+    extra_pool = load_extra_pool(EXTRA_POOL) if EXTRA_POOL else []
 
     live = list(MySQLFaqStore(settings.mysql, settings.faq).load_all())
     rng = random.Random(args.seed)
@@ -198,7 +202,7 @@ def main() -> int:
         (f"A 现状（MySQL 里的 {len(live)} 条）", live),
         (f"B 随机换 {len(shuffled)} 条（从八股 {len(faq_rows)} 条里抽，seed={args.seed}）",
          as_entries(shuffled)),
-        (f"C 现状 + 另抽 {len(extra)} 条（{EXTRA_POOL.name}）",
+        (f"C 现状 + 另抽 {len(extra)} 条（扩充池）",
          live + as_entries(extra)),
         (f"D 现状 + 把 {len(short)} 条短条目补成问句（≤{args.short_max} 字，只改数据）",
          rewritten),

@@ -192,7 +192,7 @@ def load_documents(path: Path) -> LoadedCorpus:
     """输入:一个文件或目录。行为:递归收集文件、按扩展名分派、读成带结构的正文。输出:装载结果(含跳过清单)。
 
     深度优先递归 + 按相对路径排序:``source`` 只看顶层目录名,子目录不再影响来源标签
-    (``bagu_ai_data/lecture/01.md`` 的 source 仍是 ``bagu_ai``)。
+    (``corpus_alpha/notes/01.md`` 的 source 仍是 ``corpus_alpha``)。
     """
     if path.is_file():
         root, candidates = path.parent, [path]

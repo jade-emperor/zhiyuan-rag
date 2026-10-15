@@ -47,9 +47,10 @@ WEEKDAYS = [1, 2, 3, 4, 5]
 WINDOWS = [["09:00", "12:00"], ["14:00", "18:00"]]
 HOLIDAYS = [["2026-10-01", "2026-10-07"], ["2026-02-15", "2026-02-23"]]
 
-# 2026-10-13 是**周二**(工作日),拿它做两笔账:
-PEAK_TIME = "2026-10-13T10:00:00+08:00"  # 周二上午 10 点 = 高峰
-OFF_TIME = "2026-10-13T03:00:00+08:00"  # 周二凌晨 3 点 = 空闲
+# 2026-03-03 是**周二**,工作日,且不在 config 的节假日表里 —— 拿它做两笔账。
+# **刻意不拿「今天」当夹具**:那等于把这份代码的写作时间钉在仓库里。
+PEAK_TIME = "2026-03-03T10:00:00+08:00"  # 周二上午 10 点 = 高峰
+OFF_TIME = "2026-03-03T03:00:00+08:00"  # 周二凌晨 3 点 = 空闲
 
 
 def _rule(**override: Any):
@@ -317,7 +318,7 @@ def _zone_unknown_is_peak() -> str:
     8 小时的差正好把一个上午的高峰判成空闲 —— 少报一半的钱,而报表上看不出来。
     """
     # 裸钟点 02:00:若**当北京时间用**会算成空闲(0.616 元);判不出来时按高峰计(1.232 元)。
-    naive = _report([_row(ts="2026-10-13T02:00:00", inputs="1000000", cached="800000", outputs="100000")])
+    naive = _report([_row(ts="2026-03-03T02:00:00", inputs="1000000", cached="800000", outputs="100000")])
     if naive.zone_unknown_calls != 1 or naive.period_unknown_calls != 0:
         raise AssertionError(
             f"该计一次『时区不明』、0 次『时段不明』(有时间戳,只是没时区):"
@@ -326,11 +327,11 @@ def _zone_unknown_is_peak() -> str:
     if naive.lines[0].period != "peak" or naive.lines[0].total_cost == 0.616:
         raise AssertionError(f"裸钟点该按**高峰价**计(保守),实际 {naive.lines[0]}")
     # 同一串数字带上 +00:00 = 北京 10:00(高峰),就不该再有缺口
-    aware = _report([_row(ts="2026-10-13T02:00:00+00:00", inputs="1000000", cached="0", outputs="0")])
+    aware = _report([_row(ts="2026-03-03T02:00:00+00:00", inputs="1000000", cached="0", outputs="0")])
     if (aware.zone_unknown_calls, aware.lines[0].period) != (0, "peak"):
         raise AssertionError(f"带时区的时刻判得出高峰:{aware.zone_unknown_calls}/{aware.lines[0]}")
     # 带上 +00:00 落在北京午休(12:00)就该是空闲 —— 证明判的是**换算后的北京时间**
-    lunch = _report([_row(ts="2026-10-13T04:00:00+00:00", inputs="1000000", cached="0", outputs="0")])
+    lunch = _report([_row(ts="2026-03-03T04:00:00+00:00", inputs="1000000", cached="0", outputs="0")])
     if (lunch.zone_unknown_calls, lunch.lines[0].period) != (0, "off_peak"):
         raise AssertionError(f"UTC 04:00 = 北京 12:00 该算空闲:{lunch.lines[0]}")
     return "裸钟点 → 时区不明 + 高峰价(0.616 那个便宜价不许蒙);带 +00:00 则判得出高峰/午休"
@@ -525,18 +526,18 @@ def _period_three_conditions() -> str:
     from datetime import datetime
 
     rule = _rule()
-    # 2026-10-13 周二 / 10-10 周六 / 10-06 国庆假期内(周二)
+    # 2026-03-03 周二 / 2026-03-07 周六 / 2026-10-06 国庆假期内(周二)
     cases = {
-        "2026-10-13T09:00:00": "peak",  # 窗口第一秒(左闭)
-        "2026-10-13T11:59:00": "peak",
-        "2026-10-13T12:00:00": "off_peak",  # 午休从 12:00 整开始(右开)
-        "2026-10-13T13:59:00": "off_peak",
-        "2026-10-13T14:00:00": "peak",
-        "2026-10-13T17:59:00": "peak",
-        "2026-10-13T18:00:00": "off_peak",  # 下班
-        "2026-10-13T08:59:00": "off_peak",  # 上班前
-        "2026-10-13T23:30:00": "off_peak",
-        "2026-10-13T03:00:00": "off_peak",
+        "2026-03-03T09:00:00": "peak",  # 窗口第一秒(左闭)
+        "2026-03-03T11:59:00": "peak",
+        "2026-03-03T12:00:00": "off_peak",  # 午休从 12:00 整开始(右开)
+        "2026-03-03T13:59:00": "off_peak",
+        "2026-03-03T14:00:00": "peak",
+        "2026-03-03T17:59:00": "peak",
+        "2026-03-03T18:00:00": "off_peak",  # 下班
+        "2026-03-03T08:59:00": "off_peak",  # 上班前
+        "2026-03-03T23:30:00": "off_peak",
+        "2026-03-03T03:00:00": "off_peak",
         # ① 星期:周六周日不管几点都是空闲
         "2026-10-10T10:00:00": "off_peak",
         "2026-10-11T15:00:00": "off_peak",
@@ -559,19 +560,19 @@ def _period_beijing_clock() -> str:
 
     rule = _rule()
     cases = {
-        "2026-10-13T02:00:00+00:00": "peak",  # UTC 02:00 = 北京 10:00
-        "2026-10-13T04:00:00+00:00": "off_peak",  # = 北京 12:00(午休)
-        "2026-10-13T06:00:00+00:00": "peak",  # = 北京 14:00
+        "2026-03-03T02:00:00+00:00": "peak",  # UTC 02:00 = 北京 10:00
+        "2026-03-03T04:00:00+00:00": "off_peak",  # = 北京 12:00(午休)
+        "2026-03-03T06:00:00+00:00": "peak",  # = 北京 14:00
         "2026-10-12T22:00:00-04:00": "peak",  # 纽约 10-12 22:00 = 北京 10-13 10:00
-        "2026-10-13T18:00:00+00:00": "off_peak",  # = 北京 10-14 02:00(深夜)
+        "2026-03-03T18:00:00+00:00": "off_peak",  # = 北京 10-14 02:00(深夜)
     }
     for stamp, want in cases.items():
         got, gap = rule.classify(datetime.fromisoformat(stamp))
         if got != want or gap is not None:
             raise AssertionError(f"{stamp} 该是 {want},实际 {got}(缺口 {gap!r})")
     # 同一串钟点、两种时区 → 两个时段:这正是"必须带时区"的理由
-    naive = _rule().classify(datetime.fromisoformat("2026-10-13T10:00:00"))
-    aware = _rule().classify(datetime.fromisoformat("2026-10-13T10:00:00+08:00"))
+    naive = _rule().classify(datetime.fromisoformat("2026-03-03T10:00:00"))
+    aware = _rule().classify(datetime.fromisoformat("2026-03-03T10:00:00+08:00"))
     if naive != ("peak", "zone") or aware != ("peak", None):
         raise AssertionError(f"裸钟点该判不出来(缺口 zone),实际 {naive};带时区该能判:{aware}")
     return "UTC/纽约的钟点都换算成北京时间判;裸钟点一律判不出来"
@@ -607,7 +608,7 @@ def _window_rules() -> str:
         raise AssertionError("窗口为空时 in_windows 该给 False(不分时段由规则自己短路)")
     # 不分时段:全按高峰价,而且**不报"时段不明"**(连时间戳都不用问)
     flat = _rule(windows=[])
-    for moment in (None, datetime.fromisoformat("2026-10-13T10:00:00")):
+    for moment in (None, datetime.fromisoformat("2026-03-03T10:00:00")):
         if flat.classify(moment) != ("peak", None):
             raise AssertionError(f"窗口为空该全算高峰且不报缺口:{flat.classify(moment)}")
     if flat.split:
@@ -1070,7 +1071,7 @@ def _cost_endpoint_gaps() -> str:
     rows = [
         _row(model="还没填单价的模型", inputs="1000000", cached="0", outputs="0"),
         _row(inputs="1000000", cached="-", outputs="0"),  # 缓存不明
-        _row(ts="2026-10-13T10:00:00", inputs="1000000", cached="0", outputs="0"),  # 没带时区
+        _row(ts="2026-03-03T10:00:00", inputs="1000000", cached="0", outputs="0"),  # 没带时区
         _row(ts="2027-03-02T10:00:00+08:00", inputs="1000000", cached="0", outputs="0"),  # 没日历
         {"llm_ttft_ms": "900.0", "ts": PEAK_TIME, "llm_model": "-"},  # 没量到 token
     ]

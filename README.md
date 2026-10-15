@@ -589,7 +589,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 - 意图识别 / 检索策略选择、粗排后的多路并行、观测聚合（p50/p95）等未做 ——
   「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
 - 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 29 套契约 + 21 份反向 runner，
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 30 套契约 + 21 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---

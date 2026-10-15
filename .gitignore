@@ -17,14 +17,27 @@ __pycache__/
 /.trash/
 
 /docs/
+# AGENTS.md 是**给本机 agent 的工作说明**（含本机型号 / 路径 / 实测日期），与 docs/ 同类：
+# 留在磁盘上给 agent 读，但不随仓库发布。
+/AGENTS.md
 
-# 脚本：默认不公开；契约与反向测试公开（可验证性的根），工具里排除一次性脚本
+# 脚本：默认不公开；契约与反向测试公开（可验证性的根）
 /scripts/*
 !/scripts/README.md
 !/scripts/dev.sh
 !/scripts/acceptance/
-!/scripts/tools/
-/scripts/tools/extract_lecture.py
+#   `/scripts/tools/` **整目录不公开**（作者要求）：里面基本是一次性的个人工具 ——
+#   造评估集、下模型、灌 FAQ、跑 RAGAS、A/B 读数，命令只有这台机器上跑得通，
+#   挂到公开仓库只会让人照着敲一遍然后失败。
+#
+#   **两条代价，要恢复哪一条就把对应文件单独 `!` 放行**：
+#     ① `check_m2_faq` / `check_m4_eval` 里引用到它们的那几条 → 公开 clone 上转成
+#        **SKIP 并点名 owner**（不算通过，但也不会红）；
+#     ② `reverse_p0_4` 的 A/B 用例会**红** —— 它要改 `ab_retrieval.py` 的源码，
+#        而「锚点找不到 = 那条反向测试没跑 = 失败」是本项目自己的规矩
+#        （见 `_harness.patched_source` 的 docstring）。想让它复活就加
+#        `!/scripts/tools/ab_retrieval.py`。
+/scripts/tools/
 
 # Virtual environments
 .venv
