@@ -16,6 +16,10 @@
 3. 写进文档 / 配置 / 提交信息的**否定断言**，必须带上**判据命令 + 从哪一侧跑的**。
    「沙箱看不见」≠「机器没有」—— 这个错在本仓库发生过三次：`docs/STATUS.md` §0.3 第 6、40 条，
    §5 第 48 条；其中两次被写进了产物（compose 注释、README）。
+4. **量「占了多少显存」时，`torch.cuda.mem_get_info()` 是个假尺子**（见下表）——
+   它比真值**多 1063 MiB**，根据它做容量规划会多算一倍（真踩过：把 LoRA 微调的需求
+   报成 2.4 GB，实测只有 1.4 GB）。**容器内的 `nvidia-smi` 就是宿主真值**，
+   进程里 `subprocess` 问一下即可；宿主侧 `nvidia-smi.exe` 用来看 WSL 之外的占用。
 
 ### 本机已知事实（2026-10-13 实测）
 
@@ -25,6 +29,9 @@
 | docker GPU runtime | 有 `nvidia` | `docker info --format '{{json .Runtimes}}'`（经 dockerd） |
 | agent shell 的 `/dev` | **私有、14 项、无 `/dev/dxg`** | `ls /dev`（沙箱内）；同侧 `nvidia-smi` 只会报 `GPU access blocked by the operating system` |
 | compose 的 app 服务 | `gpus: all` + `RAG_EMBEDDING__DEVICE: cuda`，**成对，别单独删** | `docker-compose.yaml` |
+| `torch.cuda.mem_get_info()`（WSL 侧） | **常数虚报 1063 MiB**，不是显存占用 | 同一时刻三路取数：空 context 宿主 234 / 容器内 234 / `mem_get_info` **1297**；再故意占 2 GiB → 2282 / 2282 / **3345**；真实训练峰值 1442 / 2506。**差值三次都是 1063** |
+| 一个空 CUDA context 的**真实**开销 | **234 MiB**（不是 1.3 GB） | 宿主侧 `nvidia-smi.exe --query-gpu=memory.used`：建 context 前后 0 → 234 MiB，进程退出回到 0 |
+| 容器内 `nvidia-smi` | **= 宿主真值**（逐 MiB 一致） | 上面那张对照表；`mem_probe.nvidia_smi_used_mb()` 就是它 |
 
 ### 推论：在 agent shell 里跑宿主侧模型脚本要压到 CPU
 

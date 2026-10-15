@@ -39,7 +39,22 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from data_utils import LABELS, NUM_LABELS, load_jsonl  # noqa: E402
-from mem_probe import MB, cuda_visible, ledger_table, param_ledger  # noqa: E402
+from mem_probe import (  # noqa: E402
+    MB,
+    _device_used_mb,
+    cuda_visible,
+    ledger_table,
+    param_ledger,
+)
+
+
+def _true_device_used_mb() -> float:
+    """输入:无。行为:取**真实的**整卡占用（口径与幻影见 ``mem_probe.WSL_PHANTOM_MB``）。输出:MB。
+
+    这里不直接用 ``torch.cuda.mem_get_info()``:在 WSL 上它有一个 1063 MiB 的常数虚报，
+    拿它当"显存占用"会把需求多算一倍(这个脚本第一版就是这么错的)。
+    """
+    return _device_used_mb()[0]
 
 DEFAULT_MODEL = "models/chinese-roberta-wwm-ext"
 
@@ -91,7 +106,7 @@ class PhaseMeter:
                 "resident_mb": torch.cuda.memory_allocated() / MB,
                 "reserved_mb": torch.cuda.memory_reserved() / MB,
                 "before_mb": before,
-                "device_used_mb": (lambda free_total: (free_total[1] - free_total[0]) / MB)(torch.cuda.mem_get_info()),
+                "device_used_mb": _true_device_used_mb(),
             }
         else:
             row = {"label": label, "peak_mb": 0.0, "resident_mb": 0.0, "reserved_mb": 0.0,
@@ -103,7 +118,7 @@ class PhaseMeter:
     def table(self) -> str:
         """输入:无。行为:渲染阶段表。输出:str。"""
         lines = [
-            f"\n  {'阶段':<26s} {'段内峰值MB':>11s} {'该段新增峰值MB':>14s} {'结束时驻留MB':>13s} {'设备已用MB':>11s}",
+            f"\n  {'阶段':<26s} {'段内峰值MB':>11s} {'该段新增峰值MB':>14s} {'结束时驻留MB':>13s} {'整卡MB':>11s}",
         ]
         for r in self.rows:
             lines.append(
@@ -135,9 +150,14 @@ def build_batch(tokenizer, texts: list[str], batch_size: int, max_length: int, p
 def host_snapshot() -> dict:
     """输入:无。行为:走 Windows 侧通道（nvidia-smi.exe + PowerShell GPU 计数器）读整卡与逐进程占用。
 
-    ⚠️ 为什么必须走宿主侧：WSL 里 `torch.cuda.mem_get_info()` 看到的是 **WSL 视角**，
-    它既不显示 WSL 虚拟机（vmwp/vmmemWSL）已经向 Windows 要走的显存，也不显示桌面等宿主占用。
-    结果就是"WSL 里看 1.3 GB、任务管理器看 4.4 GB"这种对不上的现象 —— 两个口径量的不是一回事。
+    ⚠️ 为什么宿主侧那条路仍然留着：它能看见 **WSL 虚拟机之外的占用** ——
+    桌面、浏览器、别的 Windows 进程。那是我这个进程无论怎么问都看不到的一半。
+    但**「WSL 里看到的一定比宿主小」这句话是错的**（第一版就是这么写的）：
+    实测 `torch.cuda.mem_get_info()` 反而**多报 1063 MiB**（常数幻影，见
+    `mem_probe.WSL_PHANTOM_MB` 那张三方对照表）。所以：
+
+    * 想知道**本进程**占了多少 → 容器内 `nvidia-smi`（进程里 subprocess 问一下就有，真值）；
+    * 想知道**整张卡还有多少给别人** → 这个 `--host-snapshot`（它才看得见 WSL 之外的占用）。
     """
     import subprocess
 
@@ -236,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     torch.zeros(1, device=device)
     torch.cuda.synchronize()
     context_mb = torch.cuda.memory_allocated() / MB  # context 不在 allocated 里，仅占位
-    device_after_context = (lambda ft: (ft[1] - ft[0]) / MB)(torch.cuda.mem_get_info())
+    device_after_context = _true_device_used_mb()
     if args.cap_fraction > 0:
         torch.cuda.set_per_process_memory_fraction(args.cap_fraction, device=0)
         cap_mb = total_mb * args.cap_fraction

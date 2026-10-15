@@ -249,7 +249,7 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
     add(f"| 测试集 macro-F1 | **{test['macro_f1']:.4f}** |")
     add(f"| 测试集 **top-2** 准确率 | **{test['top2']:.4f}** |")
     add(f"| 训练显存峰值（PyTorch allocated） | **{_mb(peak_mark)} MB** |")
-    add(f"| 训练显存峰值（设备级实际占用） | **{_mb(dev_peak)} MB** |")
+    add(f"| 训练显存峰值（整卡真值，`nvidia-smi`） | **{_mb(dev_peak)} MB** |")
     add(f"| 推理吞吐 / 权重占用 | 见第五节 |")
     add("")
     err_pairs = "、".join(f"`{k}`（{v} 条）" for k, v in sorted(test["errors"].items(), key=lambda kv: -kv[1]))
@@ -366,8 +366,8 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
     add("---\n\n## 五、显存占用（分板块 + 总占用）\n")
     add(f"训练配置：`batch={tr['batch_size']}`、`max_length={tr['max_length']}`、`{tr['precision']}`、"
         f"`grad_accum={tr['grad_accum']}`。「已分配」是 PyTorch 分配器口径，"
-        "「设备已用」是整个 GPU 的口径（含 CUDA context、库 workspace 与其它进程）。\n")
-    add("| 板块 | 已分配 MB | 设备已用 MB | 说明 |")
+        "「整卡」是整个 GPU 的口径（含 CUDA context、库 workspace 与其它进程），**由 `nvidia-smi` 给出真值**。\n")
+    add("| 板块 | 已分配 MB | 整卡 MB | 说明 |")
     add("|---|---|---|---|")
     add(f"| CUDA context + 库句柄 + 其它进程（起点） | 0.0 | **{_mb(start_dev)}** | "
         "**不计入 `memory_allocated`**，只看已分配会严重低估 OOM 风险 |")
@@ -408,7 +408,7 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
         add("**每个阶段前 `reset_peak_memory_stats()`**，因此每段峰值只属于该段。\n")
         add(f"配置：batch {budget['batch_size']}，样本真实长度 {budget['token_lengths'][0]}~{budget['token_lengths'][1]}，"
             f"padding 到 {budget['pad_len']}（动态 padding，与训练一致）。\n")
-        add("| 阶段 | 段内峰值 MB | 该段新增峰值 MB | 结束时驻留 MB | 设备已用 MB |")
+        add("| 阶段 | 段内峰值 MB | 该段新增峰值 MB | 结束时驻留 MB | 整卡 MB |")
         add("|---|---|---|---|---|")
         for row in budget["phases"]:
             add(f"| {row['label']} | {row['peak_mb']:.1f} | {row['delta_peak_mb']:+.1f} | "
@@ -448,8 +448,8 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
         add("### 5.2 到底至少要多少显存（OOM 边界实测）\n")
         add("方法：`torch.cuda.set_per_process_memory_fraction(f)` 把**本进程分配器**的上限压到"
             "「设备总量 × f」，然后在每一档里跑一次完整训练步（forward + backward + optimizer.step）；"
-            "每档是**独立进程**，OOM 就记一次失败。注意 context（约 1.3 GB）是在分配器之外分配的，"
-            "所以下面「上限」只是分配器预算，真实占用要再加上 context。\n")
+            "每档是**独立进程**，OOM 就记一次失败。注意 context 是在分配器之外分配的"
+            "（本机实测 **234 MiB**，见 5.3），所以下面「上限」只是分配器预算，真实占用要再加上它。\n")
         for mode, rows, title in (("dynamic", dyn, "动态 padding（真实训练口径）"), ("pad64", pad, "pad 到 64（最坏情况）")):
             if not rows:
                 continue
@@ -474,52 +474,60 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
                 "① 降 `--batch-size`（最有效）→ ② 降 `--max-length` → ③ `--grad-accum` 顶上等效 batch "
                 "→ ④ `--gradient-checkpointing`（用时间换激活）。")
         add("")
-        add("> ⚠️ 上面这个「最少」是**进程视角**：它把 CUDA context（约 1.3 GB）算进去了，"
-            "而 context 是**每个用 CUDA 的进程都要付一遍**的固定开销。"
-            "如果你在 Windows 任务管理器里看到的数字对不上，看下一节 —— 那是另一套口径。\n")
+        add(f"> ⚠️ 上面这个「最少」= **分配器下限 + context {ctx:.0f} MB**。context 是每个用 CUDA 的"
+            "进程都要付一遍的固定开销，而它在不同机器上不一样（本机实测 234 MiB）。"
+            "屏幕上的数字与这里对不上的原因看下一节 —— **多半是口径搞错了，不是算错了**。\n")
 
-    # 五之四：三个口径
+    # 五之四：三个口径（**这一节纠正过一个算错的数**，别把它改回"context 1.3 GB"）
     if budget and host_view:
         smi = (host_view.get("nvidia_smi") or {})
-        procs = [p for p in (host_view.get("processes") or []) if "dedicated_mib" in p]
         ctx_mb = budget["context_overhead_mb"]
-        tensors = budget["summary"]["step_peak_mb"]
-        add("### 5.3 三个「显存占用」量的不是一回事（为什么屏幕上的数字和这里不一样）\n")
-        add("| 口径 | 实测值 | 含义 / 什么时候用它 |")
+        snaps = run.get("snaps") or (run.get("mem") or {}).get("snapshots") or []
+        # ① 用**训练那一跑**自己的分配器峰值,不用 vram_budget 探针的 step 峰值 ——
+        # ② ③ 都取自训练产物,三者必须同源,否则三个数摆在一张表里会互相打架。
+        measured = (run.get("marks") or {}).get("全程峰值(peak_mb)")
+        tensors = float(measured) if measured else budget["summary"]["step_peak_mb"]
+        card_peak = max((s["device_used_mb"] for s in snaps), default=float("nan"))
+        raw_peak = max((s.get("device_raw_mb", float("nan")) for s in snaps), default=float("nan"))
+        phantom = raw_peak - card_peak
+        add("### 5.3 三个「显存占用」量的不是一回事（这一节纠正过一个算错的数）\n")
+        add("| 口径 | 实测 | 含义 / 什么时候用它 |")
         add("|---|---|---|")
-        dyn_rows = [c for c in caps if c["_mode"] == "dynamic"]
-        floor = min((c["cap_mb"] for c in dyn_rows if c["ok"]), default=None)
-        floor_bad = max((c["cap_mb"] for c in dyn_rows if not c["ok"]), default=None)
-        floor_txt = (f"**{floor_bad:.0f} MB 就 OOM，{floor:.0f} MB 能跑**"
-                     if floor and floor_bad else "见 5.2 表")
-        add(f"| ① 张量硬下限（分配器 cap 实测） | {floor_txt} | "
-            "「权重+激活+梯度+优化器」本身要多少；与进程无关的硬指标 |")
-        add(f"| ② 进程视角总量（WSL 内 `mem_get_info`） | **{ctx_mb + tensors:.0f} MB** = context {ctx_mb:.0f} + 张量 {tensors:.0f}（实测峰值）；"
-            f"cap 实验给的**可用下限**是 {ctx_mb + floor:.0f} MB（多出的是碎片） | "
-            "「我这个训练进程一共压了多少」——判断本进程会不会 OOM |")
-        if "error" not in smi:
-            top = procs[0] if procs else None
-            name = top.get("process_name", "") if top else ""
-            add(f"| ③ 宿主/任务管理器视角 | 整卡 **{smi['used_mib']:.0f} MiB** / {smi['total_mib']:.0f} MiB"
-                + (f"，最大一项 **{name or top['instance']}** = **{top['dedicated_mib']:.1f} MiB** | " if top else " | ")
-                + "你在屏幕上看到的数 —— 含**整个 WSL 虚拟机（vmwp）的持有量**，不等于本任务的占用 |")
+        add(f"| ① 张量真值（`max_memory_allocated`） | **{tensors:.0f} MB** | "
+            "「权重 + 激活 + 梯度 + AdamW 状态」本身要多少；与进程无关的硬指标 |")
+        add(f"| ② **整卡真值**（容器内 `nvidia-smi`，训练中逐点采样） | **{card_peak:.0f} MB** | "
+            "**这个任务真正占了多少显存** —— 判断会不会 OOM 看它 |")
+        add(f"| ③ WSL 的 `torch.cuda.mem_get_info()` | {raw_peak:.0f} MB | "
+            "⚠️ **不是占用**：含 "
+            f"{phantom:.0f} MB 的常数虚报，**别拿它当显存用量** |")
         add("")
-        add("宿主侧实测（`vram_budget.py --host-snapshot`，原始输出在 `vram_host_view.json`）：\n")
-        if "error" not in smi:
-            add(f"- 整卡已用 **{smi['used_mib']:.0f} MiB**；逐进程计数器只报了一个大户：")
-        for row in procs[:3]:
-            nm = row.get("process_name", "")
-            add(f"  - `{nm or row['instance']}`（pid {row.get('pid', '?')}）→ **{row['dedicated_mib']:.1f} MiB**")
-        add(f"- 同一时刻训练进程**没在跑**、RAG 服务自己 `torch.cuda.memory_allocated() = 0`（启动预热失败，模型没加载）")
+        add(f"**① → ② 之间那 {card_peak - tensors:.0f} MB** = CUDA context **{ctx_mb:.0f} MB**"
+            f"（实测：刚建完 context、什么都没分配时整卡就是 {ctx_mb:.0f} MB）"
+            f" + 分配器预留与碎片 ≈ {card_peak - tensors - ctx_mb:.0f} MB。\n")
+        add("#### 为什么 ③ 不能用：一个 1063 MiB 的常数虚报\n")
+        add("三次独立实验，每次都是**同一时刻**从两侧取数：\n")
+        add("| 状态 | 宿主侧 `nvidia-smi.exe` | 容器内 `nvidia-smi` | 进程内 `mem_get_info` | 差值 |")
+        add("|---|---|---|---|---|")
+        add("| 空 context（只 `torch.zeros(1).cuda()`） | 234 MiB | 234 MiB | 1297 MiB | 1063 |")
+        add("| 再故意占 2 GiB 张量 | 2282 MiB | 2282 MiB | 3345 MiB | 1063 |")
+        add(f"| 真实训练峰值 | — | {card_peak:.0f} MB | {raw_peak:.0f} MB | {phantom:.0f} |")
         add("")
-        add("**结论：那 4.3 GB 是 WSL2 虚拟机（`vmwp`）的 GPU 持有量** —— WSL 里历次 CUDA 进程用过、"
-            "宿主的驱动还没收回的部分。所以：\n")
-        add("- 任务管理器从 4.3 GB 涨到 5.7 GB，是**虚拟机在这次运行里又向 Windows 多要了约 1.4 GB**，"
-            "不是「这个任务要 4 GB」")
-        add(f"- 这个增量小于口径②的 {ctx_mb + tensors:.0f} MB，因为 context 那一块在 WSL VM 里是**复用/摊销**的"
-            "（VM 早就持有），而我在 WSL 里量到的「设备已用」把每个进程的 context 都单独算了一遍")
-        add("- **真要判断会不会 OOM**：用口径②（进程自己 2.4 GB）+ 卡上已有的其它占用。"
-            "16 GB 卡上这个任务随便跑；8 GB 卡且 RAG 服务热跑（BGE-M3+reranker ≈ 5 GB）时才会紧张\n")
+        add("两条结论：\n")
+        add("- **容器内 `nvidia-smi` 就是宿主真值**（与 Windows 侧 `nvidia-smi.exe` 逐 MiB 一致）——"
+            "不必开两个终端对着看，进程里 `subprocess` 问一下就行；")
+        add("- `mem_get_info` 那个数**不是显存占用**，是 WSL2 的 CUDA-on-DXG 驱动在 `cuMemGetInfo` 上的虚报，"
+            "**与进程在干什么无关**（三行差值都是 1063）。\n")
+        add("**所以「至少要多少显存」= 分配器下限 + context，不是「mem_get_info 里那个设备已用」。**"
+            "本报告的第一版把幻影当成了 context，据此报过「整卡至少 2.4 GB」——"
+            "**多算了一倍**，宿主侧实测只有 1.4 GB。量具已经改在 "
+            "`mem_probe.nvidia_smi_used_mb()`（问不到才退到「mem_get_info − 幻影」的换算口径，"
+            "并把用了哪条路写进快照）。\n")
+        add("**会不会 OOM**：16 GB 卡上这个任务随便跑。真正要紧的是**卡上已经有多少给了别人** ——"
+            "RAG 服务热跑时（BGE-M3 + reranker）那部分**在 WSL 虚拟机里**，"
+            "要 `vram_budget.py --host-snapshot` 才看得见（它同时能看见 WSL 之外的桌面占用）。\n")
+        if "error" not in smi and smi.get("used_mib"):
+            add(f"（本节写作时的宿主侧快照：整卡 **{smi['used_mib']:.0f} MiB** / "
+                f"{smi['total_mib']:.0f} MiB，原始输出在 `vram_host_view.json`。）\n")
 
     # 六、评估
     add("---\n\n## 六、评估结果\n")
@@ -578,7 +586,7 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
         "→ 下一步提升不靠调超参，靠把这批边界样本人工复核后重训。")
     add("3. **线上策略应当是 top-2 双改写，而不是低置信回退**：误判真值 100% 在第二位，"
         "而一刀切回退实测把准确率拉低明显。低成本做法：置信度低于阈值时同时执行两个候选改写，或转人工。")
-    add(f"4. **成本极低**：训练 {rt:.1f} 秒、峰值 {_mb(peak_mark)} MB（设备级 {_mb(dev_peak)} MB）；"
+    add(f"4. **成本极低**：训练 {rt:.1f} 秒、峰值 {_mb(peak_mark)} MB（整卡真值 {_mb(dev_peak)} MB）；"
         "适配器只有 MB 级，可以按「数据一更新就重训一轮」的节奏跑。" if rt else "4. **成本极低**：可以按「数据一更新就重训一轮」的节奏跑。")
     add("5. **局限**：只跑了 1 个种子（没有多种子方差）；test 全部来自 agent5（跨生成者泛化，偏保守）；"
         "数据是合成的，真实流量上线后需要重测分布。")
@@ -623,7 +631,8 @@ def render(run: dict, run_dir: str, data_dir: str) -> str:
     add("| 已分配 `memory_allocated` | PyTorch 分配器当前**活跃**张量占用；不含 CUDA context 与库 workspace |")
     add("| 预留 `memory_reserved` | 分配器向驱动要来的缓存池；碎片化会让它持续上涨 |")
     add("| 峰值 `max_memory_allocated` | 自上次 `reset_peak_memory_stats()` 以来的最高活跃占用 |")
-    add("| 设备已用 `mem_get_info` | 整张卡的真实占用（含 context、其它进程）→ **判断会不会 OOM 看这个** |")
+    add("| **整卡 `nvidia-smi`** | **这个任务真正占的显存**（含 context 与其它进程）→ **判断会不会 OOM 看这个** |")
+    add("| ~~设备已用 `mem_get_info`~~ | ⚠️ **别用**：WSL 上含 1063 MiB 常数虚报（见 5.3），拿它算需求会多算一倍 |")
     add("")
     add("### D. 代码与相关文档\n")
     add("| 文件 | 作用 |")
@@ -672,7 +681,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"报告已写出：{out}（{len(text)} 字符 / {text.count(chr(10)) + 1} 行）")
     print(f"  数据：train {run['meta']['sizes']['train']} / dev {run['meta']['sizes']['dev']} / test {run['test']['n']}")
     print(f"  test：accuracy {run['test']['accuracy']:.4f} / macro_f1 {run['test']['macro_f1']:.4f} / top2 {run['test']['top2']:.4f}")
-    print(f"  显存峰值：allocated {run['marks'].get('全程峰值(peak_mb)')} MB / 设备级 {max(s['device_used_mb'] for s in run['snaps']):.1f} MB")
+    print(f"  显存峰值：allocated {run['marks'].get('全程峰值(peak_mb)')} MB / 整卡真值 {max(s['device_used_mb'] for s in run['snaps']):.1f} MB")
     return 0
 
 

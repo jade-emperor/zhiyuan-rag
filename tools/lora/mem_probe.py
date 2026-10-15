@@ -9,6 +9,11 @@
 2. **理论账**（``param_ledger``）：从 ``model.named_parameters()`` 按板块汇总参数量，
    再按 dtype 折算字节 —— 权重、梯度、AdamW 两阶状态各占多少，用来解释实测数字，
    也能在没有 CUDA 的机器上给出可预期的量级。
+
+**⚠️ 设备级读数只有一条可信的路，别用 ``mem_get_info``**（实测，见 ``WSL_PHANTOM_MB``）：
+WSL2 的 CUDA-on-DXG 驱动在 ``cuMemGetInfo`` 上有一个 **1063 MiB 的常数虚报**，
+而 ``torch.cuda.mem_get_info()`` 走的正是它。所以本模块用 ``nvidia-smi`` 问整卡，
+问不到才退到「mem_get_info − 幻影」这个等价换算，并把用哪条路写进快照。
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import contextlib
 import json
 import os
 import resource
+import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -28,6 +34,20 @@ import torch
 # ---------------------------------------------------------------------------
 
 MB = 1024 * 1024
+
+# ── WSL 侧那个「设备已用」是假的（2026-10-13 实测，两边同时取数）──────────────
+#
+#   状态           宿主侧 nvidia-smi   容器内 nvidia-smi   进程内 mem_get_info
+#   空 context            234 MiB            234 MiB          1297 MiB  ← 假
+#   +2 GiB 张量          2282 MiB           2282 MiB          3345 MiB  ← 假
+#
+# 差值恒为 **1063 MiB，与进程在干什么无关**。两个后果：
+#
+#   ① **容器内的 ``nvidia-smi`` 就是真值**（与 Windows 侧逐 MiB 一致）——
+#      不必开两个终端对着看，进程里 subprocess 问一下就行；
+#   ② 拿 ``mem_get_info`` 当"显存占用"会把需求**多算一倍**。踩过一次：
+#      据此给 LoRA 微调报过「整卡至少 2.4 GB」，而宿主侧实测峰值只有 **1424 MiB**。
+WSL_PHANTOM_MB = 1063.0
 
 
 def cuda_visible() -> bool:
@@ -47,12 +67,53 @@ def _rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
-def _device_used_mb() -> tuple[float, float]:
-    """输入:无。行为:取设备级显存 used/total。输出:(used_mb, total_mb)，取不到返回 (nan, nan)。"""
+def nvidia_smi_used_mb() -> float | None:
+    """输入:无。行为:问 ``nvidia-smi`` 整卡用了多少。输出:MB;问不到给 None。
+
+    **这是唯一可信的设备级读数。** 容器里(``--gpus all``)跑出来的就是宿主真值 ——
+    实测与 Windows 侧 ``nvidia-smi.exe`` 逐 MiB 相同。agent shell 那种没有
+    ``/dev/dxg`` 的沙箱里它问不到(返回 None),由调用方退到换算口径。
+    """
+    try:
+        done = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    first = done.stdout.strip().splitlines()
+    if not first:
+        return None
+    try:
+        return float(first[0].strip())
+    except ValueError:
+        return None
+
+
+def _device_used_mb() -> tuple[float, float, float, str]:
+    """输入:无。行为:取**真实的**整卡 used/total。
+
+    输出:``(true_used_mb, raw_used_mb, total_mb, 口径)`` —— 取不到给 nan。
+
+    ``true_used`` 优先来自 ``nvidia-smi``;没有它就把 ``mem_get_info`` 的读数
+    减去 ``WSL_PHANTOM_MB``(实测两者等价)。``raw_used`` 是没换算过的原始读数,
+    **一起留下来**:将来驱动改了、幻影变了,看这一列就能发现,而不是信一个常数。
+    """
     if not cuda_visible():
-        return float("nan"), float("nan")
+        nan = float("nan")
+        return nan, nan, nan, "无 CUDA"
     free, total = torch.cuda.mem_get_info()
-    return (total - free) / MB, total / MB
+    raw_used = (total - free) / MB
+    total_mb = total / MB
+    exact = nvidia_smi_used_mb()
+    if exact is not None:
+        return exact, raw_used, total_mb, "nvidia-smi(真值)"
+    return raw_used - WSL_PHANTOM_MB, raw_used, total_mb, "mem_get_info−幻影(换算)"
 
 
 @dataclass
@@ -63,11 +124,15 @@ class MemSnapshot:
     allocated_mb: float
     reserved_mb: float
     peak_mb: float
-    device_used_mb: float
+    device_used_mb: float  # **真值**(nvidia-smi 或换算后的);别拿 mem_get_info 原样当它
     device_total_mb: float
     rss_mb: float
     delta_allocated_mb: float
     t: float
+    # 没换算过的原始读数 + 这次用的是哪条路。**留着是为了将来能发现幻影变了** ——
+    # 常数一旦漂了,``device_used_mb - device_raw_mb`` 就不再是 -1063,看一眼就知道。
+    device_raw_mb: float = float("nan")
+    device_source: str = ""
 
     def as_row(self, cuda: bool = True) -> str:
         """输入:是否按 CUDA 口径渲染。行为:格式化成表格一行。输出:str。"""
@@ -95,7 +160,7 @@ class MemProbe:
 
     HEADER = (
         f"  {'板块':<28s} {'已分配MB':>10s} {'本步增量MB':>11s} "
-        f"{'预留MB':>10s} {'峰值MB':>10s} {'设备已用MB':>11s} {'进程RSS_MB':>10s}"
+        f"{'预留MB':>10s} {'峰值MB':>10s} {'整卡MB':>11s} {'进程RSS_MB':>10s}"
     )
 
     def __init__(self, title: str = "显存账本") -> None:
@@ -121,7 +186,7 @@ class MemProbe:
             peak = torch.cuda.max_memory_allocated() / MB
         else:
             allocated = reserved = peak = float("nan")
-        used, total = _device_used_mb()
+        used, raw, total, source = _device_used_mb()
         self._run_peak = max(self._run_peak, 0.0 if peak != peak else peak)  # noqa: PLR0124 - nan 判定
         snap = MemSnapshot(
             label=label,
@@ -135,6 +200,8 @@ class MemProbe:
             if allocated == allocated
             else float("nan"),
             t=time.perf_counter() - self._t0,
+            device_raw_mb=raw,
+            device_source=source,
         )
         if allocated == allocated:
             self._last_alloc = allocated

@@ -79,7 +79,8 @@ python tools/lora/make_report.py --run-dir logs/lora/run1
 ```
 
 一句话版（RTX 5080 Laptop，容器内跑）：test accuracy / macro-F1 = **0.9700 / 0.9700**，top-2 = **1.0000**，
-误差 30 条全在 `3→1`(27)、`1→0`(2)、`0→1`(1)；训练峰值 allocated **1086.5 MB**、设备级 **2505.6 MB**。
+误差 30 条全在 `3→1`(27)、`1→0`(2)、`0→1`(1)；训练峰值 allocated **1086.5 MB**、**整卡真值 1442 MB**
+（`nvidia-smi` 口径；同一个数在 `mem_get_info` 里会显示成 2505.6 MB，那是**假的**，见下面「显存报告怎么读」）。
 
 ## 显存报告怎么读
 
@@ -87,7 +88,7 @@ python tools/lora/make_report.py --run-dir logs/lora/run1
 
 | 板块 | 含义（具体数值见报告第五节） |
 |---|---|
-| 起始 | CUDA context + 库句柄 + 其它进程；**`allocated` 不含这部分，所以必须看「设备已用」列** |
+| 起始 | CUDA context + 库句柄 + 其它进程（本机实测 **234 MB**）；`allocated` 不含这部分，所以必须看「整卡」列 —— 那一列是 `nvidia-smi` 给的**真值** |
 | 基座权重上卡 | 102.27M 参数 × 4 B ≈ 391 MB（磁盘上 `pytorch_model.bin` 411 MB） |
 | 注入 LoRA + 分类头 | 只多 1 MB 级（294,912 + 3,076 个可训练参数） |
 | AdamW 状态 | **懒分配**：`on_train_begin` 时还是 0，第一步之后才出现 |
@@ -114,14 +115,20 @@ AdamW 8 B/可训练参数折算 —— 所以**全参微调 ≈ 16 B/参数，Lo
 
 **最少要多少显存**（`vram_budget.py` 用分配器上限实测出来的，详见报告 §5.2）：
 
-| 口径 | 分配器下限 | 加上 CUDA context(≈1.3 GB) | 建议留 20% 余量 |
+| 口径 | 分配器下限 | 加上 CUDA context（**实测 234 MB**） | 建议留 20% 余量 |
 |---|---|---|---|
-| 动态 padding（真实训练就是这样） | 1076~1109 MB | 2374~2406 MB | **≈2.8 GB** |
-| pad 到 64（最坏情况） | 1467~1549 MB | 2765~2846 MB | **≈3.3 GB** |
+| 动态 padding（真实训练就是这样） | 1076~1109 MB | 1310~1343 MB | **≈1.6 GB** |
+| pad 到 64（最坏情况） | 1467~1549 MB | 1701~1783 MB | **≈2.1 GB** |
 
-也就是说：**2.4 GB 以下必 OOM**（实测 1076 MB 分配器 + 1.3 GB context 就崩），
-**3 GB 以上随便跑**。注意那个 1.3 GB 的 context 是固定开销（Blackwell + 这套 torch 构建），
-模型本身只占 0.4 GB —— 卡越小、这套固定开销越低（老卡常见 300~600 MB）。
+也就是说：**1.4 GB 以下会 OOM**（实测 1076 MB 分配器 + 234 MB context 就崩），**1.6 GB 以上随便跑**。
+另一条独立读数印证它：真跑一遍训练，从**空卡的 0 MiB** 起量，整卡峰值 **1442 MB**
+（分配器 1086.5 + context 234 + 预留碎片 ~121）。
+
+> ⚠️ **别用 `torch.cuda.mem_get_info()` 估显存需求。** WSL2 的 CUDA-on-DXG 驱动在
+> `cuMemGetInfo` 上有一个 **1063 MiB 的常数虚报**（空 context、+2 GiB、真实训练三次对照
+> 差值都是 1063，见报告 §5.3）。本 README 早先据此写过「至少 2.4 GB / context ≈1.3 GB」——
+> **那是把幻影当成了 context，多算了一倍**。真值只有两条路，而且逐 MiB 一致：
+> 宿主侧 `nvidia-smi.exe`，或**容器内** `nvidia-smi`（`mem_probe.nvidia_smi_used_mb()` 用的就是它）。
 
 ## 两个实测出来的结论（别照抄别的项目）
 
