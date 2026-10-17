@@ -1,5 +1,5 @@
 /**
- * M7.2 的浏览器实测：知识库管理页走一遍真实流程。
+ * 知识库管理页的浏览器实测：走一遍真实流程。
  *
  * 对着 `scripts/acceptance/serve_fake_backend.py`(真 uvicorn + 假依赖,18081)跑:
  *
@@ -10,7 +10,7 @@
  *   5. 删除(两步确认)→ 卡片消失,提示语如实说出**删了几块向量**;
  *   6. 删完再预览 → 404(与后端联动)。
  *
- * 跑法(准备见 docs/frontend.md §7)::
+ * 跑法(准备)：
  *
  *   RAG_EMBEDDING__DEVICE=cpu .venv/bin/python scripts/acceptance/serve_fake_backend.py
  *   LD_LIBRARY_PATH=$PWD/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu \
@@ -24,7 +24,7 @@ const path = require('node:path')
 const REPO_ROOT = path.resolve(__dirname, '../..')
 
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
+// 的三步准备）；换机器时不改源码，设个环境变量即可。
 const { chromium } = require(
   process.env.PLAYWRIGHT_MODULE
   || path.join(REPO_ROOT, '.cache/pw/node_modules/playwright'),

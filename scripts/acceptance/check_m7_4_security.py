@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""M7.4 契约：安全收口（限流 / 登出撤销 / 路由守卫全量扫描 / CSP / CORS）+ 桌面壳。
+"""契约：安全收口（限流 / 登出撤销 / 路由守卫全量扫描 / CSP / CORS）+ 桌面壳。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m7_4_security.py
 
-**这一份在堵什么洞**：M7.1–M7.3 把界面做完了，但安全那一半还留着四个口子：
+**这一份在堵什么洞**：界面做完了，但安全那一半还留着四个口子：
 
 1. **没有限流**：一次问答要烧 CPU(嵌入 + 重排)和 token，登录还能被拿来试口令 ——
    一个循环脚本就能把额度吃光，而这件事在日志里长得跟"今天大家都很活跃"一模一样；
@@ -13,15 +13,15 @@
    谁之前拷走了它，"退出"对他没有任何作用；
 3. **新增端点可以悄悄忘掉认证**：现在靠人肉自觉（`/capabilities` 这样公开的、
    `/documents` 这样要 Bearer 的，各写各的）；
-4. **界面没有 CSP**：令牌还在 `localStorage`（已知缺口，见 `deferred.md`），
+4. **界面没有 CSP**：令牌还在 `localStorage`（已知缺口），
    注入一段 script 就能把它读走 —— CSP 是那道兜底。
 
-外加桌面壳（M7.4 的另一半）：**它的可验证部分**在这里钉住 ——
+外加桌面壳（的另一半）：**它的可验证部分**在这里钉住 ——
 ``--help`` / ``--check`` 不依赖 GUI 栈、产物与引用资源都在、``--backend`` 拼进 URL。
 开窗那一步需要图形界面，这台机器没有，所以**不在回归里假装验过**
-（判定标准写在 ``docs/frontend.md`` §7）。
+（判定标准写在 ``scripts/acceptance/`` 里那几条契约的 docstring）。
 
-公开契约::
+公开契约：
 
     POST /api/v1/auth/logout   -> {"revoked": bool}   # 幂等;撤销后同一枚令牌立刻 401
     限流                         每分钟每身份:query 60 / upload 10 / login 10(可按档配)
@@ -631,7 +631,7 @@ def _() -> str:
     # WS 的令牌校验看不到依赖树(它在函数体里手验),所以单独断言它在源码里真的调了
     source_text = (ROOT / "src" / "project_rag" / "api" / "app.py").read_text(encoding="utf-8")
     assert "user_for_ws_token" in source_text, "WS 的令牌校验不见了"
-    # 语料来源是业务数据,必须挂在认证后面(M7.4 之前它是裸的 —— 这条扫描抓到的)
+    # 语料来源是业务数据,必须挂在认证后面（之前它是裸的 —— 这条扫描抓到的)
     assert "/api/v1/sources" in guarded, "/api/v1/sources 又不要求认证了(它是业务数据)"
     # 管理接口:依赖树只看得到"要 Bearer",看不到函数体里的 require_admin ——
     # 所以用**行为**钉(员工 403、无令牌 401),比数一数 require_admin 出现几次结实得多。
@@ -869,8 +869,8 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M7.4 安全收口（限流 / 登出撤销 / 路由守卫 / CSP / CORS）+ 桌面壳",
-        hint="前端改动后先 `cd web && npm run build`；桌面壳开窗要图形界面,这台机器验不了(见 docs/frontend.md §7)",
+        "安全收口（限流 / 登出撤销 / 路由守卫 / CSP / CORS）+ 桌面壳",
+        hint="前端改动后先 `cd web && npm run build`；桌面壳开窗要图形界面,这台机器验不了",
     )
 
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-"""M7.2 契约：知识库管理页（上传 / 状态轮询 / 删除连带删向量 / 预览）+ 它新加的预览接口。
+"""契约：知识库管理页（上传 / 状态轮询 / 删除连带删向量 / 预览）+ 它新加的预览接口。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m7_2_kb.py
 
-**这一份在堵什么洞**：M7.1 的时候「知识库」还只是一张路线图页 —— 后端其实已经有
-清单 / 上传 / 删除三条接口（P0-3b），缺的是**界面**；而「预览」这条**根本没有**：
-文档入库成了什么样，只能去翻原文件或查库。M7.2 补上 `GET /api/v1/documents/{id}/chunks`，
+**这一份在堵什么洞**：聊天页那会儿「知识库」还只是一张路线图页 —— 后端其实已经有
+清单 / 上传 / 删除三条接口，缺的是**界面**；而「预览」这条**根本没有**：
+文档入库成了什么样，只能去翻原文件或查库。这一批补上 `GET /api/v1/documents/{id}/chunks`，
 并把那一页做成能用的。
 
-**预览的口径**（这几条最容易做错，而且错了看不出来）::
+**预览的口径**（这几条最容易做错，而且错了看不出来）：
 
     GET /api/v1/documents/{document_id}/chunks?limit=20&chars=400
       -> {document_id, parent_blocks, child_chunks, returned, truncated,
@@ -55,7 +55,7 @@ def _read(relative: str) -> str:
     """输入:相对 `web/src/` 的路径。行为:读它。输出:正文(不在就报错,不静默给空串)。"""
     path = WEB_SRC / relative
     if not path.is_file():
-        raise AssertionError(f"前端源码不在 {path} —— M7.2 的界面还没落地?")
+        raise AssertionError(f"前端源码不在 {path} —— 知识库页的界面还没落地?")
     return path.read_text(encoding="utf-8")
 
 
@@ -310,7 +310,7 @@ def _() -> str:
 
 
 # ══ 二、知识库页（静态契约） ═════════════════════════════════════════════════
-@check("知识库页：真的接上了四条文档接口（不再是「M7.2 交付」那张路线图）")
+@check("知识库页：真的接上了四条文档接口（不再是路线图页）")
 def _() -> str:
     view = _read("views/KnowledgeView.vue")
     endpoints = _read("api/endpoints.ts")
@@ -319,7 +319,7 @@ def _() -> str:
     for call in ("refreshDocuments", "removeDocument", "openPreview"):
         assert call in view, f"KnowledgeView 没有调 {call}"
     assert "uploadFiles" in _read("components/UploadPanel.vue"), "上传面板没有接上传"
-    assert "M7.2 交付" not in view, "路线图页的文案还在 —— 这一页现在应该是真页面"
+    assert "路线图" not in view, "路线图页的文案还在 —— 这一页现在应该是真页面"
     return "四个 action 都接上;路线图文案已清掉"
 
 
@@ -347,7 +347,7 @@ def _() -> str:
     assert "确认删除?" in card, "第二步的按钮文案不在"
     assert calls[0] > card.index("确认删除?"), "发删除的按钮出现在确认那一步之前"
     # 去注释之后再看 `window.confirm`:组件的 docstring 里正 在解释「为什么不用它」——
-    # 不剥注释的话,解释禁令的那句话本身会把检查判红(与 §5 第 18 条同族:注释被当成代码)
+    # 不剥注释的话,解释禁令的那句话本身会把检查判红(注释被当成代码)
     assert "window.confirm" not in _strip_comments(card), (
         "用了阻塞式 confirm:没法测、也没法显示后端返回的细节"
     )
@@ -386,7 +386,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M7.2 知识库管理页 + 文档预览接口",
+        "知识库管理页 + 文档预览接口",
         hint="前端改动后先 `cd web && npm run build`；产物要入库（Python 侧与镜像都不装 node）",
     )
 

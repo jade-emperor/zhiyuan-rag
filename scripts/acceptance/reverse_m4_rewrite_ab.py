@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M4.6 查询改写 A/B 的反向测试:把两臂产物改回「坏的样子」,确认那几条检查真的会红。
+"""查询改写 A/B 的反向测试:把两臂产物改回「坏的样子」,确认那几条检查真的会红。
 
-用法::
+用法：
 
     .venv/bin/python scripts/acceptance/reverse_m4_rewrite_ab.py
 
@@ -58,7 +58,7 @@ def main() -> int:
         print(
             "数据不在本地(`data/` 不随仓库发布),跳过:\n  "
             + "\n  ".join(str(path.relative_to(ROOT)) for path in missing)
-            + "\nowner:M4.6 —— 造这些产物的命令见 scripts/tools/eval_rewrite_ab.sh 的头部注释。"
+            + "\nowner：改写 A/B —— 造这些产物的命令见 scripts/tools/eval_rewrite_ab.sh 的头部注释。"
         )
         return 0
 

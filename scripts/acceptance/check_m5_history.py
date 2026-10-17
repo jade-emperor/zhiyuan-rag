@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""M5.2 验收：对话历史 —— conversations 表 + 最近 N 轮。
+"""验收：对话历史 —— conversations 表 + 最近 N 轮。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_history.py
 
-本脚本是 **M5.2 契约的唯一权威**（`docs/STATUS.md` §0.1 / §3 只留设计理由，不重复规格）。
+本脚本是这份契约的唯一权威**。
 6.1 的路由契约在 `check_m5_qa.py`，这里只管「历史怎么存、怎么读、什么时候读写」。
 
-公开契约（import 路径本身也是承诺）::
+公开契约（import 路径本身也是承诺）：
 
     from project_rag.domain import ConversationTurn
     ConversationTurn(question: str, answer: str)
@@ -30,14 +30,14 @@
                     session: Session | None = None) -> QaAnswer
     knowledge: Callable[[Sequence[ConversationTurn]], RagAnswer]   # 历史由用例读出来交进来
 
-**端口承诺的两件事**（实现必须满足，本脚本用真 MySQL 逐条验）::
+**端口承诺的两件事**（实现必须满足，本脚本用真 MySQL 逐条验）：
 
     recent(...) 返回的是**时间正序**（最旧在前）—— 就算底层是 ORDER BY id DESC 取的，
                 返回前也要翻正；提示词按正序读才像一段对话。
     record(..., keep=N) 写入这一轮之后，该会话只留**最近 N 轮**，且写入与裁剪
                 在**同一次事务**里 —— 失败不留半条、也不留「裁了一半」的中间态。
 
-表结构是契约的一部分（改这里就要同步 `adapters/conversation_mysql.py`）::
+表结构是契约的一部分（改这里就要同步 `adapters/conversation_mysql.py`）：
 
     CREATE TABLE {table} (
         id         BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -60,7 +60,7 @@
    那层 `SELECT ... FROM (...) AS keep_rows` 去掉就报语法错（原始写法就是这样）。
 4. **表名过白名单**:表名要拼进 SQL（参数化管不到表名），配置写错就可能拼出别的语句。
 
-用例语义（`answer_question` + `Session`，本脚本用全假端口逐条钉）::
+用例语义（`answer_question` + `Session`，本脚本用全假端口逐条钉）：
 
     session is None            → 完全不碰会话存储（不读也不写）
     FAQ 命中 + 有会话           → **不读**历史（标准答案不需要上文），但这一轮**要记**
@@ -68,7 +68,7 @@
     知识库拒答 + 有会话         → 一样记（拒答也是一轮，不然下一轮的「上一句」是错的）
     recent / record 抛错        → **原样上抛**：历史不是可选装饰，写不进去必须当场可见
 
-配置（`config/config.yaml` 的 `conversation` 段）::
+配置（`config/config.yaml` 的 `conversation` 段）：
 
     table: conversations          # 表名
     history_rounds: 5             # 读写共用:读最近 N 轮,写的时候裁到最近 N 轮
@@ -289,7 +289,7 @@ class _World:
 
 
 def _deps(world: _World, **overrides):
-    """按 Deps 契约装一整套假工厂（含 M5.2 的会话工厂）。"""
+    """按 Deps 契约装一整套假工厂（含会话工厂）。"""
     from project_rag.cli import Deps
 
     fields = {
@@ -326,7 +326,7 @@ def _mysql_connect(autocommit: bool = True):
     except Exception as exc:  # noqa: BLE001 - 容器没起是环境问题，不是契约失败
         raise SkipCheck(
             f"MySQL 连不上（{target}）：{type(exc).__name__}: {exc}；"
-            "先看 Windows 侧 Docker Desktop 是否开着（docs/STATUS.md §5 第 10 条），"
+            "先看 Windows 侧 Docker Desktop 是否开着，"
             "或跑 check_env_services.py 定位"
         ) from exc
 
@@ -514,7 +514,7 @@ def _() -> str:
     if defaults.history_max_chars != 0:
         raise AssertionError(
             "字符预算的**代码默认值**应为 0（不限）—— 默认值一律取「这段代码一直以来的行为」，"
-            "要收紧就在 config.yaml 里写（§5 法律 57③）"
+            "要收紧就在 config.yaml 里写"
         )
     try:
         ConversationConfig(history_max_chars=-1)
@@ -814,7 +814,7 @@ def _() -> str:
         _drop_table(table)
 
 
-@check("真实链路：连不上时错误点名 host:port（同 M2 的 FAQ 适配器）")
+@check("真实链路：连不上时错误点名 host:port（同 FAQ 适配器那条）")
 def _() -> str:
     from project_rag.config import get_settings
 
@@ -911,7 +911,7 @@ def _() -> str:
 
 
 # ── 4. 用例：什么时候读、什么时候写（全假） ──────────────────────────────────
-@check("无会话：一个存储调用都没有，结果与 M5.1 完全一致")
+@check("无会话：一个存储调用都没有，结果与合流入口完全一致")
 def _() -> str:
     world = _World(0.2)
     result = world.ask()
@@ -1172,7 +1172,7 @@ def _() -> str:
 
 @check("真实链路：引用快照随这一轮落库、切回旧会话读得回来（老表自动补列）")
 def _citations_roundtrip() -> str:
-    """作者报的那条:**答案里的 [1][2] 还在,引用卡片没了** —— 因为它从来没被存过。
+    """那条报障:**答案里的 [1][2] 还在,引用卡片没了** —— 因为它从来没被存过。
 
     这条盯三件事:① 引用随 ``record`` 落库、``recent`` 读回来(序号/来源/页码/分数/预览);
     ② 预览按 ``PREVIEW_CHARS`` 截断 —— 实时那份与历史那份必须是同一个数,否则
@@ -1355,7 +1355,7 @@ def _record_keeps_citations_and_budget_ignores_them() -> str:
 
 @check("真实链路：账本带 token(含缓存命中)的行来回一趟 MySQL —— 消耗报表按三档×两时段算得出钱")
 def _() -> str:
-    """P0-7:账本是"整行 JSON + 几列索引",token 那四个字段**只进 payload**;
+    """账本是"整行 JSON + 几列索引",token 那四个字段**只进 payload**;
     而**时段**靠存储层盖的 ``ts`` + ``ts_offset``(读回来时会附在行里)—— 这条把三件事一起验了:
     写进去能原样读回来、读回来的时间戳**是个绝对时刻**(带时区)、报表据此判得出时段。
 
@@ -1514,7 +1514,7 @@ def _ddl_options_are_shared() -> str:
 
 @check("真实链路：老表(只写了 CHARSET)被 init_schema 扳成同一族，会话目录能 JOIN 出来")
 def _collation_heals_legacy_tables() -> str:
-    """**这一条复现作者报的那次故障**:``session_owner``(老 DDL,只写 CHARSET ⇒ 0900)
+    """**这一条复现那次故障**:``session_owner``(老 DDL,只写 CHARSET ⇒ 0900)
     JOIN ``conversations``(写了 COLLATE ⇒ unicode)报 1267,前端整页会话读不出来。
 
     三步:① 按老 DDL 建探针表 → 断言 JOIN **确实会炸**(前置条件;不炸说明这台 MySQL 的默认
@@ -1670,7 +1670,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M5.2 对话历史验收")
+    return report("对话历史验收")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""M7.3 的反向测试：把可观测看板与 `capabilities.metrics` 改回坏样子，确认检查真的会红。
+"""的反向测试：把可观测看板与 `capabilities.metrics` 改回坏样子，确认检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m7_3_metrics.py
 
 **为什么专门有一份**：`check_m7_3_metrics.py` 里有一半是**静态契约**（读前端源码做正则
 断言），而静态契约的老毛病是它可能永远为真。这里每条都真的把代码改坏一次，再看那一行变没变红
-（"没红过的检查 = 没有检查"，`STATUS.md` §5 第 16 条）。
+（"没红过的检查 = 没有检查"）。
 
 十三条各自的坏法，共同点是**都不会报错**：
 

@@ -1,29 +1,15 @@
 #!/usr/bin/env python
-"""M3 验收：向量知识库 + RAG 问答。
+"""验收：向量知识库 + RAG 问答。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m3_rag.py
 
-本脚本是 M3 契约的**唯一权威**（`docs/STATUS.md` 只留设计理由，不重复规格）。
-M3.1–M3.9 **全部已落地**，计划内**没有**留给后继里程碑的 SKIP 了 ——
-原先那条「融合路由（M5）」在 M5.1 落地后已转成真断言（见文件末尾那条全链路检查）。
+本脚本是这份契约的**唯一权威**。
+计划内的 SKIP 已全部转成真断言（「融合路由」那条见文件末尾的全链路检查）。
 允许存在的 SKIP 只剩一类：前置条件不满足（容器 / GPU 沙箱）。
 
-M3 分步（一步一绿一提交；每步都已落地）::
-
-    M3.1 配置三段（milvus / embedding / rag）+ 本骨架
-    M3.2 domain(Chunk / RetrievedChunk) + ports(Embedder / VectorStore) + 内存 Fake
-    M3.3 modelscope 下 bge-m3 到 models/ + adapters/embedder_bge_m3.py
-    M3.4 中文递归切分 + ingest（文档 → 子块 → 向量 → upsert 幂等）
-    M3.5 adapters/milvus_store.py + 组合根真装配（数据真正进库）
-    M3.6 answer_rag + prompts + rag 子命令（答案带 [1][2] 引用）
-    M3.7 父子分层（子块检索 → 还原父块）
-    M3.8a 关键字那一路（KeywordIndex + BM25KeywordIndex + 共享分词器）
-    M3.8b 融合（fuse_rankings 的 rrf / weighted）+ RetrievalOptions 接上配置
-    M3.9 reranker：CrossEncoder 精排父块（同一步里把 chunk_id 换成 sha256）
-
-配置契约（本步钉住；默认值要改就得同时改这里 + config.yaml）::
+配置契约（本步钉住；默认值要改就得同时改这里 + config.yaml）：
 
     milvus:    host=127.0.0.1 port=10086 database=default collection=rag_chunks
     embedding: model_dir=models/bge-m3 rerank_model_dir=models/bge-reranker-v2-m3
@@ -32,9 +18,9 @@ M3 分步（一步一绿一提交；每步都已落地）::
                retrieval_k=5 candidate_m=2 fusion=rrf rrf_k=60
                bm25_weight=0.5 vector_weight=0.5 rerank=True
 
-``retrieval_k`` / ``candidate_m`` 在 被作者调成 10/3、随后又被 M4 的评估集
-量回了 5/2（均值 0.9347 vs 0.9313，详见 ``docs/STATUS.md`` §0.4）——
-**这就是 M4 存在的意义：调参不再靠感觉**。
+``retrieval_k`` / ``candidate_m`` 曾被调成 10/3、随后又被评估集
+量回了 5/2（均值 0.9347 vs 0.9313）——
+**这就是评估集存在的意义：调参不再靠感觉**。
 ⚠️ ``config.py`` 里 ``RagConfig`` 的字段默认值**也要一起改**（本文件检查的是
 **生效值**，所以它拦不住「yaml 改了、类默认值没改」这种半成品）。
 
@@ -53,7 +39,7 @@ M3 分步（一步一绿一提交；每步都已落地）::
 
 环境变量覆盖沿用 ``RAG_`` 前缀 + ``__`` 分层：``RAG_MILVUS__PORT``、``RAG_RAG__RETRIEVAL_K``。
 
-形状契约（**已实现**；要改形状就先改这里，再改代码）::
+形状契约（**已实现**；要改形状就先改这里，再改代码）：
 
     domain: Chunk(chunk_id, text, source, doc_id, parent_id, parent_content, page)
             ChunkGroup(parent_text, children, child_starts)   # 切分器只切块,id 是用例层的事
@@ -74,16 +60,16 @@ M3 分步（一步一绿一提交；每步都已落地）::
     Deps:   embedder_factory / vector_store_factory / keyword_index_factory /
             reranker_factory（仍是惰性工厂）
 
-M3.9 重排契约（**顺序是这一步的全部**）::
+重排契约（**顺序是全部**）：
 
     ports:  Reranker.rerank(query, texts) -> Sequence[float]   # 同序等长,越大越相关
     domain: Citation.rerank_score: float | None = None          # None = 没重排过
 
-    管道顺序::
+    管道顺序：
 
         召回(k×2) → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
 
-    顺序一一对应（左 = 常见做法，右 = 本项目与它的差别）::
+    顺序一一对应（左 = 常见做法，右 = 本项目与它的差别）：
 
         先按父块去重                  ←→  折叠父块（先去重，别重排重复的子块）
         pairs = [[query, 正文]]        ←→  重排**父块正文**（context_text）
@@ -97,17 +83,17 @@ M3.9 重排契约（**顺序是这一步的全部**）::
     bge-reranker-v2-m3 的 max_seq_length 实测 8192,而我们父块平均 498 / 最长 675 token。
     两边都没被证伪,所以**重排单位是个待评估的选择,不是定论**:换的代价是把
     ``collapse_parents`` 与 ``rerank_citations`` 换个位置（约 3 行）,
-    触发条件与改法见 ``docs/deferred.md`` §3;M4 的评估集是唯一裁判。
+    触发条件与改法看这个旋钮自己的说明;评估集是唯一裁判。
 
     **排序分与重排分是两个字段,不合并**:``Citation.score`` 仍是召回/融合分。
     合并成一个字段就再也看不出「重排把融合的第 3 提到了第 1」——而那正是调重排时唯一要看的东西。
     两个分数**不可比**（RRF ≈0.016 / 重排是 sigmoid 后的 0~1）。
 
-    **延迟指标（M3.9 起纳入验收）**:模型加载完成后的单条重排 **p99 < 1s**。
+    **延迟指标（起纳入验收）**:模型加载完成后的单条重排 **p99 < 1s**。
     口径是**只算重排推理**,冷启动加载时间单独量、单独打印,**不参与判定**
     （含加载的话任何硬件都过不了:CPU 加载 1.6s、GPU 0.5s 就已经超了）。
 
-    实测（候选取硬上界 2×retrieval_k 个最长父块 = 最坏输入）::
+    实测（候选取硬上界 2×retrieval_k 个最长父块 = 最坏输入）：
 
         CPU fp32   9 条 ≈ 6000 ms   ← 不达标,所以默认配置走 GPU
         GPU fp32   9 条 ≈  288 ms
@@ -116,11 +102,11 @@ M3.9 重排契约（**顺序是这一步的全部**）::
 
     CPU 上没有可达路径:24 核已吃满（16 线程反而更快）、无 AVX-512/AMX 所以 bf16 用不了、
     单条 0.2s 固定开销 + 2.2ms/token。要降到 1s 得同时上 ONNX int8 与更小的重排单位,
-    两条都要 M4 验证不伤质量 —— 而本机有 RTX 5080,`embedding.device=cuda` 一行就绕过去了。
+    两条都要评估集验证不伤质量 —— 而本机有 RTX 5080,`embedding.device=cuda` 一行就绕过去了。
     CPU 保留为**兜底**:换台没有 GPU 的机器时把 device 改回 cpu,验收里那条延迟检查会
     明确失败（而不是悄悄放行）。
 
-分层（静态扫描，不靠自觉；M3.3 起生效）：``pymilvus`` / ``milvus_model`` /
+分层（静态扫描，不靠自觉）：``pymilvus`` / ``milvus_model`` /
 ``sentence_transformers`` 只准出现在 ``adapters/``；``application/`` 只准依赖标准库 +
 ``domain`` / ``ports`` / ``observability``。（适配器**不要求**显式继承端口 —— 符合性由 pyright 断。）
 """
@@ -141,7 +127,7 @@ from _harness import check, report, env, SkipCheck
 # 源码根:分层扫描要按文件解析 import
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "project_rag"
-# M3.4 的验收语料:课程大纲(来源与形状见 data/README.md)
+# 验收语料:课程大纲(来源与形状见 data/README.md)
 CORPUS_DIR = ROOT / "data" / "corpus" / "ai_data"
 
 # 契约默认值（必须与 config/config.yaml 一致）。
@@ -164,9 +150,9 @@ EXPECTED_RAG = {
     "parent_chunk_size": 1200,
     "child_chunk_size": 300,
     "chunk_overlap": 50,
-    #：作者一度调成 retrieval_k=10 / candidate_m=3，M4 的评估集量过之后**回退到 5/2**
+    # 一度调成 retrieval_k=10 / candidate_m=3，评估集量过之后**回退到 5/2**
     # （四指标均值 0.9347 → 0.9313：recall 涨了，但 precision 与 faithfulness 掉了，
-    # 代价是多喂一块父块）。A/B 证据在 docs/STATUS.md §0.4，数据集按旋钮命名、可重跑。
+    # 代价是多喂一块父块）。A/B 证据在，数据集按旋钮命名、可重跑。
     "retrieval_k": 5,
     "candidate_m": 2,
     "fusion": "rrf",
@@ -191,7 +177,7 @@ class _RecordingLLM:
             if message.role == "user":
                 self.prompts.append(message.content)
         yield LlmDelta(text=self.reply)
-        # 收尾帧:M5.3a 起端口吐的是帧,消费方看 last=True 那帧的结束原因
+        # 收尾帧:端口吐的是帧,消费方看 last=True 那帧的结束原因
         yield LlmDelta(finish_reason="stop", last=True)
 
 
@@ -293,7 +279,7 @@ def _imported_roots(path: Path) -> set[str]:
     return roots
 
 
-# ── 1. 配置（M3.1 的真实内容） ────────────────────────────────────────────────
+# ── 1. 配置（的真实内容） ────────────────────────────────────────────────
 @check("配置：milvus / embedding / rag 三段齐全、是嵌套模型、默认值与契约一致")
 def _() -> str:
     from pydantic import BaseModel
@@ -383,7 +369,7 @@ def _() -> str:
 
     钉死具体值等于把**部署选择**当成**契约**：本机从 cpu 换成 cuda 时，
     一批毫不相干的检查会一起红，而它们想表达的其实是同一件事。
-    契约只该管两件：配置里看得见、适配器真的读。后者由 M3.9 那条适配器检查盯着。
+    契约只该管两件：配置里看得见、适配器真的读。后者由适配器那条检查盯着。
     """
     import yaml
 
@@ -536,7 +522,7 @@ def _() -> str:
     state = "已存在" if exists else "尚未创建（先跑一次 ingest）"
     return f"服务端 {version}，库 {settings.milvus.database} 可用，集合 {settings.milvus.collection} {state}"
 
-# ── 3. 领域模型 / 端口 / 组合根 / 嵌入（M3.2–M3.3） ───────────────────────────
+# ── 3. 领域模型 / 端口 / 组合根 / 嵌入 ───────────────────────────
 @check("导出完整：domain/models.py 与 ports/ 里定义的每个公开类型都能从包入口导入")
 def _() -> str:
     """一条从三次真实事故里长出来的检查。
@@ -582,7 +568,7 @@ def _() -> str:
 def _() -> str:
     import dataclasses
 
-    module = _has("project_rag.domain", ("Chunk", "Embedding", "RetrievedChunk"), "M3.2")
+    module = _has("project_rag.domain", ("Chunk", "Embedding", "RetrievedChunk"), "领域模型与端口")
     expected = {
         "Chunk": {"chunk_id", "text", "source", "doc_id", "parent_id", "parent_content"},
         # 只有 dense：稀疏向量已弃用（词面那一路交给 BM25），见本脚本 docstring
@@ -622,7 +608,7 @@ def _() -> str:
     module = _has(
         "project_rag.ports",
         ("Embedder", "VectorStore", "KeywordIndex", "Reranker"),
-        "M3.2 / M3.9",
+        "/ 重排",
     )
     if not hasattr(module.KeywordIndex, "search"):
         raise AssertionError("KeywordIndex 缺 search；端口契约见本脚本 docstring")
@@ -655,19 +641,19 @@ def _() -> str:
 def _() -> str:
     import dataclasses
 
-    deps_cls = _has("project_rag.cli.deps", ("Deps",), "M3.2").Deps
+    deps_cls = _has("project_rag.cli.deps", ("Deps",), "领域模型与端口").Deps
     fields = {field.name: field for field in dataclasses.fields(deps_cls)}
     missing = sorted(
         {"embedder_factory", "vector_store_factory", "reranker_factory"} - set(fields)
     )
     if missing:
-        raise SkipCheck(f"Deps 还没有 {missing}；owner：M3.2 / M3.9")
+        raise SkipCheck(f"Deps 还没有 {missing}；owner：领域模型与端口 / 重排")
     for name in ("embedder_factory", "vector_store_factory", "reranker_factory"):
         if fields[name].default is not None:
             raise AssertionError(
                 f"Deps.{name} 默认应为 None（不注入就不造），实际 {fields[name].default!r}"
             )
-    return f"Deps 共 {len(fields)} 个字段,两个 M3 工厂默认 None"
+    return f"Deps 共 {len(fields)} 个字段,两个知识库工厂默认 None"
 
 
 @check("端口语义：内存实现跑通 upsert → search → delete_by_source（幂等 / 过滤 / 空库）")
@@ -761,7 +747,7 @@ def _() -> str:
         from project_rag.adapters.embedder_bge_m3 import BGEM3Embedder
     except ImportError as exc:
         raise AssertionError(
-            f"adapters/embedder_bge_m3.py 还没落地（{exc}）；owner：M3.3"
+            f"adapters/embedder_bge_m3.py 还没落地（{exc}）；owner：嵌入适配器"
         ) from exc
 
     texts = ["退款流程怎么走？", "怎么申请退款", "怎么养猫"]
@@ -825,7 +811,7 @@ def _() -> str:
     if leaked:
         raise AssertionError(
             f"SDK 泄漏到适配器之外：{leaked}。"
-            "这是「换向量库 / 换模型不用改用例层」的唯一保证（同 M1 的 langchain 规则）"
+            "这是「换向量库 / 换模型不用改用例层」的唯一保证（同第一轮的 langchain 规则）"
         )
     absent = [root for root in M3_SDK_REQUIRED if root not in hits]
     if absent:
@@ -839,7 +825,7 @@ def _() -> str:
 # ── 6. 更后面的步（做完哪一步，哪一条自己变绿） ───────────────────────────────
 
 
-# ── 5. 加载 / 切分 / ingest（M3.4） ───────────────────────────────────────────
+# ── 5. 加载 / 切分 / ingest ───────────────────────────────────────────
 @check("加载：真实语料读成 Document（source 去掉 _data、按路径排序、BOM 已吃）")
 def _() -> str:
     from project_rag.adapters.document_loader import load_documents
@@ -1266,7 +1252,7 @@ def _() -> str:
             "先在 Windows 侧 docker compose up -d"
         ) from exc
 
-    # 临时集合:验收不该碰生产集合,也不该留下垃圾(模式同 M2 的临时 FAQ 表)
+    # 临时集合:验收不该碰生产集合,也不该留下垃圾(模式同 FAQ 通道的临时表)
     store = MilvusVectorStore(
         settings.milvus.model_copy(
             update={"collection": f"rag_acceptance_{uuid.uuid4().hex[:8]}"}
@@ -1355,7 +1341,7 @@ def _() -> str:
     ]
     if missing:
         raise AssertionError(
-            f"build_real_deps 里没有装配 {missing} —— 真实装配必须接真实现；owner：M3.5 / M3.9"
+            f"build_real_deps 里没有装配 {missing} —— 真实装配必须接真实现；owner：向量库装配 / 重排"
         )
     fake = [name for name in ("InMemoryVectorStore", "HashingEmbedder") if name in source]
     if fake:
@@ -1450,9 +1436,9 @@ def _() -> str:
         llm_factory=lambda: _RecordingLLM(reply="在订单页点申请退款 [1]"),
         embedder_factory=lambda: embedder,
         vector_store_factory=lambda: store,
-        # M3.8b 起 rag 是两路融合:关键字那一路也要注入,否则命令会 fail-fast
+        # rag 是两路融合:关键字那一路也要注入,否则命令会 fail-fast
         keyword_index_factory=lambda: BM25KeywordIndex(store),
-        # M3.9 起 rag.rerank 默认 True,组合根必须装得出重排器,否则命令会 fail-fast
+        # rag.rerank 默认 True,组合根必须装得出重排器,否则命令会 fail-fast
         reranker_factory=lambda: reranker,
     )
 
@@ -1607,7 +1593,7 @@ def _() -> str:
     return "空库空序列 / k 截断 / source 过滤 / 语料变化后自动重建"
 
 
-@check("BM25 索引：语料没变就不再 load_all（每查询只读廉价指纹）—— M5.6 省的那一笔")
+@check("BM25 索引：语料没变就不再 load_all（每查询只读廉价指纹）—— 冷启动那次省下的那一笔")
 def _() -> str:
     from project_rag.adapters import BM25KeywordIndex, HashingEmbedder, InMemoryVectorStore
     from project_rag.domain import Chunk
@@ -1684,7 +1670,7 @@ def _() -> str:
     def hooked_tokens(text: str):
         """在「本次检索已选定索引、还没遍历语料」的时刻,让另一个线程把语料换掉。
 
-        这**正是** M5.6 之前那个实现的缺陷窗口:它先取 ``self._index``,调用 ``tokens()``
+        这**正是**以前那个实现的缺陷窗口:它先取 ``self._index``,调用 ``tokens()``
         之后**又去读 ``self._chunks``** —— 两个线程一交错,本次调用就会拿着旧索引去索引新语料
         (长度不匹配 → IndexError)。把 ``tokens()`` 打桩是为了把这个竞态变成**确定性**的:
         靠线程调度去撞窗口的检查会时红时绿,那种检查不算检查。
@@ -1929,7 +1915,7 @@ def _() -> str:
     return "BM25 那一路进了融合；rag 命令读齐 fusion/rrf_k/两路权重"
 
 
-# ── M3.9 重排 ────────────────────────────────────────────────────────────────
+# ── 重排 ────────────────────────────────────────────────────────────────
 #
 # 顺序是这一步的全部:召回 → 融合 → 折叠父块 → 重排父块正文 → 截断到 candidate_m。
 # 下面逐条钉住它 —— 换顺序等于换分数对应的那段文字,必须由检查看着。
@@ -1943,7 +1929,7 @@ def _() -> str:
     for name in ("embedder_bge_m3.py", "reranker_bge.py"):
         path = SRC / "adapters" / name
         if not path.exists():
-            raise AssertionError(f"adapters/{name} 不存在（owner：M3.9）")
+            raise AssertionError(f"adapters/{name} 不存在（owner：重排）")
         source = path.read_text(encoding="utf-8")
         lines = source.splitlines()
         setter = next((i for i, line in enumerate(lines) if "HF_HUB_OFFLINE" in line), -1)
@@ -2052,7 +2038,7 @@ def _worst_parents(limit: int) -> list[str]:
     return sorted(parents, key=len, reverse=True)[:limit]
 
 
-@check("重排延迟：模型加载完后单条 p99 < 1s（M3.9 的硬指标；冷启动加载不计入）")
+@check("重排延迟：模型加载完后单条 p99 < 1s（的硬指标；冷启动加载不计入）")
 def _() -> str:
     """口径：只算**重排推理**，不含模型加载。
 
@@ -2103,7 +2089,7 @@ def _() -> str:
             f"重排 p99 = {p99 * 1000:.0f} ms ≥ 1s（{limit} 条父块 / "
             f"{sum(len(t) for t in worst)} 字，device={settings.embedding.device}）。"
             "CPU 上没有可达路径（实测 9 条 ≈6s）—— 把 embedding.device 改成 cuda，"
-            "或按 docs/deferred.md §3 重新评估重排单位"
+            "或按 重新评估重排单位"
         )
     return (
         f"device={settings.embedding.device} use_f16={settings.embedding.use_f16}，"
@@ -2264,7 +2250,7 @@ def _() -> str:
             f"实际 {ranked[0].chunk.parent_id} —— 重排没有真的改变排序"
         )
 
-    # P0-4 那组 A/B 的旋钮：rerank_input="child" 要真的换成**子块正文**。
+    # 那组检索 A/B 的旋钮：rerank_input="child" 要真的换成**子块正文**。
     # **两个方向都要钉**：只钉 parent 的话，旋钮没接上（永远喂父块）也照样绿。
     child_fake = _RecordingReranker(prefer=target.text)
     retrieve(
@@ -2387,7 +2373,7 @@ def _() -> str:
     而是在跑到 A 的时候抛 ``NameError`` —— 报的是那个帮助函数的名字，
     看着像它写错了，不像顺序问题。
 
-    真实事故：CLI 那条 rag 检查用了 M3.9 一节才定义的 ``_RecordingReranker``，
+    真实事故：CLI 那条 rag 检查用了重排那一节才定义的 ``_RecordingReranker``，
     整条红成 ``NameError``；而把同一段逻辑单独抽出来跑却完全正常，很容易白查半天。
     """
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
@@ -2437,12 +2423,12 @@ def _() -> str:
     return f"{len(defined)} 个顶层定义全部先于引用它的检查"
 
 
-@check("全链路：融合路由（M5）—— FAQ 未命中时知识库通道兜底真的被调到")
+@check("全链路：融合路由—— FAQ 未命中时知识库通道兜底真的被调到")
 def _() -> str:
-    """M3 这边只钉**接口**：知识库通道能被「合流」当兜底整条调起来。
+    """这边只钉**接口**：知识库通道能被「合流」当兜底整条调起来。
 
     详细的路由契约（FAQ 命中 / 阈值边界 / 拒答 / 故障 / 惰性构造）在 `check_m5_qa.py`，
-    这里不重复。这条原先是一条点名 M5 的 SKIP —— M5.1 落地后它自己转绿，
+    这里不重复。这条原先是一条点名合流的 SKIP —— 合流入口落地后它自己转绿，
     正是那时候写下「那一步做完这条自己变绿」的意思。
     """
     from project_rag.adapters import HashingEmbedder, InMemoryVectorStore
@@ -2450,15 +2436,15 @@ def _() -> str:
     from project_rag.domain import Chunk, RetrievalOptions
 
     # 用 importlib + getattr 而不是 `from ... import answer_question`:
-    # M5.1 的代码还没落地时，静态导入会让 pyright 报「未知导入符号」——
+    # 合流入口的代码还没落地时，静态导入会让 pyright 报「未知导入符号」——
     # 契约先红是对的，但不该顺手把 pyright 也弄红（那是两码事）。
     answer_question = getattr(
         importlib.import_module("project_rag.application"), "answer_question", None
     )
     if answer_question is None:
         raise AssertionError(
-            "application.answer_question 还没落地（M5.1 的合流入口）；"
-            "owner：M5.1，落地后这条自己变绿"
+            "application.answer_question 还没落地（的合流入口）；"
+            "owner：合流入口，落地后这条自己变绿"
         )
 
     class _EmptyFaqStore:
@@ -2640,7 +2626,7 @@ def _() -> str:
     return "4 种组合都验过：重排只看 rerank_use_f16，且仅 CUDA 生效"
 
 def main() -> int:
-    return report("M3 向量知识库 + RAG 验收")
+    return report("向量知识库 + RAG 验收")
 
 if __name__ == "__main__":
     sys.exit(main())

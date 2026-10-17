@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-5 反向测试:把页码那条链路改回坏样子,确认契约真的会红。
+"""反向测试:把页码那条链路改回坏样子,确认契约真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_p0_5.py
 
@@ -179,7 +179,7 @@ def main() -> int:
  的 `restore_stale_patches` 都能扫到并还原。真踩过:这份 runner 原来用自己的
     `备份名 = <文件名>.py`(扁平),被 SIGTERM 打断后留下的坏源码**别的 runner 看不见** ——
     紧接着跑全量回归,检查读到的是被改坏的 `ingest_documents.py`,报出来的却是"页码契约失败"
-    (`STATUS.md` §0.3 第 37 条)。
+。
     """
     stale = restore_stale_patches()
     if stale:

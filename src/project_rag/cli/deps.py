@@ -49,7 +49,7 @@ def _default_faq_threshold() -> float:
     """输入:无。行为:读配置里的 FAQ 阈值。输出:阈值。
 
     **默认值为什么不写成字面量**:写 `0.85` 就等于在 config 之外又立了一个真源,
-    还得靠一条验收盯着两边一致(法则 #25)。这里改成 dataclass 的 ``default_factory`` ——
+    还得靠一条验收盯着两边一致。这里改成 dataclass 的 ``default_factory`` ——
     它只在**构造 Deps 时**才被调用,所以本模块 import 期仍然不碰 config
     (`--help` 那条路根本不构造 Deps),而 `build_real_deps()` 自动拿到配置值。
     """

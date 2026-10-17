@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-3a 反向测试：把认证/授权逐个改回「坏的样子」，确认对应那条检查真的会红。
+"""反向测试：把认证/授权逐个改回「坏的样子」，确认对应那条检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_p0_3.py          # 全部
     uv run python scripts/acceptance/reverse_p0_3.py RT-4     # 只跑某几条
@@ -154,7 +154,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "WebSocket：带令牌但用别人的会话",
     ),
     (
-        # P0-6:报表从 require_admin 挪到了 require_reports(运维也要能看),
+        # 报表从 require_admin 挪到了 require_reports(运维也要能看),
         # 所以这条坏版本改的是**新的那道门**,needle 也跟着新的检查名走。
         "RT-5  require_reports 不拦（员工也能看报表）",
         "src/project_rag/api/auth.py",

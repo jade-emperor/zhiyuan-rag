@@ -1,15 +1,15 @@
 #!/usr/bin/env python
-"""M5.5 验收：延迟观测（TTFT / tokens per second / 分段耗时）。
+"""验收：延迟观测（TTFT / tokens per second / 分段耗时）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_5_latency.py
 
-本脚本是 **M5.5 契约的唯一权威**（`docs/STATUS.md` §0.5 只留设计理由）。
+本脚本是这份契约的唯一权威**。
 不需要容器、不花钱、不联网:全部用假端口 + 假 LLM 跑,日志用挂在
 ``project_rag.observability.latency`` 上的 handler 抓。
 
-公开契约::
+公开契约：
 
     from project_rag.observability import StreamTiming
     StreamTiming(label, channel=None)
@@ -19,7 +19,7 @@
     from project_rag.application.streaming import timed
     timed(events: Iterator[QaEvent], timing: StreamTiming) -> Iterator[QaEvent]
 
-日志行（``INFO``，logger = ``project_rag.observability.latency``）::
+日志行（``INFO``，logger = ``project_rag.observability.latency``）：
 
     latency label=qa channel=rag thinking=auto faq_ms=108.2 sources_ms=330.5 \
 retrieve_ms=- embed_ms=- vector_ms=- bm25_ms=- fuse_ms=- collapse_ms=- rerank_ms=- \
@@ -29,26 +29,26 @@ tps=57.5 total_ms=3944.2 refused=false truncated=false aborted=false
 **字段与顺序固定**（30 个），拿不到的一律 ``-`` —— 「没量到」和「量到 0」必须分得开;
 ``awk``/``grep`` 才敢按列取。
 
-P0-7 加的四个是**计费口径**（``llm_model`` / ``llm_input_tokens`` /
+计费口径的四个字段是（``llm_model`` / ``llm_input_tokens`` /
 ``llm_cached_input_tokens`` / ``llm_output_tokens``）:
 provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它和 ``tokens``/``think_tokens``
 **不许互相替代** —— 那两个是帧数（给 tps 用）,拿它们乘单价会漏掉思考帧与缓存命中的输入。
 **缓存命中那一列单列**:它的单价与未命中差 50 倍(provider 的 prompt cache)。
 
-口径（改口径 = 改契约）::
+口径（改口径 = 改契约）：
 
     检索分段     retrieve() 内部六处打点：embed / vector / bm25 / fuse / collapse / rerank
                  （六段**各自是自己的时长**;vector 与 bm25 那两路**并行**跑,
                  所以重叠时六段之和**可以大于** retrieve_ms,但绝不会小于它;
-                 没装重排器时 rerank_ms 为 -）
+                 没装重排器时 rerank_ms 为）
     ttft_ms     从流开始到**第一帧非空 token** —— 用户看到第一个字的时刻
     gen_ms      第一帧 token → 最后一帧 token 的墙钟（不含 TTFT;不足两帧给 -,不给 0）
     tps         tokens / gen_ms;不足两帧给 -（单帧算不出速率,不编数）
     llm_think_ms ``llm_start`` → **最后一帧思考帧**;一个思考帧都没看到给 -
-    think_tokens **思考帧数**（0 = 这一轮没看到思考;与 tokens 同样是帧数近似,不给 -）
+    think_tokens **思考帧数**（0 = 这一轮没看到思考;与 tokens 同样是帧数近似,不给）
     thinking     配置档位（auto/off/low/high/max）—— **静态标签,不是测量值**;没传给账本就给 -
 
-**怎么读这三列**（M5.8;最容易读错的是把「没调模型」当成「没想」）::
+**怎么读这三列**（最容易读错的是把「没调模型」当成「没想」）：
 
     llm_ttft_ms=-    think_tokens=0                 → 根本没调模型（FAQ 命中 / 检索为空拒答）
     llm_ttft_ms=578  think_tokens=0                 → 调了、没看到思考（如 thinking=off）
@@ -59,13 +59,13 @@ provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它�
 该恒成立（唯一的例外是 provider 把思考帧和正文交错着发 —— DeepSeek 不这样）。
 
 ``tokens`` 数的是**非空 token 帧的个数**,``think_tokens`` 同理数思考帧 —— DeepSeek 的 SSE
-一个 chunk 通常就是一个 token,够用的近似;精确值要引 tokenizer（见 `docs/deferred.md` §1.3 第 28 条）。
+一个 chunk 通常就是一个 token,够用的近似;精确值要引 tokenizer。
 
 **思考内容不许混进答案**:适配器把 ``reasoning_content`` 装在 ``LlmDelta.reasoning_text``
 上与 ``text`` **分开**（不是塞进 ``text`` 再打个标记）。这样「答案 = 所有 text 帧拼起来」
 这条恒等式不用加任何过滤条件,漏加过滤也不会把思考写到用户脸上。
 
-**五件刻意定下来的事**::
+**五件刻意定下来的事**：
 
     1. **账本显式传递,不用 contextvars**。帧流是同步生成器,会在线程池的不同线程里被
        next()（api 的 _in_thread）,contextvar 的写入会随调用上下文丢失 —— 那会得到
@@ -76,7 +76,7 @@ provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它�
        「边生成边出」和 TTFT 一起没了（本脚本取走第一帧后断言上游只产出了一帧）。
     4. **中断也要留账**。客户端断开时生成器被 close(),走 GeneratorExit 分支:
        「慢到用户跑掉」的请求恰恰最该看;顺手把 close() 传给上游,让它照旧做
-       「这一轮不入库」的清理（M5.3b 的语义不许被这层破坏）。
+       「这一轮不入库」的清理（的语义不许被这层破坏）。
     5. **一次请求只有一条账**。``qa`` 那一层开账,并把**同一个** ``timing`` 交给知识库通道,
        检索/生成的打点记在同一行上（``stream_rag`` 拿到别人的 ``timing`` 就不再自己
        ``emit``、也不再包一层 ``timed``）。**两个各开一条的后果不是"多一行日志"**:
@@ -137,7 +137,7 @@ _FIELD_ORDER = (
     "llm_think_ms",
     "llm_ttft_ms",
     "think_tokens",
-    # provider 回报的**计费口径**(P0-7):模型名 + 输入(含缓存命中)/ 输出 token。
+    # provider 回报的**计费口径**:模型名 + 输入(含缓存命中)/ 输出 token。
     # 它和上面那两个「帧数」是两回事:帧数给 tps 用,这四个给报表算钱用。
     # **命中缓存那一列不能省**:它的单价与未命中差 50 倍(0.02 vs 1 元/百万)。
     "llm_model",
@@ -413,7 +413,7 @@ def _() -> str:
     return f"3 帧里只有 1 帧非空 → tokens=1、ttft={ttft:.1f}ms"
 
 
-@check("口径 tps：单帧不给速率（-），两帧才有；gen_ms 不足两帧也不给 0")
+@check("口径 tps：单帧不给速率（），两帧才有；gen_ms 不足两帧也不给 0")
 def _() -> str:
     timing = _stream_timing()("probe")
     timing.token("甲")
@@ -458,7 +458,7 @@ def _() -> str:
     return "缺失字段用 '-'，tokens=0 / think_tokens=0 照实报"
 
 
-# ── 2b. 思考口径（M5.8） ─────────────────────────────────────────────────────
+# ── 2b. 思考口径 ─────────────────────────────────────────────────────
 @check("口径 思考：空思考帧不算一帧；think_tokens 恒为整数（0 = 这一轮没看到思考，不是 '-'）")
 def _() -> str:
     timing = _stream_timing()("probe")
@@ -712,7 +712,7 @@ def _() -> str:
 
 @check("两路召回并行：墙钟 ≈ max(两路) 而不是相加，融合段不吸「等另一路」的时间")
 def _() -> str:
-    """作者报「就做两路召回并行化」之后的契约。两个场景各钉一件事：
+    """两路召回并行化之后的契约。两个场景各钉一件事：
 
     1. **两路一样慢**(各 0.4s)—— 并行 → 墙钟 ≈ 0.4s,串行 → 0.8s。判据取
        ``墙钟 < 0.7 × (两段之和)``,两侧各留 150ms 余量,不受机器负载影响;
@@ -975,7 +975,7 @@ def _() -> str:
 # ── 6. 行格式（契约的机械部分） ───────────────────────────────────────────────
 @check("用量：provider 回报的 token 落进账本；没回报时是 '-' 而不是 0（两件事不许混）")
 def _() -> str:
-    """P0-7:消耗报表算钱靠的就是这三个字段,所以"没量到"必须是 ``-``。
+    """消耗报表算钱靠的就是这三个字段,所以"没量到"必须是 ``-``。
 
     三种情形各断言一次:
 
@@ -1065,7 +1065,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M5.5 延迟观测（TTFT / tokens per second）验收")
+    return report("延迟观测（TTFT / tokens per second）验收")
 
 
 if __name__ == "__main__":

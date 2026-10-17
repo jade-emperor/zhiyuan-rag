@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """`check_m3_sparse.py` 的反向测试：把索引类型与稀疏那一路改回坏样子，确认检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m3_sparse.py
 

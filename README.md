@@ -32,7 +32,7 @@
 `Dockerfile`、`pyproject.toml` + `uv.lock`、`.env.example`，加上两份文档
 （`README.md` 与本仓的 [`API.md`](API.md)，后者是 HTTP / WebSocket / CLI 接口文档），
 以及验收脚本（`scripts/acceptance/`）。
-（维护者本地的决策与状态文档放在 `docs/`，**不随仓库发布** —— 下文偶尔引用它只作溯源；
+（维护者本地的决策与状态文档放在 `docs/`，**不随仓库发布**；
 克隆者能跑、能读的判据都在 `scripts/acceptance/` 与其 docstring 里。）
 下面这几样**不在**仓库里，得自己准备 —— 缺哪一样，
 对应的功能就跑不起来：
@@ -187,7 +187,7 @@ uv run project-rag ingest --path "$CORPUS"             # 真写 Milvus（幂等�
 **灌完它会把这一批登记回来**（状态 / 块数 / 磁盘字节数），所以知识库页上立刻看得到它们 ——
 以前 `ingest` 不写登记表，后端灌的语料在界面上永远是「未登记」。
 
-**6.4 看/换/删集合**（P0-5 之后每个集合多了一列 `page`，老集合不能写）
+**6.4 看/换/删集合**（现在每个集合多带一列 `page`，老集合不能写）
 
 ```bash
 uv run project-rag collections                          # 有哪些集合、块数 / page 列 / 稀疏列 / 索引类型 / 当前指向哪个
@@ -281,7 +281,7 @@ curl http://localhost:8080/health
   **不用换基础镜像、也不用重建镜像** —— 镜像里的 torch 本来就是 CUDA 版（容器内实测
   `torch 2.14.0+cu130` + 一整套 `nvidia-*`，这也是镜像 11G 的主要来源），缺的只是上面这两件事；
   改完 `docker compose up -d app` 即可（只重建容器）。**这两行必须成对**：只写 `cuda` 不申请 GPU 的
-  后果是**预热静默失败 + `/health` 照样绿**，直到第一次真提问才炸（`docs/STATUS.md` §0.3 第 39 条），
+  后果是**预热静默失败 + `/health` 照样绿**，直到第一次真提问才炸，
   契约 `check_m6_deploy.py`「推理设备与 GPU 预约一致」+ 反向 RT-18 就盯着这个配对。
   实测收益（真容器、真模型）：预热 **18240ms（CPU）→ 7757ms（GPU）**；嵌入 8 条 **CPU 1164ms → GPU 38.2ms**，重排 8 候选 **CPU 527.7ms → GPU 30.7ms**（开 fp16 再快一倍）。
   想开 fp16 用 `embedding.use_f16`（嵌入）与 `embedding.rerank_use_f16`（重排）**两个开关**：
@@ -498,8 +498,8 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | FAQ 缓存 | Redis 短路 + TTL + 装配期/调用期双重降级；兜底答案也缓存 | `adapters/cache_redis.py` / `application/answer_faq.py` |
 | 多轮会话 | `conversations` 表 + 最近 5 轮裁剪（写入与裁剪同事务）+ 参数化查询 | `adapters/conversation_mysql.py` |
 | 流式帧协议 | `sources` / `token` / `done` 三类帧；**非流式入口就是流式的收拢器**（逐字一致） | `application/streaming.py` |
-| HTTP / WebSocket | 27 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、管理报表）+ `/health` 与前端静态入口 | `api/app.py` |
-| 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、**三种角色**：`employee`（检索问答）/ `ops`（只看报表）/ `admin`（全部 + 管理）；"能干什么"只在 `domain/auth.py` 的三张能力表里，接口各自 `require_knowledge` / `require_reports` / `require_admin`，前端只是"不给点" | `domain/auth.py` / `application/security.py` / `api/auth.py` |
+| HTTP / WebSocket | 29 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、报表、账号与组、两个方向的文档授权）+ `/health` 与前端静态入口 | `api/app.py` |
+| 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、**三种角色**：`employee`（检索问答）/ `ops`（问答 + 报表，**不能**管理）/ `admin`（全部 + 管理）；"能干什么"只在 `domain/auth.py` 的三张能力表里，接口各自 `require_knowledge` / `require_reports` / `require_admin`，前端只是"不给点" | `domain/auth.py` / `application/security.py` / `api/auth.py` |
 | 账号与可见范围 | 管理员可建号 / 删号 / 改密码 / 建组（一类员工）；**文档可见范围**按"某个人"或"某个组"授权，**没配规则 = 人人可见**（规则只用来收窄）；检索、清单、预览三处同时生效 | `domain/access.py` / `application/access.py` / `adapters/access_mysql.py` |
 | 消耗报表 | provider 回报的 token 落进账本（模型 / 输入 / **命中缓存** / 输出四个字段），按 `cost.models` 的**三档 × 两时段**单价折成钱（命中 vs 未命中差 50 倍、高峰 vs 空闲差 2 倍）。**时段 = 北京时间工作日 ∩ 09:00–12:00 / 14:00–18:00 ∩ 非中国法定节假日**（价值表原文；节假日表 `cost.holidays` 每年照国务院通知补一行），账本时间戳**带时区**（容器 UTC / 宿主 CST 都不会判错）；**没配单价 → 报"未配置"**，**没量到 / 无时间戳 / 无时区 / 无日历 / 缓存不明 → 各自单独计数**，都不显示成 0 | `application/cost.py` / `config.yaml` 的 `cost` 段 |
 | 文档治理 | 上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 删除（连带删向量与原文件，**语料源材料不动**）；知识库清单是**登记表 × 磁盘 × 向量库三处对账**的实时视图 | `application/documents.py` |
@@ -507,7 +507,7 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 报表 / 账号与权限四页，hash 路由）；**能力接口与 `/auth/me` 是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
 | 桌面壳 | `project-rag-desktop` 一个窗口套在这份产物上；本地模式用回环 HTTP 托管随包产物、`--remote` 直接开后端那份界面 | `src/project_rag/desktop.py` |
 | 延迟观测 | 一次回答一行账：检索六段 + TTFT + 吐字速率 + **思考三字段** | `observability/latency.py` |
-| 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（作者的离线工具，**不随仓库发布**；要复现得自备语料） |
+| 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（离线工具，**不随仓库发布**；要复现得自备语料） |
 | 验收体系 | 每个能力配一份可执行契约，PASS/FAIL/SKIP 三态；另有反向测试证明检查真的会红 | `scripts/acceptance/`（**在仓库里**，克隆下来就能跑） |
 
 ### 界面与角色（一份 Vue 单页应用）
@@ -529,16 +529,16 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 
 ```bash
 grep -h " | latency " logs/app.log | tail -20
-# label=rag channel=rag thinking=off faq_ms=- rewrite_ms=- sources_ms=6308.4 retrieve_ms=6308.4 embed_ms=176.4 \
-#   vector_ms=112.8 bm25_ms=1095.5 fuse_ms=0.0 collapse_ms=0.0 rerank_ms=4923.6 \
-#   llm_think_ms=- llm_ttft_ms=422.7 think_tokens=0 ttft_ms=6731.2 tokens=54 gen_ms=345.4 \
-#   tps=156.4 total_ms=7077.9 refused=false truncated=false aborted=false
+# label=qa request_id=7e3d54420f8f channel=rag thinking=off cold=false builds=0 faq_ms=7.1 rewrite_ms=- \
+#   sources_ms=968.4 retrieve_ms=968.4 embed_ms=58.6 vector_ms=424.9 bm25_ms=199.5 \
+#   fuse_ms=0.1 collapse_ms=0.0 rerank_ms=285.3 llm_think_ms=- llm_ttft_ms=867.4 think_tokens=0 \
+#   llm_model=deepseek-flash llm_input_tokens=1476 llm_cached_input_tokens=0 llm_output_tokens=10 \
+#   ttft_ms=1836.3 tokens=10 gen_ms=129.2 tps=77.4 total_ms=1991.3 \
+#   refused=false truncated=false aborted=false
 ```
 
-> **这一行里的 `bm25_ms` 已经是"旧数字"了**（P0-1，）：BM25 那一路原本**每查询**都向
-> Milvus 要一次语料指纹（3938 块实测 **397.6ms**，而真正的 BM25 打分只要 ~1ms），现在指纹先进
-> Redis、未命中才回源。真环境同一进程连查 4 次的对照：**2016 / 3.5 / 2.2 / 1.9 ms**（旧实现
-> 1517 / 397.2 / 398.2 / 200.8）→ 稳态 **~400ms → ~2ms**。上面这条日志是加缓存之前留下的。
+一次真实的热启动问答（2.0s 里 968ms 花在检索、867ms 等模型首字、129ms 吐字）：
+两路召回是**并行**的（稠密 425ms 与关键字 200ms 叠着跑），所以那两格的**和**大于检索总时长。
 
 字段口径（拿不到的一律 `-`，「没量到」与「量到 0」分得开）：
 
@@ -591,7 +591,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 ### 已知边界
 
 - **还没接的格式**：HTML / Excel / 扫描件 OCR，以及页码、工作表这类元数据到引用清单的透传；
-  真要做时先 `uv sync --extra unstructured`（那一档默认不装，见 §1）。
+  真要做时先 `uv sync --extra unstructured`（那一档默认不装）。
 - **镜像已在真机构建并跑起来过**（之前"开发环境里没有 `docker` 命令"那条已作废）：
   `docker compose up -d --build` 构建成功、app 变 healthy、宿主 8080 上打开的就是仓库里这份
   Vue 前端（容器内预热 7649ms、`/static/app/` 200、旧调试页 404）。
@@ -604,9 +604,9 @@ API.md               HTTP / WebSocket / CLI 接口文档
   要额外的打包链路，这两件目前都没验过（如实写在这里，别读成"已经能用"）。
 - 意图识别 / 检索策略选择、观测聚合（p50/p95）等未做 ——
   （检索那两路**已经并行**：稠密与关键字叠着跑，见下面「两路召回 + 融合」一行）
-  「暂不做」的条目与各自的**触发条件**记在维护者本地的 `docs/deferred.md`（不随仓库发布）。
-- 当前状态、验收基线、每条踩过的坑同样记在维护者本地的 `docs/STATUS.md`；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 31 套契约 + 22 份反向 runner，
+  「暂不做」的条目与各自的**触发条件**记在维护者本地的（不随仓库发布）。
+- 当前状态、验收基线、每条踩过的坑同样记在维护者本地的；
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 32 套契约 + 24 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---
@@ -626,7 +626,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 | | 内容 |
 |---|---|
 | **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` |
-| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原）、`scripts/tools/`（作者的**离线工具**：造评估集 / 灌 FAQ / 下模型 / 跑 RAGAS / A-B 读数。它们跑在 `data/` 与本地表上，所以**不随仓库发布** —— 下面提到 `scripts/tools/xxx.py` 的命令，公开 clone 上跑不了；README 里凡是能公开复现的步骤都给了等价的内置命令） |
+| **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原）、`scripts/tools/`（**离线工具**：造评估集 / 灌 FAQ / 下模型 / 跑 RAGAS / A-B 读数。它们跑在 `data/` 与本地表上，所以**不随仓库发布** —— 下面提到 `scripts/tools/xxx.py` 的命令，公开 clone 上跑不了；README 里凡是能公开复现的步骤都给了等价的内置命令） |
 
 后两条是**刻意的**，不是忘了：
 
@@ -636,6 +636,3 @@ API.md               HTTP / WebSocket / CLI 接口文档
 2. **`web/node_modules` 不入库**：它是 `npm ci` 的产物（和 `.venv` 一个性质），而且里面装着
    **平台相关的二进制**（esbuild / rollup 的 linux-x64 构建）。真值来源是
    `web/package.json` + `web/package-lock.json` —— 有这两个，任何机器都能还原出一样的依赖树。
-   （这段是 开源化时补的：它曾经比 `.gitignore` 那条规则更早进仓库 —— 而**忽略规则不会自动
-   取消已跟踪的文件**，所以一度真的躺在版本库里；后来连同其它不公开路径一起从提交历史里
-   抹掉了，现在 `.git/` 里也不再有它。）

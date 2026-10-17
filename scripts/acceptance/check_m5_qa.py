@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-"""M5 验收：融合路由 —— FAQ 通道优先、知识库通道兜底。
+"""验收：融合路由 —— FAQ 通道优先、知识库通道兜底。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_qa.py
 
-本脚本是 M5 契约的**唯一权威**（`docs/STATUS.md` 的 M5 一节只留设计理由，不重复规格）。
+本脚本是这份契约的**唯一权威**。
 
 契约先落地、代码后手敲，所以**代码还没进项目之前这份报告是红的** ——
 那是这一步的起点，不是坏了。每条 FAIL 都点名缺什么。
 
-公开契约（import 路径本身也是承诺）::
+公开契约（import 路径本身也是承诺）：
 
     from project_rag.domain import Channel, QaAnswer
     Channel = Literal["faq", "rag"]
@@ -27,7 +27,7 @@
         -> Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]]
       # 拿在手里**不构造任何东西**；被调用时才走惰性工厂拼出一次知识库通道的调用
 
-路由（判定的对象从「要不要检索」换成了「谁答的」）::
+路由（判定的对象从「要不要检索」换成了「谁答的」）：
 
     faq 命中 ⇔ matcher.best_match(query, store.load_all()) 非空且 score >= faq_threshold
       命中   → channel="faq"：直接返回人写的标准答案；不调 LLM、不查向量库、**也不构造它们**
@@ -37,16 +37,16 @@
 **为什么 knowledge 是一个函数，而不是一堆端口对象**:Python 的函数参数是**先求值**的 ——
 若把嵌入端口直接传进 `answer_question`，组合根在进入用例之前就已经把 BGE-M3
 （2G 内存 + 秒级加载）装起来了。FAQ 命中的问题白付这份钱；配了 cuda 却没 GPU 的机器上
-更是**直接抛错**，连一条人工维护的标准答案都答不出来 —— M5.1 第一次自测就踩到了这条，
+更是**直接抛错**，连一条人工维护的标准答案都答不出来 —— 合流入口第一次自测就踩到了这条，
 所以它不是理论洁癖，是这条契约里最贵的那个坑。用「要用时才调」的函数：路由决定留在用例里，
 构造留在组合根里（`knowledge_callable`），而且**可以在验收里直接断言「闭包一次都没被调用」**。
 
-**为什么合流这一层不做缓存**：M2 的缓存是 FAQ 单通道的（key `faq:v1:{问题}`，
+**为什么合流这一层不做缓存**：FAQ 通道那层的缓存是单通道的（key `faq:v1:{问题}`，
 值里还存着 `faq`/`llm` 的来源标记）。合流复用它会出现「缓存里躺着一条 llm 答案 →
 根本走不到知识库」，`channel` 也就被迫多出一个 `llm` 取值。命中判定本身很便宜
-（一次全表读 + 一次 BM25），缓存要等 M6 常驻进程有压测数据再谈（见 `docs/deferred.md`）。
+（一次全表读 + 一次 BM25），缓存要等常驻服务有压测数据再谈。
 
-`QaAnswer` 的不变式（由 `answer_question` 保证，本脚本逐条盯着）::
+`QaAnswer` 的不变式（由 `answer_question` 保证，本脚本逐条盯着）：
 
     channel == "faq" ⟺ faq_match is not None（命中才有那条匹配）
     channel == "faq" →  citations == () 且 refused is False
@@ -58,7 +58,7 @@
 「≥ 还是 >」「边界算不算命中」迟早各长一套 —— 本脚本用「同一个分数两边结论必须相同」
 把这件事钉住，而不是去读源码里有没有那个 `>=`。
 
-故障语义（与 M2 一致）：FAQ 存储（MySQL）是**必需资源**，`load_all()` 抛错必须
+故障语义（与 FAQ 通道一致）：FAQ 存储（MySQL）是**必需资源**，`load_all()` 抛错必须
 fail-fast 往上抛；吞掉它会让「库挂了」伪装成「知识库答的」。Redis 那种纯加速才降级。
 
 命令：``qa -q/--question`` 必填（缺了退出码 2），``--k`` / ``--source`` 与 ``rag`` 同款
@@ -404,7 +404,7 @@ def _seed_faq(rows: list[tuple[int, str, str]]) -> str:
     except Exception as exc:  # noqa: BLE001 - 容器没起是环境问题，不是契约失败
         raise SkipCheck(
             f"MySQL 连不上（{target}）：{type(exc).__name__}: {exc}；"
-            "先看 Windows 侧 Docker Desktop 是否开着（docs/STATUS.md §5 第 10 条），"
+            "先看 Windows 侧 Docker Desktop 是否开着，"
             "再 docker compose up -d，或跑 check_env_services.py 定位"
         ) from exc
     try:
@@ -608,7 +608,7 @@ def _() -> str:
         "knowledge": inspect.Parameter.empty,
         "faq_threshold": 0.85,
         "session": None,
-        # M5.8:思考档位的**静态标签**,只进延迟账;None = 账里给 '-'(注入式调用不该被编一个默认档位)
+        # 思考档位的**静态标签**,只进延迟账;None = 账里给 '-'(注入式调用不该被编一个默认档位)
         "thinking": None,
     }
     if list(params) != list(want_defaults):
@@ -881,7 +881,7 @@ def _() -> str:
         raise AssertionError("拒答时不该有引用")
     if world.llm.calls:
         raise AssertionError("合流层根本没拿到 LLM 端口，一次都不该被调")
-    return "拒答语义与 M3 的知识库通道一致"
+    return "拒答语义与知识库通道一致"
 
 
 @check("知识库通道正常：引用原样透传（序号从 1 连续、顺序没被改写）")
@@ -910,7 +910,7 @@ def _() -> str:
             )
         return "异常原样上抛，未改走知识库"
     raise AssertionError(
-        "FAQ 存储抛错却被吞了 —— MySQL 是必需资源，连不上必须当场可见（同 M2）"
+        "FAQ 存储抛错却被吞了 —— MySQL 是必需资源，连不上必须当场可见（同 FAQ 通道）"
     )
 
 
@@ -1099,10 +1099,10 @@ def _() -> str:
 
 @check("回归：faq 的语义没被改（未命中仍是裸模型兜底）—— 合流是新增通道，不是替换")
 def _() -> str:
-    """M5.1 的决定：`qa` 是新增的合流入口，`faq` 保持 M2 的「FAQ 命中直答 / 未命中问模型」。
+    """的决定：`qa` 是新增的合流入口，`faq` 保持 FAQ 通道的「命中直答 / 未命中问模型」。
 
-    这条钉住那个决定：谁要是把 faq 也改成转知识库，M2 那份契约会红，
-    而这里会先把原因说清楚（比 M2 报「stdout 不是 LLM 兜底文本」好读）。
+    这条钉住那个决定：谁要是把 faq 也改成转知识库，FAQ 通道那份契约会红，
+    而这里会先把原因说清楚（比 FAQ 通道报「stdout 不是 LLM 兜底文本」好读）。
     （命令名 从 `ask` 改成 `faq`：合流入口叫 `qa` 之后，`ask` 那种
     「我要提问」的口气喧宾夺主；`faq` / `rag` 成对，都点明走哪条通道。）
     """
@@ -1123,7 +1123,7 @@ def _() -> str:
         )
     if world.knowledge_calls:
         raise AssertionError("faq 走到了合流的那条路 —— 合流入口是 qa")
-    return "faq 仍是 FAQ + 裸模型兜底（M2 语义未变）"
+    return "faq 仍是 FAQ + 裸模型兜底（语义未变）"
 
 
 # ── 7. 真实链路（需要容器 / GPU；起不来则 SKIP 并说明原因和 owner） ────────────
@@ -1181,10 +1181,10 @@ def _() -> str:
 
     # FAQ 侧给个空表：这一条只验「合流能把长尾问题送进知识库通道」，
     # 真 MySQL 那半边由上面那条负责。
-    # ⚠️ knowledge 的契约是 **(history) -> 帧流**（M5.2 起收历史、M5.3b 起吐帧）：
+    # ⚠️ knowledge 的契约是 **(history) -> 帧流**（收历史 / 吐帧）：
     # 这里曾经写成 `lambda: answer_rag(...)`，两处都过时（漏参数 + 交了结果对象而不是帧流）。
     # 它被「无 GPU 则 SKIP」挡了一阵，签名/协议改了也没报错 ——
-    # 教训见 STATUS.md §5 第 21 条：被 SKIP 挡住的检查等于没检查。
+    # 教训：被 SKIP 挡住的检查等于没检查。
     world = _World(0.1, hits=[])
     world.faq_store = FakeFaqStore([])
     query = "装饰器到底有什么用,能举个场景吗"
@@ -1220,7 +1220,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M5 融合路由（FAQ 优先 / 知识库兜底）验收")
+    return report("融合路由（FAQ 优先 / 知识库兜底）验收")
 
 
 if __name__ == "__main__":

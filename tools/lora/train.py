@@ -15,7 +15,7 @@
   * **精度**：自动选 bf16 / fp16 / fp32（bf16 不需要 GradScaler，数值更稳，Ampere 以上首选）。
   * **显存**：全程分板块打点（``mem_probe.py``），训练结束打印实测账 + 理论账。
 
-用法::
+用法：
 
     # 冒烟（1 分钟，验证链路）
     python tools/lora/train.py --smoke

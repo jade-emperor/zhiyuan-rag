@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-1 契约：BM25 那一层的「语料指纹」缓存 —— 省掉每查询约 400ms 的那次向量库往返。
+"""契约：BM25 那一层的「语料指纹」缓存 —— 省掉每查询约 400ms 的那次向量库往返。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m3_bm25_cache.py
 
@@ -287,7 +287,7 @@ def _no_cache_keeps_old_semantics() -> str:
 
 def main() -> int:
     return report(
-        "P0-1 契约：BM25 语料指纹缓存（省掉每查询约 400ms 的向量库往返）",
+        "契约：BM25 语料指纹缓存（省掉每查询约 400ms 的向量库往返）",
         notes=(
             "说明：本脚本全内存假件，**不需要容器、不需要模型、不联网**；"
             "TTL 用假时钟测，不 sleep。",

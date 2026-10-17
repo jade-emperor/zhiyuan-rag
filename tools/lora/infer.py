@@ -7,7 +7,7 @@
      （低于阈值就回退到「直接检索」，这是分类器上线时最常用的一道保险）
   3. 显存：加载基座 / 注入适配器 / 合并权重 三个阶段各打点，再按 batch size 扫一遍峰值曲线
 
-用法::
+用法：
 
     python tools/lora/infer.py --adapter logs/lora/run1/lora_adapter --test
     python tools/lora/infer.py --adapter logs/lora/run1/lora_adapter --query "AI和Java的课程大纲"

@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""M1.1 验收：类型化配置模块。
+"""验收：类型化配置模块。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m1_1_config.py
 
 判定规则：全部 PASS 才算通过（退出码 0）；任何 FAIL 都会让退出码变成 1；
 SKIP 表示需要你人工确认。脚本只依赖标准库 + 本项目，任何时候都能跑。
 
-本脚本固化的「公开契约」——这三样必须能从 ``project_rag.config`` 直接 import::
+本脚本固化的「公开契约」——这三样必须能从 ``project_rag.config`` 直接 import：
 
     Settings          配置类本身（可直接构造，用于测试）
     get_settings()    带缓存的单例工厂（应用代码只用它）
@@ -125,7 +125,7 @@ def _() -> str:
     return f"model={model_name} temperature={temperature} max_tokens={max_tokens}"
 
 
-@check("api 段存在且预热默认开着（M5.6：把冷启动从第一个用户挪到启动）")
+@check("api 段存在且预热默认开着（把冷启动从第一个用户挪到启动）")
 def _() -> str:
     settings = api().Settings()
     warmup = settings.api.warmup
@@ -146,10 +146,10 @@ def _() -> str:
 def _() -> str:
     """TTL 得是配置项，不能再是 ``answer_faq.DEFAULT_CACHE_TTL_S`` 那个 300 的字面量。
 
-    为什么同时钉**类默认值**与**有效值**（法则 #25）：config.yaml 里写了值，
+    为什么同时钉**类默认值**与**有效值**：config.yaml 里写了值，
     会把类默认值的改动整个盖住 —— 只断言有效值的话，把类默认值改成 60 这条照样绿。
 
-    为什么**不**断言 YAML 里的有效值等于某个具体数字（法则 #26）：TTL 是作者的
+    为什么**不**断言 YAML 里的有效值等于某个具体数字：TTL 是部署方的
     部署旋钮，不是机制。只要求它落在「正整数」这个合法集合里。
     """
     settings = api().Settings()
@@ -180,7 +180,7 @@ def _() -> str:
 
     **为什么类默认值必须原样保留**:默认值一改,语义就变了 —— 绑回环时 WSL 里
     Windows 浏览器连不上(实测),CORS 收紧成空列表前端直接跨域失败。
-    **为什么不钉有效值**(法则 #26):绑哪个地址、开哪些源是作者的部署选择。
+    **为什么不钉有效值**:绑哪个地址、开哪些源是部署方的选择。
     """
     from project_rag.config import ApiConfig
 
@@ -224,7 +224,7 @@ def _() -> str:
     """超时原先是一处一个的字面量(``_SOCKET_TIMEOUT = 1.0``、``_CONNECT_TIMEOUT_S = 5``)。
 
     **为什么该可配**:本机 Docker 与跨网部署的两个合理值不一样,而它又直接决定
-    「Redis 挂了之后要等多久才降级」—— 那正是 deferred.md §1.1 里「降级放大」的时长。
+    「Redis 挂了之后要等多久才降级」—— 那正是降级放大的时长。
     """
     from project_rag.config import MySQLConfig, RedisConfig
 
@@ -277,7 +277,7 @@ def _() -> str:
     return f"{settings.log_max_bytes} bytes × {settings.log_backup_count} 份"
 
 
-@check("llm.thinking：类默认 auto（= 不动服务端默认），取值受限，可被环境变量覆盖（M5.7）")
+@check("llm.thinking：类默认 auto（= 不动服务端默认），取值受限，可被环境变量覆盖")
 def _() -> str:
     """一个变量同时管「思考开关」与「强度」。
 
@@ -294,15 +294,15 @@ def _() -> str:
         )
     # **类默认值**:config.yaml 里写了什么会把类默认值的改动盖住 ——
     # 只断言「有效值」的话,把类默认值改成 off 这条检查照样绿(反向测试亲自抓到过两次,
-    # 上一次是 ApiConfig.warmup,见 §5 第 25 条)
+    # 上一次是 ApiConfig.warmup)
     if LLMConfig().thinking != "auto":
         raise AssertionError(
             f"LLMConfig 的类默认值该是 auto,实际 {LLMConfig().thinking!r} —— "
             "新建配置对象不该悄悄改变语义"
         )
     # **有效值(来自 config.yaml)只钉「是个合法档位」,不钉具体是哪一档**:
-    # 这一档正是作者要调的东西(off = 最快;auto = 沿用服务端默认),把它钉成字面量
-    # 等于让作者一改配置验收就红 —— 那是检查在越权,不是配置错了。
+    # 这一档正是部署时要调的东西(off = 最快;auto = 沿用服务端默认),把它钉成字面量
+    # 等于让人一改配置验收就红 —— 那是检查在越权,不是配置错了。
     # 真正该拦的是**打错的档位**(例如 "highh"),那会被 pydantic 的 Literal 拦下。
     effective = api().Settings().llm.thinking
     if effective not in allowed:
@@ -431,7 +431,7 @@ def _() -> str:
 
 
 # 这里原本有一条「密钥缺失时 fail-fast，且报错点名 DEEPSEEK_API_KEY」，契约变更时删除。
-# 理由（同步记在 docs/STATUS.md §8，以及 docs/deferred.md 的对应条目）：
+# 理由：
 #   1. 密钥完全缺失**不是静默失败** —— 首次调用 DeepSeek 会以 401 暴露出来，
 #      不存在"带着错配置悄悄跑出错误答案"的风险；
 #   2. 要在启动期拦住它，嵌套模型必须同时挂 ConfigDict(validate_default=True)
@@ -584,7 +584,7 @@ def main() -> int:
         if _FALLBACK_NOTE
         else []
     )
-    return report("M1.1 配置模块验收", notes=notes)
+    return report("配置模块验收", notes=notes)
 
 
 if __name__ == "__main__":

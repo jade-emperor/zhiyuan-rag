@@ -148,7 +148,7 @@ class MemSnapshot:
 class MemProbe:
     """分板块显存打点器。
 
-    用法::
+    用法：
 
         probe = MemProbe("训练")
         probe.snap("起始")

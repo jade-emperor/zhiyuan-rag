@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-1 反向测试：把 BM25 指纹缓存逐个改回「坏的样子」，确认对应那条检查真的会红。
+"""反向测试：把 BM25 指纹缓存逐个改回「坏的样子」，确认对应那条检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m3_bm25.py            # 全部
     uv run python scripts/acceptance/reverse_m3_bm25.py RT-2       # 只跑某几条

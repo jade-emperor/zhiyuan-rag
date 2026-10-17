@@ -7,28 +7,28 @@
 | `acceptance/` | `check_m*.py`、`calibrate_threshold.py`、`run_all.py`（分组跑全部） | 它回答"**应该是什么样**"。跑一次就知道当前代码离契约有多远 |
 | `tools/` | 造评估集、灌 FAQ、下模型、跑 RAGAS、比多次运行 | 它回答"**把数据变成什么样**"。一次性或按需重复，产出落在 `data/` |
 
-> ⚠️ **`tools/` 整目录不公开**（作者要求，见 `.gitignore`）：里面基本是一次性的个人工具，
+> ⚠️ **`tools/` 整目录不公开**（见 `.gitignore`）：里面基本是一次性的个人工具，
 > 命令只有这台机器上跑得通。**公开 clone 上下面提到 `scripts/tools/*.py` 的命令你敲不了** ——
 > 那几条验收也会相应变成 `SKIP` 并点名 owner（不会红）。恢复某个工具就往 `.gitignore`
 > 里单独加一条 `!/scripts/tools/<名字>`。
 
-**先记三个入口**（一条命令，别背下面那些长命令）::
+**先记三个入口**（一条命令，别背下面那些长命令）：
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 22 套契约 + 23 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：31 套契约 + 23 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 23 套契约 + 24 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：32 套契约 + 24 份反向（要中间件 + 语料 + key）
 ```
 
-> **这四个数（22 / 30 / 21 / 21）同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
+> **这几个数同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
 > `.github/workflows/ci.yml`（顶部注释 + 那个 step 的 name）、`CONTRIBUTING.md` 第三节、
-> `docs/STATUS.md` §0。**它们已经漂过好几次**（17/6 → 26/17 → 28/21 → 现在），
+> 以及维护者本地的状态文档。**它们已经漂过好几次**（17/6 → 26/17 → 28/21 → 现在），
 > 因为 `run_all.py` 是**动态扫目录**的、这些注释是**手抄**的 —— 后者才是会错的那个。
 > 加/删一份 `check_*.py` 之后，用 `ls scripts/acceptance/check_*.py | wc -l` 和
 > `ls scripts/acceptance/reverse_*.py | wc -l` 数一遍再改这五处（`--set ci` 的数 =
 > 总数 − `run_all.py` 里 `SERVICES` 与 `LOCAL_ONLY` 那两份名单，别自己减）。
 
-**「启动」有四个入口，前端在不在取决于你走哪个**（作者报过"有时候起前端、有时候不起"）：
+**「启动」有四个入口，前端在不在取决于你走哪个**（踩过一次"有时候起前端、有时候不起"）：
 
 ```bash
 ./scripts/dev.sh up         # 只起中间件三件（standalone / mysql / redis）—— 没有前端
@@ -44,12 +44,12 @@
 
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
 分组依据是**一次实测探测**：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
-再跑全部 30 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与作者的 WSL
+再跑全部 30 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与维护者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
 
 > 说明：`scripts/` 是**公开**的（契约与反向测试可验证性的一部分），而 `docs/` **不随仓库发布** ——
-> 脚本与注释里出现的 `docs/...` 引用（如「见 STATUS.md §5 第 30 条」）是**维护者的本地文档**，
+> 维护者的本地文档（`docs/`，**不随仓库发布**）
 > 对克隆者不可见、也不影响运行。要结论时看脚本自己的 docstring 与 `--help`。
 
 **两份公共模块（抽的）** —— 每个 `check_*.py` 只剩下面这几行壳子：
@@ -64,7 +64,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 | `_harness.py` | `PASS/FAIL/SKIP`、`SkipCheck`、`check` 装饰器、`env`、`report`、**反向测试改源码的三件套**（`patched_source` / `restore_stale_patches` / `drop_bytecode`） | 具体假件；任何"只有一个脚本用"的东西 |
 | `_fakes.py` | 8 个共享假件（embedder / faq_store / matcher / keyword_index / reranker / conversation_store / vector_store / llm） | **刻意残缺的假件留在脚本里**（例如 `check_m5_qa` 的假向量库只有 `search` —— "越权调 `upsert` 就 AttributeError"本身就是那条检查的证据）；`FakeLLM`（调用即发生）与 `PacedFakeLLM`（生成器，帧在被迭代时才产出）**不能合并**，延迟观测靠这个差别钉"没有预取" |
 
-**反向测试的两条安全规矩**（都是事故换来的，见 `STATUS.md` §0.3 第 21/29 条、§5 第 36 条）：
+**反向测试的两条安全规矩**（都是事故换来的）：
 
 1. **改源码必须用 `with patched_source(path, old, new):`** —— 它先落备份（`.cache/reverse_backup/`，**镜像源码路径**）、退出时还原，**启动时 `restore_stale_patches()` 会把上次被打断留下的坏源码自愈回来**。不用它的 runner 在"改坏 → 跑检查 → 还原"那个窗口里被 SIGTERM/SIGPIPE 杀掉，`src/**` 就会**留在坏版本上**（语法没错、能 import、只是行为变了）。
 2. **别把反向测试的输出管进 `head`** —— `head` 读够行数就关管道，Python 收到 SIGPIPE 当场死，正好死在窗口里（真踩过）。要看短的输出就 `> .cache/xxx.log` 再 `grep`。每个用例都要先核对**锚点恰好出现 1 次**并把它算成失败：锚点漂了的那条反向测试是「安静地没跑」，而它看起来只是报告里的一句「1 条没红」。
@@ -82,7 +82,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 > 当**读数口径**用：**差 <0.01 按打平读**。
 > `scripts/tools/compare_runs.py` 还留着（只读已有 CSV，不花钱），但不再是流程的一环。
 
-## M4 评估流水线（四步，**顺序不可颠倒**）
+## 评估流水线（四步，**顺序不可颠倒**）
 
 ```bash
 # ① 造评估集（确定性，可反复跑；改规则才需要重跑）
@@ -104,9 +104,9 @@ uv run python scripts/tools/run_ragas_eval.py \
 uv run python scripts/acceptance/check_m4_eval.py
 ```
 
-### 之后：作者真实数据的问答对与评估集
+### 之后：真实数据的问答对与评估集
 
-上面那套（`bagu_v1`，112 条、只有八股）是 M4 的历史读数，仍然成立。新一轮换成了
+上面那套（`bagu_v1`，112 条、只有八股）是历史读数，仍然成立。新一轮换成了
 **八股（`###` 标题→问题、正文→答案，确定性、零成本）+ PDF 教材（DeepSeek 逐块生成，
 带 `doc_id` + 页码）**共 200 条，按行拆成「150 条进 `faq` 表做演示直答 / 50 条做 RAGAS 评估」：
 
@@ -131,7 +131,7 @@ uv run python scripts/tools/run_ragas_eval.py \
 这条有契约（`check_m4_eval` 的「评估题不得与 faq 表那份 CSV 近似」）+ 反向
 （`reverse_m4_eval.py` 的 RT-1）。
 
-数据换代（清掉与作者无关的旧语料/FAQ/会话账本，**先备份再删**）：
+数据换代（清掉与本项目无关的旧语料/FAQ/会话账本，**先备份再删**）：
 
 ```bash
 uv run python scripts/tools/reset_data.py          # dry-run：打印要删什么
@@ -146,15 +146,15 @@ uv run python scripts/tools/reset_data.py --yes    # 备份（mysqldump + 待删
   **不是**读实时配置 —— 否则"改了配置再跑评估"会把旧数据标成新旋钮（实测踩过）。
 - 跳过 ② 直接改 `*_dataset.json` 手工造数据 = 评估结果再也说不清来源（③ 会记指纹，但指纹只证明"文件没变"）。
 
-## M5 合流路由与对话历史（M5.1 / M5.2 已落地）
+## 合流路由与对话历史
 
 ```bash
 uv run python scripts/acceptance/check_m5_qa.py          # 33 通过 / 0 失败 / 0 跳过（6.1 路由）
 uv run python scripts/acceptance/check_m5_history.py     # 40 通过 / 0 失败 / 0 跳过（6.2 会话历史 + 建表排序规则口径 + 引用快照）
 uv run python scripts/acceptance/check_m5_stream.py      # 37 通过 / 0 失败 / 0 跳过（6.2：截断可见 + 流式入口 + 思考开关/思考与正文分家）
-uv run python scripts/acceptance/check_m5_api.py         # 26 通过 / 0 失败 / 0 跳过（6.3：M5 那九条路由 + 命名空间 + 事件循环不被占住 + 起服务姿势，无需容器）
+uv run python scripts/acceptance/check_m5_api.py         # 26 通过 / 0 失败 / 0 跳过（6.3：最早那九条路由 + 命名空间 + 事件循环不被占住 + 起服务姿势，无需容器）
 uv run python scripts/acceptance/reverse_m5_api.py       # 反向测试：3 条全红（漏带 /api/v1 前缀的新端点 / 静态挂载漏掉 html=True / 删掉路由装饰器）
-uv run python scripts/acceptance/check_m5_5_latency.py   # 30 通过 / 0 失败 / 0 跳过（M5.5/M5.8：TTFT/tps/检索六段/两路召回并行/思考三字段/改写一段，不联网、无需容器）
+uv run python scripts/acceptance/check_m5_5_latency.py   # 30 通过 / 0 失败 / 0 跳过（TTFT/tps/检索六段/两路召回并行/思考三字段/改写一段，不联网、无需容器）
 uv run python scripts/acceptance/reverse_m5_5_latency.py # 反向测试：4 条全红（一次请求只有一条账 / 帧数只数一遍 / 两路又串起来 / 分段退回打点之差）
 uv run python scripts/acceptance/reverse_m5_8.py         # 反向测试：7 条全红（临时改 src/，finally 里还原；--only RT-1 可单选）
 #   ⚠️ check_m5_stream 里有 3 次极小真调（各一个问题、上限 16/32 token）：钉「provider 把
@@ -184,7 +184,7 @@ RAG_EMBEDDING__DEVICE=cpu uv run python scripts/acceptance/check_m5_qa.py   # 33
 
 设计理由写在各脚本的 docstring 里。
 
-## M8 查询改写（FAQ 未命中 → 向量检索之间那一步，默认关）
+## 查询改写（FAQ 未命中 → 向量检索之间那一步，默认关）
 
 ```bash
 uv run python scripts/acceptance/check_m8_rewrite.py     # 36 通过 / 0 失败 / 0 跳过（零容器零模型零网络）
@@ -201,10 +201,10 @@ docker run --rm --gpus all -v "$PWD":/work -w /work --entrypoint python \
 `retrieve_many` 的单句等价与按 `chunk_id` 去重合并、**「改写只改检索、不改回答」**、
 账本 `rewrite_ms` 与 `embed_ms`/`retrieve_ms` 的起点口径、三条分层静态扫描。
 
-设计理由与真机读数见 `docs/STATUS.md` §10.19；判定口径的已知冲突（"宽泛领域词 + 有哪些"
+设计理由与真机读数；判定口径的已知冲突（"宽泛领域词 + 有哪些"
 算 0 类还是 1 类）也记在那里 —— **没动数据**。
 
-### 改写的 A/B：开与不开，四指标 + 代价（M4.6）
+### 改写的 A/B：开与不开，四指标 + 代价
 
 **一条命令跑完四步**（builder×2 + RAGAS×2），两臂之间**只有改写这一个变量**：
 
@@ -232,6 +232,19 @@ bash scripts/tools/eval_rewrite_ab.sh report   # 只出对比表，不花钱
 报告数字对账、适配器溯源）。报告里每个数都能从两份 `rows.csv` 重算出来 ——
 **手抄一个好看的数进去会当场红**。
 
+## 公开面边界（仓库里只留外人读得懂的东西）
+
+```bash
+uv run python scripts/acceptance/check_public_surface.py       # 2 通过 / 0 失败 / 0 跳过（只要有 git）
+uv run python scripts/acceptance/reverse_public_surface.py     # 反向测试：3 条全红（往仓库里塞回台账指针 / 决策者口吻 / 裸 docs 路径）
+```
+
+**它守的是一条边界，不是功能**：会公开的仓库文件（`git ls-files`）里不许出现
+内部台账的路径与章节编号，也不许用决策者口吻（三种具体形状写在脚本 docstring 里）。
+判据是机械的（`git ls-files` + 正则），所以它能被反向用例打红 —— 这类"读起来别扭"的坏法
+没有报错、测试全绿，只有一条纪律，而靠人记的纪律已经失效过一次（全仓 100+ 处指针）。
+仓库里该留的是**自包含的约束**（"改这里会坏什么"）；决策过程住在维护者本地的台账里。
+
 ## 多格式入库（装载 / 分派 / 命名）
 
 ```bash
@@ -245,7 +258,7 @@ uv run python scripts/acceptance/reverse_doc_formats.py     # 反向测试：9 �
 下 spacy 模型（离线直接挂在 socket 上），而 Word 自己就有 Heading 样式。夹具是**现造的**四种格式
 （python-docx / python-pptx / PyMuPDF 生成），所以不依赖本地语料。
 
-## BM25 语料指纹缓存（P0-1）
+## BM25 语料指纹缓存
 
 ```bash
 uv run python scripts/acceptance/check_m3_bm25_cache.py     # 5 通过 / 0 失败 / 0 跳过（1.2 秒，不需容器/模型/网络）
@@ -261,7 +274,7 @@ TTL 内不再回源 / 过期后变化仍被发现 / 缓存故障只降级（**�
 **为什么单独一个脚本**：它全内存、不要容器，而反向测试要反复改坏源码跑很多次 ——
 塞进 2400 行的 `check_m3_rag.py` 会让每次反向测试都等几分钟加载 BGE-M3。
 
-## PDF 页码（P0-5）
+## PDF 页码
 
 ```bash
 uv run python scripts/acceptance/check_p0_5_pages.py   # 12 通过 / 0 失败（后两条要 Milvus；集合运维那两条用假件）
@@ -274,17 +287,17 @@ uv run python scripts/acceptance/reverse_p0_5.py       # 反向测试：10 条�
 **切分与写入**（切分器两级偏移都切得出自己且与 `split_text` 分段一致、`chunk_documents` 算页码
 并在偏移数不符时**当场报错**、不报偏移的切分器给 `None`（**不许猜**）、跨页块取起始页、
 `Citation.page` 跟着子块走、Milvus 往返、**老集合读得回来但写入当场报错**）。
-⚠️ 页码是「块**开始**的那一页」：真语料里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」（那样会把对的判成错的，STATUS §0.3 第 30 条）；
-⚠️ 造 PDF 夹具用 **ASCII**（PyMuPDF 内置字体不渲染 CJK，见 STATUS §0.3 第 24 条）；
+⚠️ 页码是「块**开始**的那一页」：真语料里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」；
+⚠️ 造 PDF 夹具用 **ASCII**；
 ⚠️ 夹具的**尺度**要让被测行为看得见（子块比一页还大就会把两页并进同一块，第二页永远验不到 ——
-STATUS §0.3 第 28 条）；⚠️ langchain **1.x** 的 `add_start_index` 是**构造参数**（§0.3 第 26 条）。
+）；⚠️ langchain **1.x** 的 `add_start_index` 是**构造参数**。
 反向测试要跑它 10 次（每次整套检查;Milvus 那两条与集合运维两条都在内,单次约 11 秒;出参那条跑 `check_m5_api`）——**别用默认的短超时**。
 
-## 检索层 A/B 的裁判 + FAQ 阈值（P0-4）
+## 检索层 A/B 的裁判 + FAQ 阈值
 
 ```bash
 uv run python scripts/acceptance/check_p0_4_ab.py      # 6 通过 / 0 失败（除阈值那条要真 FAQ 表外全内存）
-uv run python scripts/acceptance/reverse_p0_4.py       # 反向测试：5 条全红
+uv run python scripts/acceptance/reverse_p0_4.py       # 反向测试：6 条全红
 uv run python scripts/tools/ab_retrieval.py --limit 112 --configs rrf,weighted-5-5,weighted-3-7,weighted-7-3
 uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（真表 463 条，约 1 分钟；E 组最慢）
 ```
@@ -292,16 +305,16 @@ uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（�
 **权威 = `check_p0_4_ab.py` 的 docstring**：`overlaps()`（reference 的字符 3-gram 被某条 citation
 覆盖的比例 ≥ 0.35）是 A/B 的尺子，**它错了读数全废而且不报错**。五条契约钉：identical 必中、
 空 reference 一律不中、**覆盖率口径而不是 Jaccard**（长 context 不许被稀释）、空白不敏感、
-阈值是 `>=`。⚠️ 写这类断言时**别用重复文本撑长度**（3-gram 会去重，见 STATUS §5 第 31 条）。
+阈值是 `>=`。⚠️ 写这类断言时**别用重复文本撑长度**。
 
-**第六条是 P0-4 第三组（FAQ 阈值）**：`check_p0_4_ab` 直接 import 标定工具的 `probe` 与
+**第六条是第三组（FAQ 阈值）**：`check_p0_4_ab` 直接 import 标定工具的 `probe` 与
 `NOISE_PROBES`（**探针口径只有一处**），只跑最快的 A/B/C 三组（0.8 秒）并断言
 `faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数：**463 条语料上
 区间 (0.303, 1.000]、余量 0.697，0.85 在区间内 → 不改默认**；反向 RT-4 把配置改成 0.20 会让它红。
 ⚠️ 区间只挡「分数太低」，挡不住「答成了隔壁那条」（近邻混淆）—— 那是排序问题，见
-`deferred.md` 第 67 条；规则见 STATUS §5 第 38 条。
+规则见本节上一条。
 
-## 认证 / 角色 / 会话归属（P0-3a）
+## 认证 / 角色 / 会话归属
 
 ```bash
 uv run python scripts/acceptance/check_p0_3_auth.py    # 20 通过 / 0 失败（除真 MySQL 往返外不需容器）
@@ -317,9 +330,9 @@ uv run project-rag doctor --forget-missing             # 清缺块行（登记 p
 **会话没主人 = 拒绝**（`owner_of` 的 `None` 既可能是老会话也可能是瞎编的 ID）。
 `auth_store=None` = 无认证模式，**只可能来自显式注入**；`build_real_deps` 永远接上。
 
-**对账的两个清理开关**（P0-3b-5-②②）：`doctor` **默认只读**，`--prune-orphans` / `--forget-missing` 点名才动手；删哪些只由 `reconcile` 判一次，清理函数只删传进来的那些 doc_id；逐条回报，**清完按新状态给退出码**。反向测试钉的是「删得比该删的多」（`RT-15` 顺手全清、`RT-16` 空清单也删）—— 删少了看得见，删多了没人立刻发现。
+**对账的两个清理开关**：`doctor` **默认只读**，`--prune-orphans` / `--forget-missing` 点名才动手；删哪些只由 `reconcile` 判一次，清理函数只删传进来的那些 doc_id；逐条回报，**清完按新状态给退出码**。反向测试钉的是「删得比该删的多」（`RT-15` 顺手全清、`RT-16` 空清单也删）—— 删少了看得见，删多了没人立刻发现。
 
-## 延迟报表与落表（P0-2）
+## 延迟报表与落表
 
 ```bash
 uv run python scripts/acceptance/check_m5_9_metrics.py      # 10 通过 / 0 失败（除真 MySQL 往返外不需容器）
@@ -346,13 +359,13 @@ uv run project-rag metrics --window 24h                     # 人看的报表：
 
 **两路召回并行**：`retrieve()` 里稠密与关键字那两路互不依赖，现在是叠着跑的（关键字那一路在
 子线程），所以 `vector_ms` / `bm25_ms` 那两格由**各路自己报自己的时长**（`StreamTiming.span()`）——
-用"相邻打点之差"在并行下会算出负数、或者把"等另一路"的时间算进融合段（见 `docs/STATUS.md` §10.26）。
+用"相邻打点之差"在并行下会算出负数、或者把"等另一路"的时间算进融合段。
 
 ## 部署契约（compose / Dockerfile / 依赖档位）
 
 ```bash
-uv run python scripts/acceptance/check_m6_deploy.py         # 14 通过 / 0 失败 / 0 跳过
-uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：17 条全红（改临时副本，真实仓库一个字节不动）
+uv run python scripts/acceptance/check_m6_deploy.py         # 23 通过 / 0 失败 / 0 跳过
+uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：34 条全红（改临时副本，真实仓库一个字节不动）
 ```
 
 **权威 = `check_m6_deploy.py` 的 docstring**：这几份文件之间必须自洽 —— 地址用服务名 + 容器内端口
@@ -363,9 +376,9 @@ uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：17 
 只有 GitHub 一个源，回去就意味着 `docker build` 要去 github.com 取一个产品路径不用的模型）。
 
 **它证明「配置自洽」，不证明「镜像能构建」** —— 后者只能在装了 docker 的机器上跑
-`docker compose up -d --build`（开发机没有 `docker` 命令，见 README §8）。
+`docker compose up -d --build`（开发机没有 `docker` 命令，见 README 的「仓库里有什么、没有什么」）。
 
-## 前端（M7）：源码在 `web/`、产物入库、契约在 `check_m7_frontend.py`
+## 前端：源码在 `web/`、产物入库、契约在 `check_m7_frontend.py`
 
 ```bash
 cd web && npm install            # 只第一次（node 工具链只在这里用得到）
@@ -379,13 +392,13 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 |---|---|
 | **前端每个控件的数据从哪来** | `check_m7_frontend.py` 的「能力不写死在前端」+ `web/src/api/endpoints.ts` |
 | 为什么产物入库、为什么 hash 路由 | `check_m7_frontend.py`「产物与源码同源」+「hash 路由 + 相对 base」两条契约 |
-| 契约（M7.1 聊天页） | `check_m7_frontend.py` **18 条**（静态 9 + 行为 9，其中一条盯「存储层坏掉时说人话」）；反向 `reverse_m7_frontend.py` **13 条** |
-| 契约（M7.2 知识库页） | `check_m7_2_kb.py` **12 条**（预览接口行为 7 + 前端静态 5）；反向 `reverse_m7_2_kb.py` **9 条** |
-| 契约（M3 索引 + 稀疏向量） | `check_m3_sparse.py` **16 条**（索引类型由配置决定 3 + 稀疏列边界 3 + BM25 编码口径 6 + 接线 4，全部用桩客户端，零容器）；`check_m3_sparse_milvus.py` **3 条**（真 Milvus：稀疏列往返 / rebuild_index 换类型 / 页码与来源过滤）；反向 `reverse_m3_sparse.py` **10 条全红** |
-| 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **12 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 6，其中一条盯"冷热分层读数"）；反向 `reverse_m7_3_metrics.py` **15 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"，另有两条盯"冷热分层被画平"：拿总行数当比率分母 / 冷启动那一套数不画出来） |
-| 契约（M7.4 安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
+| 契约（聊天页） | `check_m7_frontend.py` **18 条**（静态 9 + 行为 9，其中一条盯「存储层坏掉时说人话」）；反向 `reverse_m7_frontend.py` **13 条** |
+| 契约（知识库页） | `check_m7_2_kb.py` **12 条**（预览接口行为 7 + 前端静态 5）；反向 `reverse_m7_2_kb.py` **9 条** |
+| 契约（索引类型 + 稀疏向量） | `check_m3_sparse.py` **16 条**（索引类型由配置决定 3 + 稀疏列边界 3 + BM25 编码口径 6 + 接线 4，全部用桩客户端，零容器）；`check_m3_sparse_milvus.py` **3 条**（真 Milvus：稀疏列往返 / rebuild_index 换类型 / 页码与来源过滤）；反向 `reverse_m3_sparse.py` **10 条全红** |
+| 契约（可观测看板） | `check_m7_3_metrics.py` **12 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 6，其中一条盯"冷热分层读数"）；反向 `reverse_m7_3_metrics.py` **15 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"，另有两条盯"冷热分层被画平"：拿总行数当比率分母 / 冷启动那一套数不画出来） |
+| 契约（安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
 | 改了前端忘了构建 | 契约第 1 条就会红：产物摘要与当前源码不一致 |
-| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 17 条）+ `browser_m7_2_kb.cjs`（知识库页 12 条）+ `browser_m7_3_metrics.cjs`（可观测看板 22 条，含"样本不够要画 `—` 不是 0"、"冷启动那次拒答没被算进拒答率"这两条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_p0_6_access.cjs`（角色与可见范围 23 条：文档侧授权弹层、**组侧「文档权限」三态与勾选保存**、运维页签与接口状态）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的 `docs/frontend.md`（不随仓库发布） |
+| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 19 条）+ `browser_m7_2_kb.cjs`（知识库页 21 条：原 12 + 实时清单 9）+ `browser_m7_3_metrics.cjs`（可观测看板 22 条，含"样本不够要画 `—` 不是 0"、"冷启动那次拒答没被算进拒答率"这两条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_p0_6_access.cjs`（角色与可见范围 23 条：文档侧授权弹层、**组侧「文档权限」三态与勾选保存**、运维页签与接口状态）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的（不随仓库发布） |
 
 **三个不进回归的验证件**（在同一个目录里，但**不会**被 `check_*` / `reverse_*` 的 glob 扫到）:
 
@@ -395,7 +408,7 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
   走的都是真接口。每次提问会把后端解析出的旋钮打在 `>>> QUERY` 行上；
 * **桌面壳**：`uv run project-rag-desktop --check --print-url`（不开窗,不需要 GUI 栈;
   要装壳本身才用 `uv sync --extra desktop`）。它**本地模式起一个只绑回环的静态服务** ——
-  别改回 `file://`：module 脚本在 `file://` 下会被 CORS 挡掉、页面白屏（`STATUS.md` §0.3 第 36 条）。
+  别改回 `file://`：module 脚本在 `file://` 下会被 CORS 挡掉、页面白屏。
 * `browser_m7_frontend.cjs` / `browser_m7_2_kb.cjs` / `browser_m7_3_metrics.cjs` / `browser_m7_4_security.cjs` —— 用 Playwright
   驱动真 Chromium 跑一遍真实用户流程（17 条：路由 / 登录 / 角色 / 历史 / 流式 / 引用页码 / 参数
   真的生效；12 条：上传 → 轮询到「已入库」→ 预览两个数与跨页页码 → 两步删除 → 如实转述删了几块；
@@ -414,7 +427,7 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 
 * **产物是入库的**（`src/project_rag/api/static/app/`）—— Python 侧与 Docker 镜像都不装 node，
   代价是改完前端必须 `npm run build`；判据是**内容摘要**不是 mtime（mtime 会被"反向测试还原 /
-  checkout / clone"假红，见 `STATUS.md` §0.3 第 34 条）；
+  checkout / clone"假红）；
 * **预览折叠的是父块**：向量库里写的是子块、父块正文挂在每个子块的 `parent_content` 上，
   所以 `GET /documents/{id}/chunks` 按 `parent_id` **折叠**回去 —— 只按子块列出来会把
   "入库 42 块 / 预览 15 段"显示成 42 段，用户以为我们丢了数据；
@@ -440,19 +453,19 @@ src/**    ──禁止──►  scripts/        验收有一条检查钉住「s
 
 **为什么评估不进 `src/`**：离线一次性，没有第二个调用方；而且 ragas 只在这一条链路里出现，
 让它进 `adapters/` 等于把"上游依赖再出一次坏导入"变成产品级事故。
-**触发重评**：要对外提供在线打分、或 CLI/CI/HTTP 出现第二个调用方时（清单在维护者本地）—— 见 `docs/deferred.md` §3。
+**触发重评**：要对外提供在线打分、或 CLI/CI/HTTP 出现第二个调用方时（清单在维护者本地）——。
 
 ## 还没做完的（别当成 bug）
 
 | 项 | 状态 |
 |---|---|
-| M4 的 A/B | **融合 `rrf` vs `weighted` 已量完**（不改默认）、**FAQ 阈值 0.85 已标定**（在实测区间内，不改）—— 两组都有契约 + 反向（`check_p0_4_ab.py` / `reverse_p0_4.py`）。**只剩两项**：重排父块 vs 子块（仪器已就位、读数未跑，见 `STATUS.md` §7 P0-4 待补）、**ragas 四指标全链路**（要 DeepSeek 裁判费用；`check_m4_eval` 里那条 SKIP 点名了 owner） |
-| `retrieval_k`/`candidate_m` 那组 A/B | **已量完并回退到 5/2**（0.9347 vs 0.9313）—— 这是唯一一次完整 A/B，两份数据集的对比见 `docs/STATUS.md` §0.5 |
-| 裁判偶发失败 | `IncompleteOutputException`（长 ground_truth 的 claim 枚举撑爆 8192 输出）与偶发超时。当前口径：不当场炸，记进 summary 的 `errors` 列，均值跳过空值。见 `docs/deferred.md` §1.2 第 20 条 |
-| 三个评估代理（LLM 造题 / 质检 / 1–5 分评分） | 未做，触发条件见 `docs/deferred.md` §1.2 第 14 条 |
-| M6：Dockerfile / 接口文档 / `.env` 模板 | ✅ 已做（`Dockerfile`、`API.md`、`.env.example`）；镜像约 9G（CPU-only torch 能砍到 ~1.5G，未验证） |
-| M6.4：编进 compose + 依赖分档 | ✅ 已做（`app` 服务 + `unstructured` 挪进 optional，`.venv` 7.1G → 6.7G，构建期不再需要 GitHub）；**剩**：镜像还没在**真机**构建一次（开发机没有 `docker` 命令）—— 配置自洽由 `check_m6_deploy.py` **14 条**钉住 |
-| 会话历史的过期与归档 | 未做：`conversations` 表只按「每会话最近 N 轮」裁，**没有 TTL、没有归档**（见 `docs/deferred.md` §1.3） |
+| 检索调参 A/B | **融合 `rrf` vs `weighted` 已量完**（不改默认）、**FAQ 阈值 0.85 已标定**（在实测区间内，不改）—— 两组都有契约 + 反向（`check_p0_4_ab.py` / `reverse_p0_4.py`）。**只剩两项**：重排父块 vs 子块（仪器已就位、读数未跑）、**ragas 四指标全链路**（要 DeepSeek 裁判费用；`check_m4_eval` 里那条 SKIP 点名了 owner） |
+| `retrieval_k`/`candidate_m` 那组 A/B | **已量完并回退到 5/2**（0.9347 vs 0.9313）—— 这是唯一一次完整 A/B，两份数据集的对比|
+| 裁判偶发失败 | `IncompleteOutputException`（长 ground_truth 的 claim 枚举撑爆 8192 输出）与偶发超时。当前口径：不当场炸，记进 summary 的 `errors` 列，均值跳过空值。 |
+| 三个评估代理（LLM 造题 / 质检 / 1–5 分评分） | 未做 |
+| 服务化：Dockerfile / 接口文档 / `.env` 模板 | ✅ 已做（`Dockerfile`、`API.md`、`.env.example`）；镜像约 9G（CPU-only torch 能砍到 ~1.5G，未验证） |
+| 编进 compose + 依赖分档 | ✅ 已做（`app` 服务 + `unstructured` 挪进 optional，`.venv` 7.1G → 6.7G，构建期不再需要 GitHub）；**剩**：镜像还没在**真机**构建一次（开发机没有 `docker` 命令）—— 配置自洽由 `check_m6_deploy.py` **23 条**钉住 |
+| 会话历史的过期与归档 | 未做：`conversations` 表只按「每会话最近 N 轮」裁，**没有 TTL、没有归档** |
 | `qa --source` 的学科白名单校验 | 未做：`--source` 直接透传成检索过滤（与 `rag` 一致）。参考实现有一层 `VALID_SOURCES` 校验 |
 
 ## 时间成本（本机实测，供排期参考）
@@ -464,4 +477,4 @@ src/**    ──禁止──►  scripts/        验收有一条检查钉住「s
 
 > ③ 的耗时大头是**判分调用量**：112 条 × 4 指标 = 448 个判分单元，每个单元内部还有多次 HTTP
 > （抽陈述后逐条验证、把 ground_truth 拆 claim 后逐条归因）。所以**先用 `--limit 5` 冒烟**再上全量 ——
-> 这个教训的代价是一次白跑的 55 分钟，见 `docs/STATUS.md` §0.3 第 13 条。
+> 这个教训的代价是一次白跑的 55 分钟。

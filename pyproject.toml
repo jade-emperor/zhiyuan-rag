@@ -129,7 +129,7 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 # 所以可以如实静态声明。而 uv 解析时**即使没选中这个 extra 也要它的元数据**来校验锁 ——
 # 那个 wheel 又只有 GitHub 一个来源(实测取一次:宿主 **172s**、容器 **186s**,
 # 而 uv 默认 HTTP 超时 30s × 3 次重试 → **46s 就失败**)。于是它会随机死在这一步:
-# * `docker build`（镜像构建第一次就死在这里,见 STATUS.md §0.3 第 38 条);
+# * `docker build`;
 #   * **日常 `uv run project-rag-api`**(同一天第二次,报错一模一样)。
 # 声明之后 uv 不必再去取它 —— 开发与构建都不再依赖 github。
 # 维护:URL 里的版本(`en_core_web_sm-3.8.0`)与这里的 `version` 必须一致,
@@ -159,13 +159,13 @@ Issues = "https://gitee.com/The_Jade_Emperor/project_rag/issues"
 # 构建映射,通过project-rag可以找到cli()函数
 project-rag = "project_rag.cli.main:cli"
 project-rag-api = "project_rag.api.app:run"
-# 桌面壳(M7.4)。**壳里没有业务代码**:它只开一个窗口,后端地址由页面自己记。
+# 桌面壳。**壳里没有业务代码**:它只开一个窗口,后端地址由页面自己记。
 project-rag-desktop = "project_rag.desktop:main"
 
 # ---------------------------------------------------------------------------
 # 可选依赖:不进运行时依赖,也就**不进镜像**(`uv sync --no-dev` 不装 optional)。
 # 这三样是「第 4 个适配器」的备选 —— 加 HTML / Excel / 扫描件时才用得上
-# (结论与实测数字见 docs/deferred.md §1.4)。
+#。
 #
 # 为什么必须搬出主依赖(两条都是实测,不是洁癖):
 #   1) `en-core-web-sm` 的 wheel **只有 GitHub 一个来源**(见 [tool.uv.sources]),

@@ -1,48 +1,48 @@
 #!/usr/bin/env python
-"""M2 验收：FAQ 通道（MySQL 存问答对 → 相似匹配 → 命中直答 / 未命中 LLM 兜底）。
+"""验收：FAQ 通道（MySQL 存问答对 → 相似匹配 → 命中直答 / 未命中 LLM 兜底）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m2_faq.py
 
-本脚本是 M2 契约的**唯一权威**（`docs/STATUS.md` §8 只留设计理由，不重复规格）。
+本脚本是这份契约的**唯一权威**。
 
-公开契约（import 路径本身也是承诺）::
+公开契约（import 路径本身也是承诺）：
 
     from project_rag.cli import cli, Deps
     cli(argv=None, *, deps: Deps | None = None) -> int
 
 ``deps=None`` = 真实装配（读 Settings、装日志、连 MySQL/Redis）；传入 ``deps`` =
 不读 .env、不装日志、不联网，所以整条 CLI 链路可测。Deps 字段全是**工厂**，保持
-「用不到就不造」的惰性；注入时命令只准调用自己需要的工厂，需要而没给 → fail-fast 并点名::
+「用不到就不造」的惰性；注入时命令只准调用自己需要的工厂，需要而没给 → fail-fast 并点名：
 
     llm_factory:       Callable[[], LLMClient]    | None = None
     faq_store_factory: Callable[[], FaqStore]     | None = None
     matcher_factory:   Callable[[], TextMatcher]  | None = None
     cache_factory:     Callable[[], Cache | None] | None = None   # 返回 None = 无缓存
     faq_threshold:     float = 0.85
-    # M3 起:知识库通道的四个工厂。字段名也是契约 —— 往 Deps 加字段就得同步本脚本。
+    # 知识库通道的四个工厂。字段名也是契约 —— 往 Deps 加字段就得同步本脚本。
     embedder_factory:      Callable[[], Embedder]     | None = None
     vector_store_factory:  Callable[[], VectorStore]  | None = None
     keyword_index_factory: Callable[[], KeywordIndex] | None = None
     reranker_factory:      Callable[[], Reranker]     | None = None
-    # M5.2 起:会话历史（`--session` 时才用,不注入就不造）
+    # 会话历史（`--session` 时才用,不注入就不造）
     conversation_store_factory: Callable[[], ConversationStore] | None = None
 
 命令：``faq -q/--question`` 必填（缺了退出码 2）。刻意不复用 ``-p/--prompt``：
 chat 是「把这句话发给模型」，faq 是「拿这个问题去检索」。
 
-> 命令名 （M5.1）从 `ask` 改成 **`faq`**：合流入口叫 `qa` 之后，
+> 命令名 从 `ask` 改成 **`faq`**：合流入口叫 `qa` 之后，
 > `ask` 那种「我要提问」的口气听起来像总入口，喧宾夺主；`faq` / `rag` 成对，
 > 都点明这条命令走的是哪条通道。**行为一个字没变**（本脚本只改了命令名）。
 
-领域模型、端口、用例::
+领域模型、端口、用例：
 
     from project_rag.domain import FaqEntry, FaqMatch, FaqAnswer
     FaqEntry(id: int, question: str, answer: str)
     FaqMatch(entry: FaqEntry, score: float)     # 0~1 的**置信度**，越大越可信
     FaqAnswer(answer: str, source: Literal["faq","llm"], score: float | None = None,
-              truncated: bool = False)      # M5.3a:模型没说完时为 True
+              truncated: bool = False)      # 模型没说完时为 True
 
 ``score`` 的口径归适配器，用例层只认 ``score >= threshold``。当前 ``matcher_bm25.py``
 给的是 **top1 原始分 ÷「该条问题问自己」的原始分**（换的口径，此前是
@@ -55,7 +55,7 @@ N=50 时 0.335，同期无关问法最高 0.481，阈值区间是空集）。新
 
 **改写问法不归本通道管**：FAQ 通道只直返人写的标准答案，改写由知识库通道
 （`rag` / `search`）负责。本脚本最后一条用例只覆盖「加礼貌语」级别的改写；
-真正的改写评估集在 `data/eval/`，判定标准由 M4 的尺子定。契约只保证三件事：0~1、越大越可信、判定用 ``>=``。
+真正的改写评估集在 `data/eval/`，判定标准由评估集那把尺子定。契约只保证三件事：0~1、越大越可信、判定用 ``>=``。
 
     from project_rag.ports import FaqStore, TextMatcher, Cache
     FaqStore.load_all() -> Sequence[FaqEntry]
@@ -82,8 +82,8 @@ N=50 时 0.335，同期无关问法最高 0.481，阈值区间是空集）。新
 （``cache.get/set`` 抛错）都必须降级，答案与退出码不受影响。MySQL 相反：
 连不上必须 fail-fast，错误信息点名连接目标（host:port）且不吐堆栈。
 
-种子数据：FaqStore 只有 ``load_all()``（写入/增量更新见 deferred.md），端到端用例
-由本脚本用 pymysql 建表 + 插入 + 清理。表结构是契约的一部分::
+种子数据：FaqStore 只有 ``load_all()``（写入/增量更新还没做），端到端用例
+由本脚本用 pymysql 建表 + 插入 + 清理。表结构是契约的一部分：
 
     CREATE TABLE {table} (
         id       BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -127,7 +127,7 @@ DEFAULT_THRESHOLD = 0.85
 EXPECTED_MYSQL = {"host": "127.0.0.1", "port": 10093, "user": "rag", "database": "rag"}
 EXPECTED_REDIS = {"host": "127.0.0.1", "port": 10087, "db": 0}
 # faq 段的**类默认值**（= 没有 config.yaml 时的兜底，也是"这段代码一直以来的行为"）。
-# 两个覆盖率门槛是这次作者报障后加的（推导见 adapters/matcher_bm25.py）：它们**必须与适配器里的
+# 两个覆盖率门槛后加的（推导见 adapters/matcher_bm25.py）：它们**必须与适配器里的
 # DEFAULT_* 常量一致** —— 两处各写一个数就是两处真相，改一处不会有人发现。
 # （曾经还有一道"上界"，量出来它随语料规模漂、且战果与覆盖率逐项相同，已删掉。）
 EXPECTED_FAQ = {
@@ -164,7 +164,7 @@ FAQ_TABLE_DDL = (
     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
 )
 
-# M2 新引入的第三方 SDK：只准出现在 adapters/（required 里的必须有实际使用点，
+# 新引入的第三方 SDK：只准出现在 adapters/（required 里的必须有实际使用点，
 # 否则下面的分层扫描会在「一条都没用到」时假装通过）。
 # 新增任何 SDK 都要往这里加一个名字 —— 名单是手写的，漏了就等于这条纪律对它失效。
 M2_SDK_ROOTS = ("pymysql", "redis", "jieba", "rank_bm25")
@@ -398,7 +398,7 @@ def _() -> str:
     return "load_all / best_match / get+set 签名一致"
 
 
-@check("组合根：四个重资源工厂是进程级单例（lru_cache 且真的接进 Deps）—— M5.6")
+@check("组合根：四个重资源工厂是进程级单例（lru_cache 且真的接进 Deps）")
 def _() -> str:
     """为什么是 AST 而不是「调两次看是不是同一个对象」:
 
@@ -406,7 +406,7 @@ def _() -> str:
     验收脚本不该为了验「缓存」把这两份钱都付了。所以只看两件结构事实:
     ① 这几个工厂被 `@lru_cache` 装饰;② `Deps(...)` 里接的**就是这几个函数对象**,
     而不是又写了一个新 lambda(装饰了却没用上,是最容易犯的错)。
-    行为侧的账由 M5.6 的延迟日志与 `check_m5_api` 的「预热」那条兜底。
+    行为侧的账由延迟日志与 `check_m5_api` 的「预热」那条兜底。
     """
     tree = ast.parse((SRC / "cli" / "deps.py").read_text(encoding="utf-8"))
     build = next(
@@ -439,7 +439,7 @@ def _() -> str:
             f"这些工厂没有 lru_cache：{sorted(missing)} —— 它们各抱一份重资源"
             "（Milvus 连接 / 嵌入模型 2G / 重排模型 2.2G / 全量分词索引）。"
             "CLI 一进程一命令无所谓,但 project-rag-api 是常驻进程:"
-            "不缓存就是每个走 RAG 的请求重载一遍模型（M5.6 实测这一个坑 4.4s/请求）"
+            "不缓存就是每个走 RAG 的请求重载一遍模型（实测这一个坑 4.4s/请求）"
         )
 
     wired = {
@@ -468,7 +468,7 @@ def _() -> str:
 # ── 组合根 Deps 的形状契约 ─────────────────────────────────────────────────────
 # **已搬到 `check_deps_root.py`**：这一段原来在这里，而本脚本属 `--set local`
 # （要真 FAQ 语料），于是常规回归根本不跑它 —— 同一个洞咬过两次（稀疏列那次、
-# M8 查询改写那次）。搬出去之后它进 `--set ci`，加 Deps 字段漏改就当场红。
+# 查询改写那次）。搬出去之后它进 `--set ci`，加 Deps 字段漏改就当场红。
 
 # ── 2. 配置 ───────────────────────────────────────────────────────────────────
 @check("配置：mysql / redis / faq 三段嵌套配置齐全，默认值与草案一致")
@@ -500,7 +500,7 @@ def _() -> str:
     if not _plain(settings.mysql.password) or not _plain(settings.redis.password):
         raise AssertionError("mysql.password / redis.password 不该为空")
     # **比类默认值,不比生效值**:生效值会被 config.yaml / 环境变量覆盖（那是部署旋钮，
-    # 作者可以调），"生效值还在不在可用区间里"由 check_p0_4_ab 那条契约负责。
+    # 部署时可以调），"生效值还在不在可用区间里"由 check_p0_4_ab 那条契约负责。
     defaults = _faq_cls()()
     for field, want in EXPECTED_FAQ.items():
         actual = getattr(defaults, field, "<缺这个字段>")
@@ -561,7 +561,7 @@ def _() -> str:
     app = SRC / "application"
     if not app.exists():
         raise AssertionError(
-            "src/project_rag/application/ 不存在；M2 起才有用例层，answer_faq 放在这里"
+            "src/project_rag/application/ 不存在；FAQ 通道那批起才有用例层，answer_faq 放在这里"
         )
     allowed = ("project_rag.domain", "project_rag.ports", "project_rag.observability")
     bad: list[str] = []
@@ -602,7 +602,7 @@ def _() -> str:
     if leaked:
         raise AssertionError(
             f"SDK 泄漏到适配器之外：{leaked}。"
-            "这是「换存储/换匹配算法不用改用例」的唯一保证（同 M1 的 langchain 规则）"
+            "这是「换存储/换匹配算法不用改用例」的唯一保证（同第一轮的 langchain 规则）"
         )
     absent = [root for root in M2_SDK_REQUIRED if root not in hits]
     if absent:
@@ -826,7 +826,7 @@ def _() -> str:
     if second.source != "llm":
         raise AssertionError(
             f"命中负缓存时 source 应仍是 'llm'，实际 {second.source!r}。"
-            "模型现编的答案被标成 faq，M4 路由和 M5 评估就分不清钱花在哪了"
+            "模型现编的答案被标成 faq，合流路由和评估就分不清钱花在哪了"
         )
     if second.answer != first.answer:
         raise AssertionError(f"两次答案应一致，实际 {first.answer!r} vs {second.answer!r}")
@@ -990,7 +990,7 @@ def _() -> str:
     if "mysql" not in proc.stderr.lower():
         raise AssertionError(f"错误信息没点名 MySQL：{proc.stderr[:200]!r}")
     if "Traceback (most recent call last)" in proc.stderr:
-        raise AssertionError("把原始堆栈抛给了用户：堆栈进日志，人话给用户（同 M1 的 chat）")
+        raise AssertionError("把原始堆栈抛给了用户：堆栈进日志，人话给用户（同第一轮的 chat）")
     return f"1 + {proc.stderr.strip().splitlines()[-1][:80]!r}"
 
 
@@ -1006,7 +1006,7 @@ def _seed_faq(rows: list[tuple[int, str, str]]) -> str:
     except Exception as exc:  # noqa: BLE001 - 容器没起是环境问题，不是契约失败
         raise SkipCheck(
             f"MySQL 连不上（{target}）：{type(exc).__name__}: {exc}；"
-            "先看 Windows 侧 Docker Desktop 是否开着（docs/STATUS.md §5 第 10 条），"
+            "先看 Windows 侧 Docker Desktop 是否开着，"
             "再 docker compose up -d，或跑 check_env_services.py 定位"
         ) from exc
     try:
@@ -1152,7 +1152,7 @@ def _() -> str:
     except Exception as exc:  # noqa: BLE001 - 容器没起是环境问题，不是契约失败
         raise SkipCheck(
             f"MySQL 连不上（{MYSQL_ENV['host']}:{MYSQL_ENV['port']}）："
-            f"{type(exc).__name__}: {exc}；先按 docs/STATUS.md §5 把容器起起来"
+            f"{type(exc).__name__}: {exc}；先把中间件起起来（./scripts/dev.sh up）"
         ) from exc
     try:
         with conn.cursor() as cur:
@@ -1199,7 +1199,7 @@ def _must_match(matcher, query: str, entries):
     return hit
 
 
-# ── FAQ 命中口径的三道闸门（作者报障驱动：任何带「协程」的提问都被两个字的那条答掉） ──
+# ── FAQ 命中口径的三道闸门（两个字的条目会答掉任何带它的提问，所以要拦） ──
 def _gate_corpus():
     """输入:无。行为:造一份能复现"夹带词有底分"的小语料。输出:(matcher, entries)。
 
@@ -1226,7 +1226,7 @@ def _gate_corpus():
 
 @check("分数回到 0~1：一字不差 1.000、夹带提问也是 1.000（判不命中靠覆盖率,不靠分数大小）")
 def _score_range() -> str:
-    """作者定稿的口径：分数压回 0~1，判"该不该答"交给两道覆盖率。
+    """的口径：分数压回 0~1，判"该不该答"交给两道覆盖率。
 
     报障那条提问的**未剪辑**比值是 1.712（分子里混进了 `线程/的/对比` 的底分），夹回 1.0 之后
     与一字不差**同分** —— 所以光靠阈值分不开它（这正是最初的 bug）。分开它的是**提问覆盖率**
@@ -1364,7 +1364,7 @@ def _gate_defaults_agree() -> str:
 
 @check("命中口径对语料规模不敏感：默认规则在 150 条与 600+ 条上给同一批提问同一个判定")
 def _scale_invariant() -> str:
-    """作者追问"分数不再是 0~1,随着语料漂移怎么办" —— 这一条就是那个问题的答案。
+    """「分数随语料漂移怎么办」的答案就在这一条。
 
     **比值会漂**（分子分母都含 idf，而 idf=ln((N+1)/df) 随语料变）：实测把 FAQ 库从 150 条撑到
     300 / 617 / 1324 条（混入一份扩充语料池，见下面的 `RAG_EXTRA_FAQ_POOL`），「请问，<原问题>」这一档的**最高**未剪辑比值
@@ -1372,7 +1372,7 @@ def _scale_invariant() -> str:
     （曾经试过上界 1.10：放行率从 100% 被砍到 60%/69%/71%，于是删掉了）。
 
     **覆盖率不漂**：它只是 token 计数比值（`|提问 ∩ 条目| / |提问|` 这类），不含 idf、不含分数。
-    这一条用真语料把这件事钉住：同一批提问（每条问自己 / 加礼貌语 / 无关问法 / 作者那条夹带）
+    这一条用真语料把这件事钉住：同一批提问（每条问自己 / 加礼貌语 / 无关问法 / 夹带别的主题那条）
     在两种规模的语料上必须给出**逐条相同**的判定。语料池不在本地时 SKIP 并点名 owner。
     """
     import csv as csv_module
@@ -1382,7 +1382,7 @@ def _scale_invariant() -> str:
     from project_rag.adapters import BM25TextMatcher
     from project_rag.domain import FaqEntry
 
-    # **扩充语料的路径从环境变量来,源码里不写文件名**：那份 CSV 是作者本机的不公开语料,
+    # **扩充语料的路径从环境变量来,源码里不写文件名**：那份 CSV 是不公开的本机语料,
     # 它的文件名（含来源机构）不该跟着仓库一起发出去。没设 / 文件不在 → SKIP,
     # 这本来就是它在别人机器上的默认状态。
     pool = os.environ.get("RAG_EXTRA_FAQ_POOL", "").strip()
@@ -1457,7 +1457,7 @@ def _scale_invariant() -> str:
 
 @check("数据侧：入库校验拒绝「不像问句」的行（两个字的中文主题词）")
 def _loader_shape_guard() -> str:
-    """入口护栏：FAQ 表里不该出现 `协程` 这种两个字的主题词（作者报障的那一条就是它）。
+    """入口护栏：FAQ 表里不该出现 `协程` 这种两个字的主题词。
 
     算法侧已经有三道闸门兜住**行为**；这一层保证**数据**里不再进这种行 ——
     位子很低但很硬：它拦住的正是"把八个字的标题当问题灌进去"这种批量操作。
@@ -1479,7 +1479,7 @@ def _loader_shape_guard() -> str:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    # ① **下限必须来自配置**（作者要求"最少词数能在配置里设"）：脚本自己不留默认值 ——
+    # ① **下限必须来自配置**：脚本自己不留默认值 ——
     #    留了就是第二处真源，改了配置而脚本还是旧的，没人看得出来。
     import inspect
 
@@ -1527,7 +1527,7 @@ def _loader_shape_guard() -> str:
 
 
 def main() -> int:
-    return report("M2 FAQ 通道验收")
+    return report("FAQ 通道验收")
 
 
 if __name__ == "__main__":

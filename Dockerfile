@@ -103,7 +103,7 @@ COPY src/ src/
 COPY config/ config/
 # LICENSE 与 README 也要进来:pyproject 里声明了 `license-files = ["LICENSE"]` 与
 # `readme = "README.md"`（开源化加的),缺任何一个 hatchling 在**这一步构建元数据**
-# 时就会报 "Readme file does not exist" / "license file not found" —— 实测踩过一次(见 STATUS.md §10)。
+# 时就会报 "Readme file does not exist" / "license file not found" —— 实测踩过一次。
 # 放在这一层而不是上面那层:改版权年份/改 README 不该让 5G 的依赖层失效。
 COPY LICENSE README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \

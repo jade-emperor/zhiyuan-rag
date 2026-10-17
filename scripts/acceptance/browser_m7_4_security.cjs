@@ -1,8 +1,8 @@
 /**
- * M7.4 的浏览器实测：桌面壳场景（`file://` 打开本地产物）+ 安全收口在界面上的表现。
+ * 安全收口的浏览器实测：桌面壳场景（`file://` 打开本地产物）+ 安全收口在界面上的表现。
  *
  * **这台机器没有图形界面**，所以 `pywebview` 开窗那一步验不了（判定标准写在
- * `docs/frontend.md` §7）。但壳的**核心假设**可以验：产物是本地文件、后端地址可配、
+ *）。但壳的**核心假设**可以验：产物是本地文件、后端地址可配、
  * 跨源能连上。真 Chromium 打开 `file://…/static/app/index.html` 就是那个场景 ——
  *
  *   0. 先用 `python -m project_rag.desktop --serve --backend …` 起**桌面壳自己的**回环服务，
@@ -15,7 +15,7 @@
  *      （这句文案住在 `api/app.py:_throttle_text`：**登录/上传是 429 的拦截话术**，
  *       与问答那条 200 的兜底话术（「问得有点密集」）不是同一句。）
  *
- * 跑法(准备见 docs/frontend.md §7)::
+ * 跑法(准备)：
  *
  *   RAG_EMBEDDING__DEVICE=cpu .venv/bin/python scripts/acceptance/serve_fake_backend.py
  *   RAG_EMBEDDING__DEVICE=cpu .venv/bin/python -m project_rag.desktop --serve --backend http://127.0.0.1:18081
@@ -24,7 +24,7 @@
  */
 
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
+// 的三步准备）；换机器时不改源码，设个环境变量即可。
 // 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
 const path = require('path')
 const REPO_ROOT = path.resolve(__dirname, '../..')

@@ -1,17 +1,17 @@
 #!/usr/bin/env python
-"""M5.4 验收：FastAPI 接口层 —— 当时那 9 条路由 + 问候拦截 + 静态文件;
-P0-3 之后又钉上认证/角色/文档治理/命名空间(业务路由一律 `/api/v1`)。
+"""验收：FastAPI 接口层 —— 当时那 9 条路由 + 问候拦截 + 静态文件;
+后来又钉上认证/角色/文档治理/命名空间(业务路由一律 `/api/v1`)。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_api.py
 
-本脚本是 **M5.4 契约的唯一权威**（`docs/STATUS.md` §0.1 / §3 只留设计理由）。
+本脚本是这份契约的唯一权威**。
 
 **不需要起服务器、不需要容器、不花钱**:全程用 FastAPI 的 ``TestClient`` 打真请求
 （HTTP + WebSocket),依赖用假件注入 —— 和 CLI 那套注入方式一样。
 
-公开契约::
+公开契约：
 
     from project_rag.api import create_app
     create_app(deps: Deps | None = None) -> FastAPI
@@ -21,7 +21,7 @@ P0-3 之后又钉上认证/角色/文档治理/命名空间(业务路由一律 `
     from project_rag.application.greeting import match_greeting
     match_greeting(text) -> str | None      # 整句只是寒暄时给模板话术
 
-端点(9 个)::
+端点(9 个)：
 
     POST   /api/v1/create_session        -> {"session_id": uuid4}
     GET    /api/v1/history/{session_id}  -> {"session_id", "rounds": [{question, answer, citations}]}
@@ -33,7 +33,7 @@ P0-3 之后又钉上认证/角色/文档治理/命名空间(业务路由一律 `
     GET    /                          -> 静态首页
     GET    /static/{path}             -> 静态文件挂载
 
-**四件刻意不同的事**（每条都对着一个容易踩的坑）::
+**四件刻意不同的事**（每条都对着一个容易踩的坑）：
 
     1. 端点全是 **async def**,但同步的活全在 ``await`` 后面 —— 两道缝:``_call`` 搬
        「一次同步调用」、``_in_thread`` 搬「一整条同步帧流」,都进 anyio 的线程池。
@@ -54,11 +54,11 @@ P0-3 之后又钉上认证/角色/文档治理/命名空间(业务路由一律 `
 ``channel`` 比 domain 多一个 ``"greeting"`` —— 寒暄既不是 FAQ 通道也不是知识库通道,
 混进那两种前端就没法区分了。
 
-起服务那条也钉住::
+起服务那条也钉住：
 
     run()  ← 必须 configure_logging() → _warmup(deps) → uvicorn.run(host=api.host, port=api.port)
         # 日志装在这里、不装进 create_app():工厂要纯粹,起服务才是进程入口
-        # 预热也在这里:把模型/索引/连接的冷启动从「第一个用户」挪到启动(M5.6,实测 4.4s)
+        # 预热也在这里:把模型/索引/连接的冷启动从「第一个用户」挪到启动(实测 4.4s)
         # 绑 0.0.0.0 而不是回环:WSL 里绑 127.0.0.1 时 Windows 浏览器连不上(实测),
         # 进容器后绑回环也映射不出去。**地址本身走配置**(api.host/port),类默认仍是
         # 0.0.0.0:8080 —— 这条检查比对的是「run() 读到的是配置值」,不是某个具体地址。
@@ -141,7 +141,7 @@ class _SlowFaqStore(FakeFaqStore):
 def _kb_hit(source: str = "ai", parent: str = KB_PARENT):
     from project_rag.domain import Chunk, RetrievedChunk
 
-    # page=7 是 P0-5 加的:让「页码一路走到 HTTP 出参」这条链在接口这一层也有断言。
+    # page=7 是页码那批加的:让「页码一路走到 HTTP 出参」这条链在接口这一层也有断言。
     # 夹具刻意给一个**真实页号**(而不是留 None),否则「忘了从 Citation 抄到 CitationOut」
     # 会表现成 null —— 而 null 看起来完全合法(它本来就表示"不知道")。
     return RetrievedChunk(
@@ -315,8 +315,8 @@ def _() -> str:
             "漏预热:首个请求比热请求多付 4.4s(实测)"
         )
     # 绑定地址改成从配置读了,所以这里**比对配置而不是比对字面量**:
-    # 断字面量会把「作者改了 RAG_API__HOST 就红」变成假故障(法则 #26);
-    # 断「run() 读到的是配置里的值」才既挡住漏读、又不管作者选哪个地址。
+    # 断字面量会把「换个 RAG_API__HOST 就红」变成假故障;
+    # 断「run() 读到的是配置里的值」才既挡住漏读、又不管选哪个地址。
     from project_rag.config import ApiConfig, get_settings
 
     settings = get_settings()
@@ -336,7 +336,7 @@ def _() -> str:
     )
 
 
-@check("路由清单：M5 那 9 条（8 条业务路由 + 1 个静态挂载）都还在 —— 改名不改行为")
+@check("路由清单：最早那 9 条（8 条业务路由 + 1 个静态挂载）都还在 —— 改名不改行为")
 def _() -> str:
     app = _World().app()
     routes = {
@@ -363,15 +363,15 @@ def _() -> str:
         raise AssertionError(f"WebSocket 路由应为 /api/v1/stream，实际 {ws}")
     if "/static" not in mounts:
         raise AssertionError(f"静态文件没挂上，实际 mount {mounts}")
-    return f"M5 那 {len(want)} 条路由都在（另有 P0-3 的 v1 端点，由「命名空间」那条统一盯）"
+    return f"最早那 {len(want)} 条路由都在（另有认证那批的 v1 端点，由「命名空间」那条统一盯）"
 
 
 @check("命名空间：业务接口一律在 /api/v1 下（老 /api/* 一条不留，也不留别名）")
 def _() -> str:
-    """P0-3b-5-② 的统一迁移：`/api/*` → `/api/v1/*`，metric 挪进 `admin`。
+    """统一迁移：`/api/*` → `/api/v1/*`，metric 挪进 `admin`。
 
     **为什么要一条检查盯着**：漏一个老式路径进去，前端的 TS 客户端（从 OpenAPI 生成，
-    见 `deferred.md` 第 55 条）就会有两个前缀；而**留别名更糟** —— 两套路径是两个真值来源，
+    ）就会有两个前缀；而**留别名更糟** —— 两套路径是两个真值来源，
     契约要写两遍、认证要接两处，然后总有一套先烂。
 
     **允许留在根上的只有三样**，它们不是业务接口、也不跟 API 版本走：
@@ -607,7 +607,7 @@ def _() -> str:
         raise AssertionError(f"引用预览应是父块正文，实际 {citation}")
     if citation["page"] != 7:
         raise AssertionError(
-            f"引用该带子块的页码（P0-5：这个夹具是第 7 页），实际 {citation.get('page')!r} —— "
+            f"引用该带子块的页码（页码那一批：这个夹具是第 7 页），实际 {citation.get('page')!r} —— "
             "漏了这一步，前端就只能显示「页码未知」，而库里明明有"
         )
     if body["session_id"] is not None:
@@ -703,8 +703,8 @@ def _() -> str:
     Schemas = importlib.import_module("project_rag.api.schemas")
     hints = typing.get_type_hints(Schemas.QueryResponse)
     # 闭集里那两个"不是通道"的值都是**接口层的前置拦截**:
-    #   greeting = 寒暄(直接回话术,不查库)      —— M5 就有
-    #   throttled = 触发限流(回"稍后再试")      —— M7.4 加(作者定:问答超限给兜底话术而不是 429)
+    #   greeting = 寒暄(直接回话术,不查库)      —— 合流那批就有
+    #   throttled = 触发限流(回"稍后再试")      —— 安全收口那批加(问答超限给兜底话术而不是 429)
     # 钉死这个闭集,是为了让"多一种出口"必须显式改这里 —— 顺手塞一个值进去,
     # 前端的 channel 分支就会漏掉它(显示成光秃秃一句话)。
     want = ("faq", "rag", "greeting", "throttled")
@@ -846,7 +846,7 @@ def _() -> str:
 
 @check("静态：GET / 307 → /static/app/；目录 URL 与它引用的资源都取得到；旧调试页已删（404）")
 def _() -> str:
-    """静态入口的三条性质,判据全落在**用户真的会输的那个 URL** 上(STATUS.md §0.3 第 32 条)。
+    """静态入口的三条性质,判据全落在**用户真的会输的那个 URL** 上。
 
     之前这里断言的是「`/static/index.html` 能用、页面里能看到 `/api/v1/stream`
     与 `?token=`」—— 那份内置调试页已经删掉(见 `app.py` 根路由的说明),于是:
@@ -884,7 +884,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M5.4 FastAPI 接口层验收")
+    return report("FastAPI 接口层验收")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-4 契约:检索层 A/B 的**裁判**本身要可靠。
+"""契约:检索层 A/B 的**裁判**本身要可靠。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_p0_4_ab.py
 
@@ -23,7 +23,7 @@
 外加一条:工具里那张配置表(rrf / weighted-x-y)必须与 `RetrievalOptions` 的字段对得上,
 否则 `--configs` 会拿着一组不存在的旋钮去跑,读出来的数没有意义。
 
-**P0-4 第三组(FAQ 阈值)也在这里**:`faq.threshold` 是"FAQ 通道命中判定"的那个数,
+**第三组(FAQ 阈值)也在这里**:`faq.threshold` 是"FAQ 通道命中判定"的那个数,
 调低会让无关问法误命中、调高会让礼貌语失效。契约 = **实测可用区间必须罩住它**
 (探针口径直接复用 `calibrate_threshold.py`,只跑最快的那三组、0.8 秒)。
 """
@@ -138,11 +138,11 @@ def _configs_match_options() -> str:
 
 @check("FAQ 阈值：实测可用区间必须罩住 faq.threshold（放行礼貌语、拦住无关问法）")
 def _faq_threshold() -> str:
-    """P0-4 第三组:FAQ 命中阈值（`faq.threshold`，读 `config.yaml` —— 本机现在是 0.95）。
+    """第三组:FAQ 命中阈值（`faq.threshold`，读 `config.yaml` —— 本机现在是 0.95）。
 
     注意这里**只断言"配置值落在实测区间里"**，不钉具体数字：0.85 是**代码默认值**
     （`check_m2_faq` / `check_m5_qa` 钉着），而 `config.yaml` 那一行是**部署旋钮**，
-    作者可以调（§5 第 26 条）—— 调完由这条检查负责说"还在不在可用区间内"。
+    部署时可以调 —— 调完由这条检查负责说"还在不在可用区间内"。
 
     口径与工具**共用一份**:直接 import ``calibrate_threshold`` 的 ``probe`` 与 ``NOISE_PROBES``。
     各写一份探针的话,"工具量的是 A、检查量的是 B",两边对不上还没人知道。
@@ -210,7 +210,7 @@ def _faq_threshold() -> str:
 
 def main() -> int:
     return report(
-        "P0-4 契约:检索层 A/B 的裁判（overlaps）+ 配置表 + FAQ 阈值",
+        "契约:检索层 A/B 的裁判（overlaps）+ 配置表 + FAQ 阈值",
         notes=(
             "说明:除「FAQ 阈值」那条要真 FAQ 表(0.8 秒)外,全内存、不需要容器/模型/网络。",
             "它不评检索质量,只保证尺子本身可靠。",

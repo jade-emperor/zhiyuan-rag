@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-3a 契约：认证、角色、会话归属。
+"""契约：认证、角色、会话归属。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_p0_3_auth.py
 
@@ -65,7 +65,7 @@ class _FakeAuthStore:
                 self.users[name] = (user, password_hash)
 
     def delete_user(self, user_id: str) -> int:
-        """P0-6 起端口多了这一条 —— 假件也要跟得上(不然 pyright 说它不满足 AuthStore)。"""
+        """起端口多了这一条 —— 假件也要跟得上(不然 pyright 说它不满足 AuthStore)。"""
         return 1 if self.users.pop(user_id, None) is not None else 0
 
     def list_users(self) -> Sequence[User]:
@@ -146,7 +146,7 @@ def _login(client, username: str = "boss", password: str = "pw-123456") -> dict[
 def _seeded_client():
     """输入:无。行为:造一个已有管理员 + 员工 + **运维**的客户端。输出:``(client, store)``。
 
-    运维(P0-6)在这一份里只是"第三个账号":报表那条检查要它,而它必须能登录、能看报表、
+    运维在这一份里只是"第三个账号":报表那条检查要它,而它必须能登录、能看报表、
     别处一律 403 —— 这三件事各断言一次。
     """
     from project_rag.application.security import hash_password
@@ -239,7 +239,7 @@ def _session_ownership() -> str:
 
 @check("角色：报表是运维与管理员的（员工 403、无令牌 401），/me 如实报能力")
 def _admin_only() -> str:
-    """P0-6:报表从 ``/admin/metrics`` 挪到 ``/reports/metrics`` —— 运维不是管理员,
+    """报表从 ``/admin/metrics`` 挪到 ``/reports/metrics`` —— 运维不是管理员,
     让他去打一个 ``/admin/`` 开头的接口,读代码的人会以为权限配错了。
 
     三个角色各断言一次:管理员 200、**运维 200**、员工 403;无令牌 401(先认证再授权)。
@@ -780,7 +780,7 @@ def _backfill_shape() -> str:
 
 @check("对账 清理入口：只删点名的那几个（孤儿块 / 缺块行），逐条回报，默认一个都不动")
 def _cleanup_entry() -> str:
-    """P0-3b-5-②②：``doctor --prune-orphans`` / ``--forget-missing`` 背后那两个动作。
+    """``doctor --prune-orphans`` / ``--forget-missing`` 背后那两个动作。
 
     **这一条盯的是「删得比该删的多」** —— 那才是这两个动作唯一可怕的失败方式：
     删少了看得见（对账还报），删多了（把别人还在用的块清掉）没人会立刻发现。
@@ -940,7 +940,7 @@ def _doctor_cli() -> str:
 
 def main() -> int:
     return report(
-        "P0-3 契约：认证 / 角色 / 会话归属 / 文档治理 / 上传入库 / 删除 / 对账清理",
+        "契约：认证 / 角色 / 会话归属 / 文档治理 / 上传入库 / 删除 / 对账清理",
         notes=("说明：除「真 MySQL 往返」外全部内存假件（不需要容器/模型/网络）。",),
         hint=(
             "提示：建号走 `project-rag user add -u 名字 --role admin`（没有注册接口）；"

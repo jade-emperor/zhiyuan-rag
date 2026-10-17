@@ -2,13 +2,13 @@
 
 这里的语料是**为演示自写的面试八股**（Python / 数据库 / Linux / 提示词与 Agent / RAG /
 Transformer 与微调 / 部署，共 37 道题与自写答案），不涉及任何真实机构、课程或版权材料。
-它和作者本机的真实语料（`data/corpus/bagu_ai_data`、`data/corpus/bagu_java_data`、
+它和维护者本机的真实语料（`data/corpus/bagu_ai_data`、`data/corpus/bagu_java_data`、
 `data/corpus/pdf_data`）**结构一致**（`### N. 问题` + 参考答案），所以演示跑通的那条链，
 换成真实语料是同一套流程 —— 只是真实语料不进仓库（版权）。
 
 它的唯一作用是让「入库 → 检索 → 带引用的回答」这条链在**没有 BGE-M3 模型**的机器上也能跑通。
 
-> ⚠️ 本文里凡是 `scripts/tools/xxx.py` 的命令都是**作者本机的离线工具**，它们跑在 `data/` 与本地表上，**不随仓库发布**（见 `.gitignore`）——
+> ⚠️ 本文里凡是 `scripts/tools/xxx.py` 的命令都是**维护者本机的离线工具**，它们跑在 `data/` 与本地表上，**不随仓库发布**（见 `.gitignore`）——
 > 公开 clone 上敲不了。演示本身不依赖它们：下面「三步」用的全是仓库里的命令。
 
 ## 三步（下面每条命令都实测过）

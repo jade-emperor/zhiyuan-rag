@@ -9,7 +9,7 @@
 所以每段峰值只属于该段；再用 `torch.cuda.set_per_process_memory_fraction` 把分配器上限压到
 不同档位，实测"这一档能不能跑完一步" —— 二分出真实下限。
 
-用法::
+用法：
 
     # 逐阶段分解（默认 bs=32、动态 padding，和训练一致）
     python tools/lora/vram_budget.py --json logs/lora/run1/vram_budget.json

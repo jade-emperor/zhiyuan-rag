@@ -111,7 +111,7 @@ class FakeKeywordIndex:
 
 
 class FakeReranker:
-    """假重排器:按候选顺序给递减分。只证明"重排器接下去了",不验排序质量(那是 M3 的事)。"""
+    """假重排器:按候选顺序给递减分。只证明"重排器接下去了",不验排序质量(那是知识库那条契约的事)。"""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -252,7 +252,7 @@ class FakeLLM:
     而好几条检查正是靠 ``calls`` 区分这两件事。
 
     ``pieces`` 是逐帧吐的正文;``reply`` 是"整段当一帧"(两者给一个,``reply`` 优先)。
-    ``usage`` 是"provider 在收尾帧上回报的用量"(P0-7):给 ``(模型, 输入, 输出)``
+    ``usage`` 是"provider 在收尾帧上回报的用量":给 ``(模型, 输入, 输出)``
     就挂在 ``last=True`` 那一帧上 —— 与真适配器的形状一致(见 ``llm_deepseek._usage_of``)。
     """
 
@@ -290,8 +290,8 @@ class FakeLLM:
         else:
             for piece in self.pieces:
                 yield LlmDelta(text=piece)
-        # 收尾帧:M5.3a 起端口吐的是帧,结束原因在这一帧上;
-        # P0-7 起用量也挂在这一帧(与真适配器同一个约定:收尾帧带 finish_reason + usage)
+        # 收尾帧:端口吐的是帧,结束原因在这一帧上;
+        # 用量也挂在这一帧(与真适配器同一个约定:收尾帧带 finish_reason + usage)
         model, input_tokens, output_tokens = self.usage or ("", 0, 0)
         yield LlmDelta(
             finish_reason=self.finish_reason,

@@ -1,5 +1,5 @@
 /**
- * M7.1 的浏览器实测（人工那一步的脚本化版本）。
+ * 聊天页的浏览器实测（人工那一步的脚本化版本）。
  *
  * 对着 `.cache/m7_fake_backend.py`（真 uvicorn + 假依赖，18081）跑一遍真实用户流程，
  * 每条都同时看**渲染结果**与**后端收到的请求**：
@@ -11,7 +11,7 @@
  *   5. 改成「关键字检索」再问 → 后端收到的是 mode=keyword（不是权重）；
  *   6. 退出 → 员工登录 → 顶部只剩「对话」。
  *
- * 跑法(两件一次性准备:playwright 包 + 一个 Chromium;都放 `.cache/`,不进仓库)::
+ * 跑法(两件一次性准备:playwright 包 + 一个 Chromium;都放 `.cache/`,不进仓库)：
  *
  *   mkdir -p .cache/pw && cd .cache/pw && npm i playwright --cache ../.cache/npm-cache
  *   # 下载 Chrome for Testing(国内走 npmmirror;cdn.playwright.dev 会转到 Google Storage,很慢)
@@ -27,11 +27,11 @@
  *     node scripts/acceptance/browser_m7_frontend.cjs
  *
  * ⚠️ **容器里没有中文字体**:中文在截图里会渲染成方框(豆腐块)。那是环境缺字体,
- * 不是界面坏了 —— 看布局、看行为都不受影响(见 `docs/frontend.md` §7)。
+ * 不是界面坏了 —— 看布局、看行为都不受影响。
  */
 
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
+// 的三步准备）；换机器时不改源码，设个环境变量即可。
 // 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
 const path = require('path')
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -96,7 +96,7 @@ async function main() {
   const sessions = await page.locator('.sidebar .item').count()
   expect('管理员会话列表', sessions === 2, `左侧 ${sessions} 条会话`)
   const tabs = await page.locator('header .tab').allInnerTexts()
-  // P0-6:管理员的页签是四个(对话 / 知识库 / 报表 / 账号与权限)
+  // 管理员的页签是四个(对话 / 知识库 / 报表 / 账号与权限)
   expect(
     '管理员看到四个页签',
     tabs.length === 4 &&
@@ -130,7 +130,7 @@ async function main() {
   expect('md 引用显示页码未知', unknown === 1, `「页码未知」出现 ${unknown} 次`)
 
   // ── 4b. 引用**落了库**:旧会话里的引用卡片是从 /history 读回来的 ─────────
-  // 作者报的就是这条:以前引用只活在浏览器内存里,切回旧会话只剩正文里的 [1](等于没有出处)。
+  // 这一条钉的就是那个 bug:引用曾经只活在浏览器内存里,切回旧会话只剩正文里的 [1](等于没有出处)。
   // 假后端种子里第一轮带引用快照(新账)、第二轮不带(老账)—— 两种都要如实画出来
   await page.locator('.sidebar .item', { hasText: '每周加班最多多长时间' }).first().click()
   await page.waitForSelector('.messages .row', { timeout: 10000 })

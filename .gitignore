@@ -26,7 +26,7 @@ __pycache__/
 !/scripts/README.md
 !/scripts/dev.sh
 !/scripts/acceptance/
-#   `/scripts/tools/` **整目录不公开**（作者要求）：里面基本是一次性的个人工具 ——
+#   `/scripts/tools/` **整目录不公开**：里面基本是一次性的个人工具 ——
 #   造评估集、下模型、灌 FAQ、跑 RAGAS、A/B 读数，命令只有这台机器上跑得通，
 #   挂到公开仓库只会让人照着敲一遍然后失败。
 #
@@ -49,7 +49,7 @@ __pycache__/
 /.cache/
 
 # 前端：源码与 package-lock 进版本库,**依赖目录与构建中间产物不进**
-#   （构建产物落在 src/project_rag/api/static/app/ 下,那是入库的 —— 见 docs/frontend.md §1）
+#（构建产物落在 src/project_rag/api/static/app/ 下,那是入库的）
 #   ⚠️ `web/scripts/` 要进版本库（source-digest.mjs 是 build 的一环），别在这里写 `scripts/`
 web/node_modules/
 web/dist/

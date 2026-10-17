@@ -22,7 +22,7 @@ _GREETINGS = (
     r"再见|拜拜|bye",
 )
 # 整句只能是寒暄,后面可以跟标点/空白,不能再有别的内容
-_PUNCT = r"[\s，,。.!！?？~～]*"
+_PUNCT = r"[\s，。.!！?？~～]*"
 _GREETING_RE = re.compile(rf"^(?:{'|'.join(_GREETINGS)}){_PUNCT}$", re.IGNORECASE)
 
 GREETING_REPLY = (

@@ -209,13 +209,15 @@ class Authenticator:
     def require_knowledge(user: User | None) -> User | None:
         """输入:当前用户。行为:不能用知识库就 403(员工 / 运维 / 管理员都能)。输出:该用户。
 
-        **运维也能问答**(作者要求):他既要回答"这套系统跑得好不好、花了多少钱",
+        **运维也能问答**:他既要回答"这套系统跑得好不好、花了多少钱",
         也要能自己问一句验一验。**管理动作仍然只有管理员**(上传 / 删除 / 建号 / 授权)——
         能提问不等于能改语料。
         """
         if user is not None and not user.can_use_knowledge:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="这个操作需要员工或管理员角色(运维只能看报表)",
+                # **不点名任何角色**：三个角色都有问答权限，这句话今天是不可达的兜底；
+                # 哪天加了个没有问答权限的角色，这里要跟着改文案（契约钉着文案与能力表一致）。
+                detail="这个操作需要问答权限",
             )
         return user

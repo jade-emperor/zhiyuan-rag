@@ -1,25 +1,25 @@
 #!/usr/bin/env python
-"""M7.3 契约：管理员可观测看板 + 它依赖的 `capabilities.metrics`。
+"""契约：管理员可观测看板 + 它依赖的 `capabilities.metrics`。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m7_3_metrics.py
 
-**这一份在堵什么洞**：M7.1/M7.2 之前，「可观测」也是一张路线图页 —— 报表接口
-（`GET /api/v1/reports/metrics`，P0-2）早就有了，但**没有界面**；而界面要画对，
+**这一份在堵什么洞**：聊天页与知识库页之前，「可观测」也是一张路线图页 —— 报表接口
+（`GET /api/v1/reports/metrics`，延迟账本那批）早就有了，但**没有界面**；而界面要画对，
 得先知道后端的三条口径（`application/metrics.py` 的 docstring）：
 
 * **`null` 不是 0**：`p95` 要 `n ≥ 20`、`p99` 要 `n ≥ 100`，不够就给 `None`。
-  画成 0 会让人以为"很快" —— 这个项目已经吃过一次「指标名字会骗人」的亏（§5 第 24 条）；
+  画成 0 会让人以为"很快" —— 这个项目已经吃过一次「指标名字会骗人」的亏；
 * **分段只算热行，最慢榜含冷启动**：冷启动是用户真实等到的，不能从"最慢"里藏掉，
   也不能混进分位数（那会让 p95 变成"冷启动有多慢"）；
 * **比率要带分子分母**：3/4 与 300/400 都是 75%，但只给百分比读不出样本量。
 
 **前端不许写死白名单**：窗口（`1h/6h/24h/7d/30d`）与那三个样本量门槛现在由
 `GET /api/v1/capabilities` 的 `metrics` 段报出来 —— 写死在前端的后果是后端改了窗口，
-界面拿着一个 `400` 的窗口名去打（与 M7.1 的 `limits` 同一条规矩）。
+界面拿着一个 `400` 的窗口名去打（与聊天页的 `limits` 同一条规矩）。
 
-公开契约::
+公开契约：
 
     GET /api/v1/capabilities -> {…, metrics: {windows, default_window, top_max,
                                               min_n: {p50, p95, p99}}}
@@ -48,7 +48,7 @@ def _read(relative: str) -> str:
     """输入:相对 `web/src/` 的路径。行为:读它。输出:正文(不在就报错,不静默给空串)。"""
     path = WEB_SRC / relative
     if not path.is_file():
-        raise AssertionError(f"前端源码不在 {path} —— M7.3 的看板还没落地?")
+        raise AssertionError(f"前端源码不在 {path} —— 看板还没落地?")
     return path.read_text(encoding="utf-8")
 
 
@@ -56,7 +56,7 @@ def _strip_comments(text: str) -> str:
     """输入:一份前端源码。行为:去掉块注释与整行注释。输出:剩下的文本。
 
     只去整行 `//`：**解释口径的注释里一定会出现 `0`/`null` 这些字样**，
-    不剥掉的话「注释」会把断言判红（§5 第 18 条那个坑）。
+    不剥掉的话「注释」会把断言判红（注释被当成代码那个坑）。
     """
     without_block = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     return re.sub(r"(?m)^\s*//.*$", " ", without_block)
@@ -212,7 +212,7 @@ def _() -> str:
 
 @check("能力自述在守卫里补拉，「刷新」也能自救（直接落在 #/metrics 不是死局）")
 def _() -> str:
-    """能力自述的取数时机 —— 这是用户报过的一个真事故(见 `docs/STATUS.md` 事故表)。
+    """能力自述的取数时机 —— 这是用户报过的一个真事故。
 
     事故形态:capabilities 原来只由「登录页」与「对话页」挂载时拉一次,于是"直接落在
     `#/metrics`"(在这一页按 F5 / 书签 / 上次关在这一页)时,看板读到一个**空 store**,
@@ -333,10 +333,10 @@ def _() -> str:
 
 
 # ══ 二、前端静态 ═════════════════════════════════════════════════════════════
-@check("看板不再是路线图页：接的是报表接口，不是「M7.3 交付」那段文案")
+@check("看板不再是路线图页：接的是报表接口，不是路线图那段文案")
 def _() -> str:
     view = _read("views/MetricsView.vue")
-    assert "M7.3 交付" not in view, "路线图页的文案还在 —— 这一页现在应该是真页面"
+    assert "路线图" not in view, "路线图页的文案还在 —— 这一页现在应该是真页面"
     assert "metrics" in _read("api/endpoints.ts"), "endpoints.ts 没有报表函数"
     for call in ("loadMetrics", "setWindow"):
         assert call in view, f"视图没有调 {call}"
@@ -347,7 +347,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M7.3 管理员可观测看板 + capabilities.metrics",
+        "管理员可观测看板 + capabilities.metrics",
         hint="前端改动后先 `cd web && npm run build`；产物要入库（Python 侧与镜像都不装 node）",
     )
 

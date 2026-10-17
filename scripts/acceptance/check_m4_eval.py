@@ -1,26 +1,18 @@
 #!/usr/bin/env python
-"""M4 验收：RAG 系统评估（四指标闭环）。
+"""验收：RAG 系统评估（四指标闭环）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m4_eval.py
 
-本脚本是 M4 契约的**唯一权威**（``docs/STATUS.md`` 只留设计理由，不重复规格）。
+本脚本是这份契约的**唯一权威**（`` 只留设计理由，不重复规格）。
 允许存在的 SKIP 只有两类：前置条件不满足（容器 / 缺 API key / 评估还没跑），
 或**在理由里点名了 owner 的后继里程碑**。
 
-M4 分步::
+**评估不进产品代码**:全部产物都在 ``scripts/`` 与 ``data/``（用户明确过
+``src/**`` 由人工敲）。所以本脚本有一条检查钉住「``src/`` 里不出现 ragas」。
 
-    M4.1 语料入库:data/corpus/bagu_ai_data + bagu_java_data → Milvus（两个新 source）
-    M4.2 评估集构造:八股文 H3 小节 → question / ground_truth（含口语化改写组）
-    M4.3 dataset builder:参考实现里缺的那一环 —— 跑本系统批量产出 answer + contexts
-    M4.4 RAGAS 四指标 + 带元数据的 CSV 落盘
-    M4.5 本脚本 + 文档收尾
-
-**评估不进产品代码**:M4 的全部产物都在 ``scripts/`` 与 ``data/``（用户明确过
-``src/**`` 由作者自己敲）。所以本脚本有一条检查钉住「``src/`` 里不出现 ragas」。
-
-评估集契约（``data/eval/eval_set_bagu_v1.json``）::
+评估集契约（``data/eval/eval_set_bagu_v1.json``）：
 
     {"meta": {...}, "rows": [{
         "id": "<sha256(source|section|title|kind)[:12]>",   # 确定性,给 builder 断点续跑用
@@ -40,9 +32,9 @@ M4 分步::
 
 ``paraphrase`` 是**确定性规则**改写（加口语前缀/疑问尾,原词一个不删）,
 不调 LLM:评估集本身必须可复现,否则两次指标差异说不清是系统的还是评估集的。
-LLM 造题（三个评估代理）留在后面,见 ``docs/deferred.md``。
+LLM 造题（三个评估代理）留在后面,见 ``。
 
-dataset builder 契约（``data/eval/datasets/<name>_dataset.json``）::
+dataset builder 契约（``data/eval/datasets/<name>_dataset.json``）：
 
     [{"user_input": "...", "retrieved_contexts": ["..."], "response": "...", "reference": "..."}]
 
@@ -71,7 +63,7 @@ ragas 读不了它,但「检索到底给了什么」只能从这里看,而且 ``
 踩过一次 —— 数据集在 k=5/m=2 下建,跑到一半把配置改成 10/3,summary 差点把 k 记成 10,
 那份 CSV 就变成一个查不出错的谎。
 
-RAGAS 运行契约（``data/eval/ragas_runs/run_<UTC时间戳>_<tag>.{summary,rows}.csv``）::
+RAGAS 运行契约（``data/eval/ragas_runs/run_<UTC时间戳>_<tag>.{summary,rows}.csv``）：
 
     summary: 一行,元数据 + 四个分数
              run_at tag dataset_file dataset_sha256_12 rows judge_provider judge_model
@@ -92,7 +84,7 @@ RAGAS 运行契约（``data/eval/ragas_runs/run_<UTC时间戳>_<tag>.{summary,ro
 但 ``<name>_raw.json`` **全量保留**并把拒答数写进 ``meta``,验收还钉住「拒答率 ≤ 10%」——
 拒答一大片说明检索根本没接对,那时候四个分数再漂亮也没意义。
 
-裁判模型的选择（**与常见写法不同,理由充分**）::
+裁判模型的选择（**与常见写法不同,理由充分**）：
 
     常见写法:ChatOpenAI(model="gpt-4") + OpenAIEmbeddings,API key 还是硬编码占位符
     本项目:judge = DeepSeek（复用 settings.llm 的 model/base_url/key）
@@ -103,7 +95,7 @@ RAGAS 运行契约（``data/eval/ragas_runs/run_<UTC时间戳>_<tag>.{summary,ro
 需要一个 embedding 服务,而项目里已经有 BGE-M3 与它的端口,再引 OpenAI embeddings
 属于重复建设。有一条检查静态盯着「评估脚本里不出现 OPENAI_API_KEY / openai.com」。
 
-指标名的版本差异（**实测,照抄旧写法会崩**）::
+指标名的版本差异（**实测,照抄旧写法会崩**）：
 
     旧写法: faithfulness / answer_relevancy / context_relevancy / context_recall
     0.4.3: faithfulness / answer_relevancy / context_precision  / context_recall
@@ -179,7 +171,7 @@ MAX_REFUSAL_RATE = 0.10
 
 def _load_json(path: Path):
     if not path.exists():
-        raise SkipCheck(f"{path.relative_to(ROOT)} 还不存在；owner：M4.2 评估集构造")
+        raise SkipCheck(f"{path.relative_to(ROOT)} 还不存在；owner：评估集构造")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -200,14 +192,14 @@ def _dataset_path(name: str) -> Path:
 def _datasets() -> list[Path]:
     """输入:无。行为:列出 datasets/ 下所有数据集。输出:按名排序的路径列表(空则 SKIP)。
 
-    **按目录列举而不是写死一个名字**:M4 的产出之一就是「同一份评估集、不同检索旋钮」
+    **按目录列举而不是写死一个名字**:产出之一就是「同一份评估集、不同检索旋钮」
     的对比（`bagu_v1` = k5/m2 基线,`bagu_v1_k10m3` = 调参后），每一份都要同样合格。
     """
     if not DATASET_DIR.exists():
-        raise SkipCheck(f"{DATASET_DIR.relative_to(ROOT)} 还没有；owner：M4.3 dataset builder")
+        raise SkipCheck(f"{DATASET_DIR.relative_to(ROOT)} 还没有；owner：dataset builder")
     paths = sorted(DATASET_DIR.glob("*_dataset.json"))
     if not paths:
-        raise SkipCheck(f"{DATASET_DIR.relative_to(ROOT)} 里还没有 *_dataset.json；owner：M4.3 dataset builder")
+        raise SkipCheck(f"{DATASET_DIR.relative_to(ROOT)} 里还没有 *_dataset.json；owner：dataset builder")
     return paths
 
 
@@ -218,7 +210,7 @@ def _tool(name: str) -> Path:
 def _read_tool(name: str) -> str:
     path = _tool(name)
     if not path.exists():
-        raise SkipCheck(f"scripts/tools/{name} 还没落地；owner：M4")
+        raise SkipCheck(f"scripts/tools/{name} 还没落地；owner：评估")
     return path.read_text(encoding="utf-8")
 
 
@@ -238,7 +230,7 @@ def _sha256_12(path: Path) -> str:
 def _help_ok(path: Path) -> str:
     """跑 `脚本 --help`；只要退出码 0 就算这个脚本的 CLI 立起来了。"""
     if not path.exists():
-        raise SkipCheck(f"{path.name} 还没落地；owner：M4")
+        raise SkipCheck(f"{path.name} 还没落地；owner：评估")
     proc = subprocess.run(
         [sys.executable, str(path), "--help"],
         capture_output=True,
@@ -251,7 +243,7 @@ def _help_ok(path: Path) -> str:
 
 
 def _m4_script_texts() -> dict[str, str]:
-    """M4 相关、且**是代码**的脚本正文（ragas_compat 的 docstring 里会提到 OpenAI，只扫代码段）。"""
+    """相关、且**是代码**的脚本正文（ragas_compat 的 docstring 里会提到 OpenAI，只扫代码段）。"""
     texts: dict[str, str] = {}
     for name in (
         "build_eval_set.py",
@@ -266,8 +258,8 @@ def _m4_script_texts() -> dict[str, str]:
         # `scripts/tools/` **整目录不公开**（见 .gitignore），公开 clone 上这里必然为空。
         # 空表**不许静默通过**（那等于「这条检查没跑却算绿」）—— 按项目口径 SKIP 并点名 owner。
         raise SkipCheck(
-            "scripts/tools/ 下没有 M4 的脚本（该目录不公开，见 .gitignore）；"
-            "owner：数据装载 / M4"
+            "scripts/tools/ 下没有评估脚本（该目录不公开，见 .gitignore）；"
+            "owner：数据装载 / 评估"
         )
     return texts
 
@@ -485,7 +477,7 @@ def _() -> str:
         # 别红一条谁也修不了的 FAIL（`_help_ok` / `_read_tool` 一直是这么做的,这里漏了）。
         raise SkipCheck(
             "scripts/tools/build_eval_dataset.py 不在这份检出里（该目录不公开）；"
-            "owner：数据装载 / M4"
+            "owner：数据装载 / 评估"
         )
     want = _options_kwargs(SRC / "cli" / "commands" / "rag.py")
     got = _options_kwargs(builder)
@@ -581,7 +573,7 @@ def _() -> str:
         raise SkipCheck(f"{LEGACY_EVAL.name} 不在；owner：数据（随课程提供）")
     path = _dataset_path("course30")
     if not path.exists():
-        raise SkipCheck(f"{path.relative_to(ROOT)} 还没生成；owner：M4.3 dataset builder")
+        raise SkipCheck(f"{path.relative_to(ROOT)} 还没生成；owner：dataset builder")
     rows = json.loads(path.read_text(encoding="utf-8"))
     want = json.loads(LEGACY_EVAL.read_text(encoding="utf-8"))
     if len(rows) != len(want):
@@ -605,10 +597,10 @@ def _() -> str:
 @check("落盘：至少一次 run，summary 的元数据列 + 四个指标列齐全")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck(f"{RUNS_DIR.relative_to(ROOT)} 还没有；owner：M4.4 跑第一版 RAGAS")
+        raise SkipCheck(f"{RUNS_DIR.relative_to(ROOT)} 还没有；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4 跑第一版 RAGAS")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     path = summaries[-1]
@@ -626,10 +618,10 @@ def _() -> str:
 @check("落盘：四指标都落在 [0,1] 且非 NaN")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     with summaries[-1].open(encoding="utf-8", newline="") as handle:
@@ -648,10 +640,10 @@ def _() -> str:
 @check("落盘：rows.csv 行数 == summary 的 rows")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     path = summaries[-1]
@@ -670,10 +662,10 @@ def _() -> str:
 @check("落盘：summary 记的数据集指纹 == 当前数据集文件（结果对得上输入）")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     with summaries[-1].open(encoding="utf-8", newline="") as handle:
@@ -693,10 +685,10 @@ def _() -> str:
 @check("落盘：每份结果的检索旋钮都取自它自己的数据集 provenance")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     verified: list[str] = []
@@ -733,7 +725,7 @@ def _() -> str:
         verified.append(f"{raw_name}=k{pairs['rag_k']}/m{pairs['rag_candidate_m']}")
     detail = f"{len(verified)} 份逐列核对通过（{'、'.join(verified)}）"
     if orphans:
-        # 输入被删/被重建的历史读数**不是错误**:结论已经落进 docs/STATUS.md §0.4,
+        # 输入被删/被重建的历史读数**不是错误**:结论已经落进,
         # 但必须显式报出来 —— 不报的话,下一个人会以为它还核得动
         detail += f"；{len(orphans)} 份的输入已被删或重建,只剩历史读数不可再核"
     return detail
@@ -742,10 +734,10 @@ def _() -> str:
 @check("落盘：groups.csv 分组行数之和 == rows（分组是用来解释总分的，不能漏样本）")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     import csv
 
     path = summaries[-1]
@@ -767,10 +759,10 @@ def _() -> str:
 @check("落盘：多次运行不互相覆盖（文件名各自带时间戳）")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if not summaries:
-        raise SkipCheck("还没有 summary.csv；owner：M4.4")
+        raise SkipCheck("还没有 summary.csv；owner：RAGAS 跑批")
     names = [path.name for path in summaries]
     if len(set(names)) != len(names):
         raise AssertionError("文件名重复")
@@ -787,7 +779,7 @@ def _() -> str:
 # ---------------------------------------------------------------------------
 
 
-@check("数据：Milvus 里两个新 source 都有块（M4.1 的入库结果）")
+@check("数据：Milvus 里两个新 source 都有块（的入库结果）")
 def _() -> str:
     from collections import Counter
 
@@ -803,12 +795,12 @@ def _() -> str:
         ) from exc
     counts = Counter(row.source for row in rows)
     if not rows:
-        # **空库是"还没灌",不是"契约坏了"**:作者 drop 掉集合、或新克隆的机器上都会走到这里。
+        # **空库是"还没灌",不是"契约坏了"**:集合被 drop 掉、或新克隆的机器上都会走到这里。
         # 按项目口径:缺数据要 SKIP 并点名 owner,而不是 FAIL(FAIL 会被读成"代码回归")。
         raise SkipCheck(
             f"Milvus 里一个块都没有（{get_settings().milvus.collection}）—— 先灌语料："
             "`uv run project-rag ingest --path data/corpus/<source>_data`；"
-            "owner：数据（M4.1 的入库结果，属于部署动作，不是代码）"
+            "owner：数据（入库结果，属于部署动作，不是代码）"
         )
     missing = [source for source in BAGU_SOURCES if counts.get(source, 0) == 0]
     if missing:
@@ -823,7 +815,7 @@ def _() -> str:
 def _() -> str:
     path = _tool("compare_runs.py")
     if not path.exists():
-        raise SkipCheck("scripts/tools/compare_runs.py 还没落地；owner：M4 收尾")
+        raise SkipCheck("scripts/tools/compare_runs.py 还没落地；owner：评估")
     proc = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
         raise AssertionError(f"退出码 {proc.returncode}：{proc.stderr.strip()[-300:]}")
@@ -866,10 +858,10 @@ def _() -> str:
 @check("全链路：调参 A/B 有据可查（同一份评估集、不同检索旋钮的两组结果）")
 def _() -> str:
     if not RUNS_DIR.exists():
-        raise SkipCheck("还没有 run；owner：M4.4")
+        raise SkipCheck("还没有 run；owner：RAGAS 跑批")
     summaries = sorted(RUNS_DIR.glob("run_*_*.summary.csv"))
     if len(summaries) < 2:
-        raise SkipCheck(f"只有 {len(summaries)} 份结果，A/B 至少要两次运行；owner：M4.4")
+        raise SkipCheck(f"只有 {len(summaries)} 份结果，A/B 至少要两次运行；owner：RAGAS 跑批")
     import csv
 
     # 按「哪份评估集 + 哪组旋钮」归拢;输入已被删的历史读数进不来(A/B 也就无从核起)
@@ -886,10 +878,10 @@ def _() -> str:
     if not pairs:
         raise SkipCheck(
             "现在只有一组可追溯的检索旋钮：retrieval_k/candidate_m 那组已经量过并**回退到 5/2**"
-            "（−0.0034，按噪声口径是「打平」，见 docs/STATUS.md §0.4），10/3 的数据集按结论删了。"
+            "，10/3 的数据集按结论删了。"
             "剩下三组还没跑：融合 rrf vs weighted、重排父块 vs 子块、FAQ 阈值 0.85 重标定 —— "
             "**一轮 = 改一次配置 + 跑一次四指标**（112 条约 15 分钟 + 一次 judge 费用），"
-            "不为量噪声重复跑；owner：M4 之后的调参轮次"
+            "不为量噪声重复跑；owner：评估"
         )
     detail = []
     for eval_file, knobs in pairs.items():
@@ -904,9 +896,9 @@ def _() -> str:
     return "；".join(detail)
 
 
-# ── 新评估集（八股 + PDF 教材，）──────────────────────────────────
+# ── 新评估集（八股 + PDF 教材）──────────────────────────────────
 # 为什么另起一组而不是改上面那组：`eval_set_bagu_v1.json`（112 条，只有八股、两种问法）
-# 是 M4 的历史读数，它的分层契约必须继续成立；新那份是"作者真实数据的问答对"——
+# 是历史读数，它的分层契约必须继续成立；新那份是"作者真实数据的问答对"——
 # 200 条里 150 条进 faq 表做演示直答、50 条做评估，来源多了 PDF 教材。
 # 三份产物都由 `scripts/tools/build_qa_dataset.py` 造，都在 `data/`（不公开）。
 NEW_EVAL_SET = ROOT / "data" / "eval" / "eval_set_bagu_pdf_v1.json"
@@ -1098,7 +1090,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M4 RAG 评估验收")
+    return report("RAG 评估验收")
 
 
 if __name__ == "__main__":

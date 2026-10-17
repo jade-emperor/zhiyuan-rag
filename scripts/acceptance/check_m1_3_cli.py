@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M1.3 验收：CLI + LLM 端口/适配器（行走骨架的最后一块）。
+"""验收：CLI + LLM 端口/适配器（行走骨架的最后一块）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m1_3_cli.py
 
@@ -12,7 +12,7 @@
   返回进程退出码，自己不要 ``sys.exit``；用法错误交给 argparse 抛 ``SystemExit(2)``。
 
   ``deps=None`` = 真实装配（读 Settings、装日志）；传入 ``Deps`` = 不读 .env、不装日志、不联网。
-  ``Deps`` 的字段与默认值由 ``check_m2_faq.py``（M2 契约）固化；M1.3 只用它的 ``llm_factory``::
+  ``Deps`` 的字段与默认值由 ``check_m2_faq.py``（契约）固化；这个脚本只用它的 ``llm_factory``：
 
       Deps(llm_factory=lambda: FakeLLM())
 * 子命令 ``chat``：``-p/--prompt`` 必填；用户提问必须以 **user** 角色送出。
@@ -49,12 +49,12 @@ def cli_api():
 
 
 def deps_api():
-    """M2 起组合根换成 Deps dataclass（替换 llm_factory 关键字）。"""
+    """起组合根换成 Deps dataclass（替换 llm_factory 关键字）。"""
     module = importlib.import_module("project_rag.cli")
     if not hasattr(module, "Deps"):
         raise AssertionError(
             "project_rag.cli 没有导出 Deps；"
-            "M2 契约（check_m2_faq.py）要求 cli(argv, *, deps: Deps | None = None)，"
+            "契约（check_m2_faq.py）要求 cli(argv, *, deps: Deps | None = None)，"
             "并在 cli/__init__.py 里 re-export"
         )
     return module.Deps
@@ -258,7 +258,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M1.3 CLI 验收")
+    return report("CLI 验收")
 
 
 if __name__ == "__main__":

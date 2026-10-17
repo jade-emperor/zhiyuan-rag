@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M6.4 部署契约：应用编进 ``docker-compose.yaml`` 之后，那份配置必须自洽。
+"""部署契约：应用编进 ``docker-compose.yaml`` 之后，那份配置必须自洽。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m6_deploy.py
 
@@ -15,7 +15,7 @@
   （两者必须各占一个端口；文档里写的端口必须就是代码里跑的那个）—— 它对应的翻车是
   「dev.sh 注释写 18080、代码跑 8080，裸 `uv run project-rag-api` 直接 Errno 98」。
 * **不证明**：镜像真的能构建成功、真的能起来。那只能在装了 docker 的机器上跑
-  `docker compose up -d --build`；开发机上没有 `docker` 命令（见 README §8 与 STATUS §0）。
+  `docker compose up -d --build`；开发机上没有 `docker` 命令。
   这里做的是"把能静态查出来的错先查掉"，把真机构建留给作者。
 
 为什么这些检查值得存在（三条都对应一次真实的坑）：
@@ -314,7 +314,7 @@ def _mounts() -> str:
             raise AssertionError(f"挂载写法看不懂（要 host:容器[:ro]）：{entry!r}")
         mounts[parts[1]] = parts[2] if len(parts) > 2 else "rw"
     # 上传目录必须是**唯一**多出来的那条可写挂载，而且要与 config.yaml 的 api.uploads_dir 对得上：
-    # 少了它，容器里的「上传文档」必然失败（EROFS，STATUS.md §0.3 第 43 条）。
+    # 少了它，容器里的「上传文档」必然失败。
     uploads = str(_yaml(CONFIG_YAML)["api"]["uploads_dir"]).strip("/")
     want = {
         f"{workdir}/models": "ro",
@@ -388,7 +388,7 @@ def _app_has_gpu() -> bool:
 
 @check("静态元数据：direct-URL 依赖声明了元数据，且 uv.lock 的 [manifest] 段带着它（解析期不去 github）")
 def _static_metadata() -> str:
-    """加。完整背景见 `STATUS.md` §0.3 第 38 条与 `pyproject.toml` 那段注释。
+    """加。完整背景与 `pyproject.toml` 那段注释。
 
     `en-core-web-sm` 的 wheel 只有 GitHub 一个来源，而 uv **即使没选中那个 extra** 也要它的
     元数据来校验锁 —— 取一次实测：宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次
@@ -495,7 +495,7 @@ def _device_matches_gpu() -> str:
     后果**不是**启动失败（所以没人发现），而是:① 启动预热静默失败,日志里一行 WARNING
     "Found no NVIDIA driver on your system（不影响启动,首个请求会自己补做）";
     ② `/health` 照样 200 —— 探活只问"进程在不在";③ **第一次真提问**才会炸,
-    而那时报的是模型加载错误,看着像"模型没挂对"。这正是 §5 那条
+    而那时报的是模型加载错误,看着像"模型没挂对"。这正是「绿的健康检查 ≠ 能干活」那条
     「服务端接受 ≠ 支持」的同族:绿的健康检查不等于能干活。
     """
     device = _app_device()
@@ -574,7 +574,7 @@ def _lock_consistent() -> str:
             f"requires-dist 的 extra 标记不对：{markers}（应为三个都是 extra == 'unstructured'）"
         )
     # provides-extras 要与 pyproject 里**实际的档位集合**一致(集合,不是写死一个元素的列表):
-    # 加了 `desktop` 那一档(M7.4 的桌面壳),写死的列表当场变红 ——
+    # 加了 `desktop` 那一档（的桌面壳),写死的列表当场变红 ——
     # 而真正要钉的是"锁与 pyproject 不漂",不是"只有一个档"。
     declared_extras = set(_pyproject().get("project", {}).get("optional-dependencies", {}))
     locked_extras = set(root.get("metadata", {}).get("provides-extras") or [])
@@ -750,7 +750,7 @@ def _port_layering() -> str:
             f"非端口数字白名单 {sorted(_NON_PORT_NUMBERS)}）—— 注释与代码分家就是这么开始的"
         )
     config_port = int(_yaml(CONFIG_YAML)["api"]["port"])
-    # 作者定了这套分工：**仓库里的宿主配置 = 代码后端端口**（裸 `uv run project-rag-api`
+    # 分工是定死的：**仓库里的宿主配置 = 代码后端端口**（裸 `uv run project-rag-api`
     # 与 `./scripts/dev.sh serve` 读的是同一个值），容器则靠镜像里的 ENV 盖住它。
     # 两半都要钉住 —— 只钉一半，另一半就能悄悄漂回「两个后端抢一个口」。
     if config_port != dev:
@@ -878,7 +878,7 @@ def _dev_sh_port_guards() -> str:
 def _entry_points_self_report() -> str:
     """同一个「启动」有多个入口时，**每个入口必须自己说清它起了什么**。
 
-    真实的混乱（作者报障）：「为什么我有时候启动 docker 会自动启动前端，有时候不会」——
+    真实的混乱：「为什么我有时候启动 docker 会自动启动前端，有时候不会」——
     两个入口的服务集合本来就不一样，而差别只存在于"上次好像有页面"这种记忆里：
 
     * ``./scripts/dev.sh up`` → ``docker compose up -d standalone mysql redis``（**没有 app**）;
@@ -988,11 +988,11 @@ def _bug_template_ports() -> str:
 
 def main() -> int:
     return report(
-        "M6.4 部署契约：compose / Dockerfile / 依赖档位三方自洽 + 宿主入口的端口分层",
+        "部署契约：compose / Dockerfile / 依赖档位三方自洽 + 宿主入口的端口分层",
         notes=(
             "说明：这些检查证明的是「配置自洽」，**不是**「镜像能构建」。"
             "后者 已在真机上跑过一次（`docker compose build app` + `up -d app`，"
-            "宿主 8080 实测，见 STATUS.md §7.3）—— 但那是**那台机器那一次**的结果，"
+            "宿主 8080 实测）—— 但那是**那台机器那一次**的结果，"
             "换机器/换网络仍要自己跑一遍 `docker compose up -d --build`。",
         ),
         hint=(

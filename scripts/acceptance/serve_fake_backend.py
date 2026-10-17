@@ -1,7 +1,7 @@
 """给前端手工验证用的**假后端**:真 uvicorn + 假依赖、假账号、假会话目录。
 
 **它不是验收脚本**(不在 `check_*` / `reverse_*` 里),所以回归不会跑它。
-它是给「M7.x 的界面改了,想用眼睛看一遍」准备的一台可控后端:
+它是给「界面改了,想用眼睛看一遍」准备的一台可控后端:
 
 * 真库里的账号密码不该猜、更不该为了让界面跑起来去改真库;
 * 真后端会把"看一眼界面"变成"往作者的 MySQL 里写会话与账号";
@@ -15,7 +15,7 @@
 **每收到一次提问,它会把后端真正解析出来的旋钮打在 `>>> QUERY` 那一行** ——
 「界面上改了参数,后端到底收到什么」不用猜。
 
-配合 `browser_m7_frontend.cjs` 就是那套自动化的浏览器实测(见 `docs/frontend.md` §7)。
+配合 `browser_m7_frontend.cjs` 就是那套自动化的浏览器实测。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from project_rag.domain import Chunk, Citation, ConversationTurn, snapshot_citat
 from project_rag.domain.auth import User  # noqa: E402
 from project_rag.domain.sessions import SessionSummary  # noqa: E402
 
-# 三个角色各一个账号(P0-6):ops 只能看报表,员工只能问答 —— 浏览器用例靠它们验分流。
+# 三个角色各一个账号:ops 只能看报表,员工只能问答 —— 浏览器用例靠它们验分流。
 ACCOUNTS = {"admin": "admin-pass", "employee": "emp-pass", "ops": "ops-pass"}
 _ROLES = {"admin": "admin", "employee": "employee", "ops": "ops"}
 
@@ -179,7 +179,7 @@ SEED_CHUNKS = [
         "seed-md-parent",
         "年假申请走 OA,提前三天提交;审批通过后到 HR 备案。",
     ),
-    # 受限文档(P0-6):员工在知识库清单里**看不到**它(他被授权了,但清单是管理员页);
+    # 受限文档:员工在知识库清单里**看不到**它(他被授权了,但清单是管理员页);
     # 它存在的意义是让管理员页显示「限定可见」,并让权限弹层有东西可改。
     Chunk(
         "seed-quote-1",
@@ -255,7 +255,7 @@ class FakeStore:
 VECTOR = FakeStore(SEED_CHUNKS)
 
 
-# ── 文档治理(M7.2):登记表 / 假装载 / 假切分 ────────────────────────────────
+# ── 文档治理:登记表 / 假装载 / 假切分 ────────────────────────────────
 # 认识的后缀:**一处定义两处用** —— capabilities 报给前端的就是它,磁盘索引也按它过滤
 # (两份清单不一致时,前端会"看到 accept 允许 .docx、清单里却没有 .docx 那一类")。
 SUFFIXES = (".pdf", ".md", ".txt", ".docx")
@@ -272,7 +272,7 @@ def _seed_documents() -> None:
     * 已经删掉的文件.md —— ``file_missing``(磁盘上找不到它);
     * reimburse.docx —— ``processing``(在途:不做一致性判定);
     * 未登记的语料.md —— ``unregistered``(**只在磁盘上**,登记表里没有它);
-    * 内部报价单.md —— ``ok`` 但**被收窄过**(P0-6):卡片上要看到「限定可见」。
+    * 内部报价单.md —— ``ok`` 但**被收窄过**:卡片上要看到「限定可见」。
     """
     from project_rag.domain import DocRecord
 
@@ -466,7 +466,7 @@ def _slow_down_ingest() -> None:
     time.sleep(1.2)
 
 
-# ── 报表(M7.3):一份"像真的"的账本 ─────────────────────────────────────────
+# ── 报表:一份"像真的"的账本 ─────────────────────────────────────────
 class FakeLedger:
     """假账本:按「行龄」过滤,好让不同窗口返回不同条数(1h 少、24h 多)。
 
@@ -522,13 +522,13 @@ def _ledger_row(index: int, *, age_hours: float, total: float, cold: bool = Fals
         "retrieve_ms": f"{total * 0.3:.1f}",
         "llm_ttft_ms": f"{total * 0.4:.1f}",
     }
-    # P0-7:计费口径的三列。**只有真调了模型的行才有** —— FAQ 直答那几行是 "-"
+    # 计费口径的三列。**只有真调了模型的行才有** —— FAQ 直答那几行是 "-"
     # (与真账本同一条口径:用量只记在调 provider 的那一层)。
     if base["channel"] == "rag":
         base["llm_model"] = "deepseek-flash"
         inputs = 800 + index * 37
         base["llm_input_tokens"] = str(inputs)
-        # P0-7:prompt cache 的命中数(单价与未命中差 50 倍)。这里让约 60% 命中,
+        # prompt cache 的命中数(单价与未命中差 50 倍)。这里让约 60% 命中,
         # 好让界面上的「其中命中缓存」那一列有非零值可看。
         base["llm_cached_input_tokens"] = str(int(inputs * 0.6))
         base["llm_output_tokens"] = str(120 + index * 11)
@@ -573,7 +573,7 @@ def _ledger_rows():
 
 
 class FakeAccess:
-    """假可见范围存储(P0-6):一个组 + 一份受限文档。
+    """假可见范围存储:一个组 + 一份受限文档。
 
     形状与 ``ports/access.py`` 一致(内存版),``init_schema`` 是空操作 ——
     它存在的意义是让浏览器用例**有东西可点**:「限定可见」标记、权限弹层里的勾选框。
@@ -702,7 +702,7 @@ def build():
     _seed_documents()
     store = FakeAuthStore()
     # 会话归属必须真的绑上:否则 /api/v1/history/{id} 会 403(「这段会话没有归属记录」)——
-    # 那是**对的行为**(P0-3a 的越权防线),但会让浏览器实测卡在"点会话没反应"上。
+    # 那是**对的行为**（的越权防线),但会让浏览器实测卡在"点会话没反应"上。
     for user_id, rows in SESSIONS.items():
         for row in rows:
             store.owners[row.session_id] = user_id
@@ -714,7 +714,7 @@ def build():
         return real_ingest(store, record, path, **kwargs)
 
     def options_spy(deps, request, access):  # noqa: ANN001
-        """看一眼后端**实际**收到了什么检索参数(P0-6 起多一个 access 参数)。"""
+        """看一眼后端**实际**收到了什么检索参数（起多一个 access 参数)。"""
         from project_rag.api import app as app_module
 
         result = original_options(deps, request, access)
@@ -796,19 +796,19 @@ def build():
         "session_catalog_factory": lambda: FakeCatalog(),
         "auth_store_factory": lambda: store,
         "suffixes_factory": lambda: SUFFIXES,
-        # M7.2:上传 / 删除 / 预览要的三样。切分与装载都是假的,但**偏移照报**,
+        # 上传 / 删除 / 预览要的三样。切分与装载都是假的,但**偏移照报**,
         # 所以预览里的页码是真算出来的。
         "document_store_factory": lambda: FakeDocs(),
         # 清单的"磁盘那一处":实时清单靠它判 ok / changed / file_missing / unregistered
         "disk_files_factory": _disk_files,
         "chunker_factory": lambda: FakeChunker(),
         "loader_factory": lambda: fake_load,
-        # M7.3:报表要一份账本(不然看板只能看到空窗)
+        # 报表要一份账本(不然看板只能看到空窗)
         "ledger_store_factory": lambda: FakeLedger(),
-        # P0-6:可见范围(一个组 + 一份受限文档)。接了它,浏览器用例才看得到
+        # 可见范围(一个组 + 一份受限文档)。接了它,浏览器用例才看得到
         # 「限定可见」标记与权限弹层;不接的话一切照旧(没规则 = 人人可见)。
         "access_store_factory": lambda: ACCESS,
-        # P0-7:单价表(三档 × 两时段)+ 时段规则 —— 报表页因此有金额与时段可看
+        # 单价表(三档 × 两时段)+ 时段规则 —— 报表页因此有金额与时段可看
         # (数字与口径都按作者那份价目表:北京时间工作日 09–12/14–18 高峰、其余半价;
         #  假账本的时间戳在最近几小时,落哪个时段取决于你几点跑 —— 两种都看得见才对)
         "cost_prices": {
@@ -820,7 +820,7 @@ def build():
         # `_rate_limit_check`)。上限仍取 config 的 `api.rate_limit`。
         # **不接它的话,`browser_m7_4_security.cjs` 最后两条断言（登录连错 → 界面说「请求过于频繁,
         # 等 N 秒」）永远红** —— 那两条一直是红的（假后端从建起来就没有限流器），
-        # 而它不在回归里，所以没人发现（同 STATUS §0.3 第 53 条④、§5 第 59 条④那一家族）。
+        # 而它不在回归里，所以没人发现。
         # 对其它浏览器用例无影响:登录**成功**会 `forget` 掉那个 IP 的计数,只有连续失败才累积。
         "rate_limiter_factory": _memory_limiter,
     }

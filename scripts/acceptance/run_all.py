@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """把验收脚本按「需要什么外部条件」分组成三个集合，一次跑完并给出总裁决。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/run_all.py --set ci        # CI/新机器：零容器零网络零模型
     uv run python scripts/acceptance/run_all.py --set services  # 本机起了中间件时：多跑依赖真中间件的那几条

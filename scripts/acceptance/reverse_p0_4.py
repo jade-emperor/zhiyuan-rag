@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-4 反向测试:把 A/B 的**裁判**改回坏样子,确认契约真的会红。
+"""反向测试:把 A/B 的**裁判**改回坏样子,确认契约真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_p0_4.py          # 全部
 
@@ -34,7 +34,7 @@ CONFIG = "config/config.yaml"
 def _configured_threshold() -> str:
     """输入:无。行为:从 `config/config.yaml` 读**当前**的 `faq.threshold` 字面量。输出:文本。
 
-    **锚点不许抄一份期望值**（§5 第 26/50 条）：这里原来写死 `threshold: 0.85`，作者
+    **锚点不许抄一份期望值**：这里原来写死 `threshold: 0.85`，作者
  把部署旋钮改成 0.95 之后，这条反向测试的锚点当场过时 —— 它自己变成了摆设
     （"锚点在 config 里出现 0 次"），而 `--set ci` 会因此报一条不合格。读当前值就不会再漂。
     """
@@ -125,7 +125,7 @@ def main() -> int:
         if not target.is_file():
             # 这条用例要改的文件**不随仓库发布**（`scripts/tools/` 整目录，见 .gitignore）。
             # 跳过它并**单独计数** —— 既不算红、也不算绿：混进任何一边都是在骗人
-            # （「反向测试要能单独打红」是本项目最贵的那条纪律，见 §5 法律 67③）。
+            # （「反向测试要能单独打红」是本项目最贵的那条纪律）。
             # 与 `reverse_m4_eval` 对「data/ 不发布」的处理是同一个约定。
             skipped.append(f"{title}（缺 {rel}）")
             print(f"○ 跳过  {title}\n      缺 {rel} —— 该文件不随仓库发布（见 .gitignore）")

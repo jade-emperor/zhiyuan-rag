@@ -43,6 +43,6 @@ body:
       label: 怎么证明它有效
       description: |
         理想答案：用评估集做 A/B（改一个旋钮、跑四指标、比差值）——评估脚本在 `scripts/tools/`。
-        说不清判据的建议，多半会被挂进 `docs/deferred.md` 等一个明确的触发条件。
+        说不清判据的建议大多不会被排期 —— 先把「怎样算做到」写成一句可验证的话。
     validations:
       required: false

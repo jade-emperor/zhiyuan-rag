@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-2 契约：延迟账本的聚合口径 + 落表链路。
+"""契约：延迟账本的聚合口径 + 落表链路。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_9_metrics.py
 
@@ -132,7 +132,7 @@ def _cold_warm_layering() -> str:
     warm = _rows("rerank_ms", [10.0, 20.0], cold="false", total_ms="30.0", channel="rag")
     warm[0]["refused"] = "true"  # 热行里有一次拒答,它才是该被数进拒答率的那一条
     cold = [
-        # 冷启动那一层里故意放三种通道:FAQ 直答、知识库、以及"没定通道"(-)
+        # 冷启动那一层里故意放三种通道:FAQ 直答、知识库、以及"没定通道"(）
         _row(request_id="cold1", cold="true", builds="2", rerank_ms="5000.0", total_ms="9000.0",
              channel="-"),
         _row(request_id="cold2", cold="true", builds="1", rerank_ms="4000.0", refused="true",
@@ -348,7 +348,7 @@ def _mysql_roundtrip() -> str:
 
 def main() -> int:
     return report(
-        "P0-2 契约：延迟账本聚合口径 + 落表链路",
+        "契约：延迟账本聚合口径 + 落表链路",
         notes=(
             "说明：除「真 MySQL 往返」外全部内存假件（不需要容器/模型/网络）。",
         ),

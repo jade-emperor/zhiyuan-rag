@@ -1,5 +1,5 @@
 /**
- * P0-6 的浏览器实测:角色分流 + 账号与权限页 + 文档可见范围。
+ * 可见范围的浏览器实测:角色分流 + 账号与权限页 + 文档可见范围。
  *
  * 对着 `scripts/acceptance/serve_fake_backend.py`(真 uvicorn + 假依赖 + 假权限存储,18081)跑:
  *
@@ -13,7 +13,7 @@
  *      (这一段排在文档侧授权之前 —— 那一段会把名单清空);
  *   6. 0 条 JS 报错 / 0 个失败请求。
  *
- * 跑法(准备见 docs/frontend.md §7)::
+ * 跑法(准备)：
  *
  *   RAG_EMBEDDING__DEVICE=cpu .venv/bin/python scripts/acceptance/serve_fake_backend.py
  *   LD_LIBRARY_PATH=$PWD/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu \
@@ -121,7 +121,7 @@ async function main() {
     JSON.stringify(afterCreate.map((t) => t.replace(/\n/g, ' '))),
   )
 
-  // ── 3. 组侧授权:这个组能看哪些文档(作者要的"按组定制") ──────────────────
+  // ── 3. 组侧授权:这个组能看哪些文档(按组定制) ──────────────────
   // **必须排在文档侧那段之前**:那一段会清空「内部报价单」的名单(它是有意要验"回到人人可见"),
   // 一清就没有"已授权本组"这个状态可看了
   await page.getByRole('link', { name: '账号与权限' }).click()
@@ -208,7 +208,7 @@ async function main() {
   const cardAfter = await page.locator('.doc', { hasText: '内部报价单.md' }).first().innerText()
   expect('卡片上的「限定可见」跟着消失', !cardAfter.includes('限定可见'), cardAfter.replace(/\n/g, ' | ').slice(0, 120))
 
-  // ── 4. 运维:能问答 + 能看报表;管理动作被拦(作者要求) ──────────────────
+  // ── 4. 运维:能问答 + 能看报表;管理动作被拦 ──────────────────
   const opsPage = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   const opsErrors = []
   opsPage.on('pageerror', (error) => opsErrors.push(error.message))

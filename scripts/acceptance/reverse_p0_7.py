@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-7 反向测试:把"算钱"改回坏样子,确认契约真的会红。
+"""反向测试:把"算钱"改回坏样子,确认契约真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_p0_7.py
 

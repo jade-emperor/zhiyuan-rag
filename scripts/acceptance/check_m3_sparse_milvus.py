@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M3 契约（**services 档**）：索引类型与 BM25 稀疏向量在**真 Milvus** 上的往返。
+"""契约（**services 档**）：索引类型与 BM25 稀疏向量在**真 Milvus** 上的往返。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m3_sparse_milvus.py     # 需要真中间件
 
@@ -184,7 +184,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M3 索引类型 + BM25 稀疏向量（真 Milvus 往返）",
+        "索引类型 + BM25 稀疏向量（真 Milvus 往返）",
         hint="零容器的那 14 条在 check_m3_sparse.py;这一份属于 --set services",
     )
 

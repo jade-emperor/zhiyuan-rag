@@ -4,13 +4,13 @@
  *
  * 与 `browser_m7_frontend.cjs` 的分工：那几套打的是**假后端 + 壳的回环服务**（可脚本化地
  * 走完登录/提问/退出）；这一份打**真容器**，只验页面能出来、登录页渲染得对、控制台干净 ——
- * 登录之后的问答要有真账号口令（账号在 MySQL 里、口令是 PBKDF2 摘要），那一步归作者点。
+ * 登录之后的问答要有真账号口令（账号在 MySQL 里、口令是 PBKDF2 摘要），那一步归人工。
  *
  * 跑法：LD_LIBRARY_PATH=$PWD/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu \
  *        BASE=http://127.0.0.1:8080/ node .cache/pw/container_smoke.cjs
  */
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
+// 的三步准备）；换机器时不改源码，设个环境变量即可。
 // 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
 const path = require('path')
 const REPO_ROOT = path.resolve(__dirname, '../..')

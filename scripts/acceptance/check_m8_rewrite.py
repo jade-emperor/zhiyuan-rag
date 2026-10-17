@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""M8 验收：**查询改写** —— 合流通道里「FAQ 未命中 → 向量检索」之间那一步。
+"""验收：**查询改写** —— 合流通道里「FAQ 未命中 → 向量检索」之间那一步。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m8_rewrite.py
 
-本脚本是 M8 契约的**唯一权威**。
+本脚本是这份契约的**唯一权威**。
 
-公开契约（import 路径本身也是承诺）::
+公开契约（import 路径本身也是承诺）：
 
     from project_rag.domain import (QueryRewrite, RewriteStrategy, STRATEGIES,
                                     STRATEGY_NAMES, StrategyPrediction,
@@ -25,7 +25,7 @@
     retrieve_many(queries, *, embedder, store, keyword_index=None, reranker=None,
                   options=None, timing=None, rerank_query=None) -> tuple[Citation, ...]
 
-两条不变式（``plan_rewrite`` 负责保证，本脚本逐条盯着）::
+两条不变式（``plan_rewrite`` 负责保证，本脚本逐条盯着）：
 
     queries 永不为空；失败一律退回 (原话,)
     strategy == "direct"  ⟺  queries == (original,)
@@ -990,7 +990,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M8 验收：查询改写（FAQ 未命中 → 向量检索之间那一步）",
+        "验收：查询改写（FAQ 未命中 → 向量检索之间那一步）",
         hint=(
             "这一份零容器零模型零网络。真模型那条路要另跑：\n"
             "  docker run --rm --gpus all -v \"$PWD\":/work -w /work --entrypoint python \\\n"

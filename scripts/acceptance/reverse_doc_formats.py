@@ -2,9 +2,9 @@
 
 **为什么要有这个文件**:验收检查最容易骗人的失败方式是「无论产品怎样都绿」。
 每加一条口径,就得把产品改坏一次、看它红一次 —— 红不了就说明检查没在测它。
-(``docs/STATUS.md`` §5 第 16 / 23 条;反向测试不是可选项。)
+(反向测试不是可选项。)
 
-用法(会临时改 src/ 下的文件,**跑完自动还原**)::
+用法(会临时改 src/ 下的文件,**跑完自动还原**)：
 
     uv run python scripts/acceptance/reverse_doc_formats.py
     uv run python scripts/acceptance/reverse_doc_formats.py RT-4   # 只跑某几条
@@ -55,7 +55,7 @@ _TABLE_BRANCH = """        elif tag == "tbl":
 
 CASES: list[tuple[str, Path, str, str, str, str]] = [
     (
-        "RT-1 纯文本不吃 BOM(第一个标题会变成 \\ufeff#)",
+        "RT-1 纯文本不吃 BOM(第一个标题会变成 \\ufeff#",
         TEXT,
         'return path.read_text(encoding="utf-8-sig")',
         'return path.read_text(encoding="utf-8")',

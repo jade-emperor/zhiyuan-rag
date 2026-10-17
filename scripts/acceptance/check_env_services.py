@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""环境自检：Milvus / MySQL / Redis（M2 / M3 验收的公共前置）。
+"""环境自检：Milvus / MySQL / Redis（FAQ / 知识库验收的公共前置）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_env_services.py
 
@@ -177,8 +177,7 @@ def main() -> int:
         "环境自检：Milvus / MySQL / Redis",
         hint=(
             "提示：连不上容器先看 Windows 侧 Docker Desktop 是否开着"
-            "（不是代码回归，见 docs/STATUS.md §5 第 10 条）；"
-            "再用 docker compose ps 确认状态，没起就 docker compose up -d。"
+            "；再用 docker compose ps 确认状态，没起就 docker compose up -d。"
         ),
     )
 

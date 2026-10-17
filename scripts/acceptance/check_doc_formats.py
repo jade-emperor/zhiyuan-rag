@@ -2,12 +2,12 @@
 
 **权威契约(改代码前先读这里)**
 
-端口(``ports/document_source.py``)::
+端口(``ports/document_source.py``)：
 
     DocumentSource.suffixes -> frozenset[str]          # 这个适配器认识的扩展名
     DocumentSource.read(path) -> str                   # 一份文件 → 带标题层级的 markdown
 
-装载(``adapters/document_loader.py``)::
+装载(``adapters/document_loader.py``)：
 
     load_documents(path) -> LoadedCorpus               # 文件或目录;目录递归
     LoadedCorpus.documents -> tuple[Document, ...]     # 读成功的
@@ -23,12 +23,12 @@
 4. **空文本进 ``empty`` 而不是 documents**:空文档切不出块,混进去只会让块数对不上。
 
 覆盖的格式与它们的标题来源:``.md``/``.txt`` 原文即结构、``.docx`` Word 的 Heading 样式、
-``.pptx`` 每页标题、``.pdf`` 书签目录。**不覆盖**:HTML / Excel / 扫描件 OCR(见 ``deferred.md`` §1.4)。
+``.pptx`` 每页标题、``.pdf`` 书签目录。**不覆盖**:HTML / Excel / 扫描件 OCR。
 
 **为什么不用 unstructured**(实测结论,别再往回改):``partition_docx`` 会调 spacy 分句,
 而它不装模型、用的时候现从 GitHub 拉 ``en_core_web_sm`` —— 离线环境直接卡在 socket 上;
 且它给的是靠大写比例猜出来的标题,而 Word 文档里本来就有 Heading 样式。
-详见 ``adapters/office_files.py`` 的模块 docstring。
+口径见 ``adapters/office_files.py`` 的模块 docstring。
 
 **端口符合性由 pyright 证明**:``_CONFORMANCE`` 那一行的注解就是断言 —— 适配器少一个方法,
 ``uv run pyright`` 会红。运行期的 isinstance 对 Protocol 不做结构检查,写了也是假的。
@@ -255,7 +255,7 @@ def _() -> str:
             "读出来的正文与原文不一致 —— markdown 的结构本来就在正文里,不该被任何解析器改写"
         )
     if text.startswith("\ufeff"):
-        raise AssertionError("BOM 没被吃掉 —— 该用 utf-8-sig(否则第一个标题会变成 \\ufeff#)")
+        raise AssertionError("BOM 没被吃掉 —— 该用 utf-8-sig(否则第一个标题会变成 \\ufeff#")
     return f"{len(text)} 字,逐字等于原文"
 
 

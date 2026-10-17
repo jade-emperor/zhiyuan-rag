@@ -26,7 +26,7 @@ B 与 C 之间的地带就是余量；余量越窄越要谨慎（阈值一抖动
 **覆盖范围**：换词/口语化级别的改写不在本脚本范围内 —— 那个不归 FAQ 通道管，
 由知识库通道（``rag`` / ``search``）负责，评估集放 ``data/eval/``。
 
-用法::
+用法：
 
     .venv/bin/python scripts/acceptance/calibrate_threshold.py
 """
@@ -57,7 +57,7 @@ NOISE_PROBES = [
 ]
 
 # D 组：在真问题后面接一段无关请求。用来量「分数被夹到 1.0」这个边界，
-# 顺便证明「FAQ 会只答前半句」不是猜测 —— 多意图拆分是 M5 路由层的活。
+# 顺便证明「FAQ 会只答前半句」不是猜测 —— 多意图拆分是合流路由层的活。
 ATTACH_SUFFIX = "，另外帮我写一首诗"
 
 
@@ -128,7 +128,7 @@ def main() -> int:
         return 1
 
     # 三道闸门（上界 + 两个覆盖率）**从配置读**：工具量的必须是线上跑的那把尺子，
-    # 不然"标定出来的阈值"与"线上用的口径"是两回事（作者报障那次就是这么被绕过去的）。
+    # 不然"标定出来的阈值"与"线上用的口径"是两回事（那次就是这么被绕过去的）。
     matcher = BM25TextMatcher(
         min_query_coverage=settings.faq.min_query_coverage,
         min_entry_coverage=settings.faq.min_entry_coverage,
@@ -198,7 +198,7 @@ def main() -> int:
 
     print(
         "\n说明：D 组短问题落 0（被覆盖率门槛拦下、交给知识库通道）、长问题仍 1.000"
-        "（FAQ 答前半句）—— 多意图拆分归 M5 路由层。"
+        "（FAQ 答前半句）—— 多意图拆分归合流路由层。"
     )
     return 0
 

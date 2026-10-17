@@ -48,17 +48,13 @@ _OUTPUT_FIELDS = ["text", "source", "doc_id", "parent_id", "parent_content"]
 _PAGE_FIELD = "page"
 _PAGE_NONE = -1
 
-# 两档读一致性,**分工是刻意的**（实测之后定的):
+# 两档读一致性,**分工是刻意的**:
 #
-# * ``search`` 那一路用**配置里的** ``milvus.read_consistency`` —— 它是用户热路径,
-#   而 strong 要比 bounded 多付约 400ms(中位,30 次采样;同一份数据同一索引,200×),
-#   那 400ms 是等保证时间戳对齐的同步往返,不是计算。默认值仍是 strong(语义不变),
-#   要性能就在 config.yaml 里写 bounded。
-# * **其余读固定 strong**:指纹(判断 BM25 索引还作不作数)、写后回查总数(upsert 的返回值)、
-#   全量导出(建 BM25 用)。这三处都不在热路径上,而且它们要的正是"看到最新":
-#   拿旧状态去判"语料没变"会让新入库的文档一直检索不到(静默错误);
-#   写后回查总数用 bounded 会数出偏小的块数,前端卡片就骗人了。
-#   顺带:ingest 每批写完的那次 strong 回查,也把"刚灌完立刻可见"这件事兜住了。
+# * ``search`` 那一路用**配置里的** ``milvus.read_consistency``（用户热路径，那档的差价与代价
+#   写在 ``config.MilvusConfig.read_consistency`` 旁边）；
+# * **其余读固定 strong**：指纹（判 BM25 索引还作不作数）、写后回查总数、全量导出。
+#   这三处不在热路径上，要的正是"看到最新"—— 拿旧状态判"语料没变"会让新入库的文档一直
+#   检索不到（静默错误），写后回查用 bounded 会数出偏小的块数（前端卡片就骗人了）。
 _WRITE_READ_CONSISTENCY = "Strong"
 # 配置里的小写值 → pymilvus 认的写法(它要大驼峰)。翻译只发生在这一层。
 _CONSISTENCY_LEVELS = {"bounded": "Bounded", "eventually": "Eventually", "strong": "Strong"}

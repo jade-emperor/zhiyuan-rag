@@ -16,7 +16,7 @@
 例如 ``check_m5_qa`` 的假向量库故意不实现 ``upsert``,那条残缺本身就是"合流层没有越权写库"的证据)、
 各脚本自己的 ``_require`` 懒加载、以及任何"只有一个脚本用"的东西。
 
-用法(每个 ``check_*.py`` 里只剩这几行)::
+用法(每个 ``check_*.py`` 里只剩这几行)：
 
     from _harness import FAIL, PASS, SKIP, SkipCheck, check, report
 
@@ -26,7 +26,7 @@
         return "证据"
 
     def main() -> int:
-        return report("M3 向量知识库 + RAG 验收")
+        return report("向量知识库 + RAG 验收")
 
     if __name__ == "__main__":
         sys.exit(main())
@@ -50,7 +50,7 @@ def _purge_project_bytecode() -> int:
     **为什么验收要在每次 import 时做这件事**（真踩过):反向测试把源码改坏再还原
     之后,文件的**大小与 mtime(秒级)可能完全一样**(``cursor += 2`` → ``cursor += 1``),
     CPython 会认为缓存仍然有效,于是继续用**坏版本编译出来的 .pyc** ——
-    检查读到的根本不是你刚还原的源码。实测症状:P0-5 的契约报「区间到 66,正文 68」,
+    检查读到的根本不是你刚还原的源码。实测症状:页码那条契约报「区间到 66,正文 68」,
     而源码里明明是 ``cursor += 2``;删掉那个 ``.pyc`` 立刻全绿。
 
     **两个方向都会骗人**:假红(改坏的字节码留着),以及更危险的**假绿**
@@ -103,7 +103,7 @@ def restore_stale_patches() -> list[str]:
     而它看起来完全正常(语法没错、能 import、只是行为变了),下一次跑检查会得到一堆莫名其妙的结果:
 
     * 第一次:反向用例把 WS 校验改成 `if False:` 之后检查挂死 → 外层 300 秒 SIGTERM,
-      `api/app.py` 里留着 `if False:`(见 STATUS §0.3 第 21 条);
+      `api/app.py` 里留着 `if False:`;
     * 第二次:**把 runner 的输出管进 `head`** —— `head` 读够行数就关管道,Python 收到 SIGPIPE 当场死,
       而那一刻正好在 RT-2 的窗口里(`document_loader.py` 的排序被去掉了)。症状是下一轮报
       「RT-2 锚点出现 0 次」—— 看着像锚点过时,其实是**源码正被改坏着**。
@@ -149,7 +149,7 @@ def patched_source(path: Path, old: str, new: str) -> Iterator[None]:
     **调用前自己核对锚点出现次数**:出现 0 次说明锚点过时(那条反向测试等于没跑),
     出现多次说明改的地方不对 —— 两种都必须当失败,不能"反正替换一下看看"。
 
-    用法::
+    用法：
 
         with patched_source(path, old, new):
             red, line = run(script, needle)

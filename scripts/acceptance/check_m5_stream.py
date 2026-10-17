@@ -1,26 +1,26 @@
 #!/usr/bin/env python
-"""M5.3a 验收：让 LLM 的结束原因可见（截断不再被吞）—— 流式入口的前置。
+"""验收：让 LLM 的结束原因可见（截断不再被吞）—— 流式入口的前置。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m5_stream.py
 
-本脚本是 **M5.3a 契约的唯一权威**。它只管一件事：**模型的「为什么结束」必须传到用户面前**。
-流式入口（生成器版 `query` + `qa --stream`）是 M5.3b，FastAPI 是 M5.4。
+本脚本是这份契约的唯一权威**。它只管一件事：**模型的「为什么结束」必须传到用户面前**。
+流式入口（生成器版 `query` + `qa --stream`）与接口层各有一份契约，见那两份脚本。
 
-M4 留下的缺口（`docs/STATUS.md` §0.3 第 12 条）::
+留下的缺口：
 
-    M4 实测到 provider 偶发返回**半截答案**（「…同时用向量」就没了），而
+    实测到 provider 偶发返回**半截答案**（「…同时用向量」就没了），而
     `adapters/llm_deepseek.py` 只 yield chunk.content、把 finish_reason 丢了 ——
     用户拿到半句话却没有任何提示，比明说「答不出来」更误导。
 
-公开契约::
+公开契约：
 
     from project_rag.domain import LlmDelta
     LlmDelta(text: str = "", reasoning_text: str = "",
              finish_reason: str | None = None, last: bool = False)
     LlmDelta.truncated -> bool          # finish_reason 不是 None/"stop" 时为 True
-    LlmDelta.reasoning -> bool          # reasoning_text 非空时为 True（M5.8）
+    LlmDelta.reasoning -> bool          # reasoning_text 非空时为 True
 
     from project_rag.ports import LLMClient
     LLMClient.stream(messages) -> Iterator[LlmDelta]      # 原来吐 str，现在吐帧
@@ -28,7 +28,7 @@ M4 留下的缺口（`docs/STATUS.md` §0.3 第 12 条）::
     RagAnswer / FaqAnswer / QaAnswer 各多一个字段
     truncated: bool = False             # True = 这句答案是被砍断的
 
-**M5.8 补的第 4 条约定 —— 思考与正文分成两个字段**::
+**第 4 条约定 —— 思考与正文分成两个字段**：
 
     思考模型（DeepSeek-V4 系列）在正文之前先吐 ``reasoning_content``。它**不许进 text**:
     ``"".join(d.text for d in deltas)`` 是全项目对「答案」的定义,混进去就等于把模型的
@@ -36,7 +36,7 @@ M4 留下的缺口（`docs/STATUS.md` §0.3 第 12 条）::
     ``reasoning_text``,``text`` 拼起来**永远只有答案**。延迟观测靠它数
     「这一轮想没想、想了多久」(见 `check_m5_5_latency.py`)。
 
-**适配器的三条约定**（后两条是 实测出来的，不是猜的）::
+**适配器的三条约定**（后两条是 实测出来的，不是猜的）：
 
     1. 恰好一帧 ``last=True``，且是最后一帧 —— 消费方只看那一帧就知道「怎么结束的」，
        不用自己去猜哪一帧带 finish_reason。provider 没说原因时该帧 finish_reason=None。
@@ -55,7 +55,7 @@ provider 没给原因），也不要每句答案都报「可能截断」—— �
 提示写到 **stderr**、以 ``[注意]`` 开头（stdout 只放答案本身，便于管道消费）。
 ⚠️ 断言必须认这个 ``[注意]`` 前缀，不能只搜「截断」二字 —— 用例层的
 ``_logger.warning`` 里也有「截断」，只搜那两个字的话，**把 CLI 的提示整段删掉检查照样绿**
-（这条检查第一次就是这么被骗过去的，反向测试才发现）。``qa --stream``（流式打印）是 M5.3b。
+（这条检查第一次就是这么被骗过去的，反向测试才发现）。``qa --stream``（流式打印）的那份契约见流式入口那条。
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ def _imports_of(path: Path) -> list[tuple[str, int]]:
 class _FakeChunk:
     """冒充 langchain 的 AIMessageChunk：content / response_metadata / additional_kwargs 三个属性。
 
-    ``additional_kwargs`` 就是 provider 放思考内容的地方（``reasoning_content``，M5.8）。
+    ``additional_kwargs`` 就是 provider 放思考内容的地方（``reasoning_content``）。
     """
 
     def __init__(self, content, metadata=None, additional=None) -> None:
@@ -278,7 +278,7 @@ def _() -> str:
     if not getattr(_llm_delta(), "__slots__", None):
         raise AssertionError("LlmDelta 应为 slots=True")
     names = [field.name for field in dataclasses.fields(_llm_delta())]
-    # `usage` 是 P0-7 加的（provider 在收尾帧回报 token 用量，消耗报表的唯一来源）。
+    # `usage` 是计费口径加的（provider 在收尾帧回报 token 用量，消耗报表的唯一来源）。
     # **这条断言以前漏了它**：check_m5_stream 在 LOCAL_ONLY（要真 key），
     # 所以 `--set ci` 永远照不到这一条 —— 契约跟着 domain 变了它却没人改。
     if names != ["text", "reasoning_text", "finish_reason", "last", "usage"]:
@@ -366,7 +366,7 @@ def _adapter_with(chunks):
     return adapter, fake
 
 
-@check("适配器：思考帧走 reasoning_text，正文走 text —— **思考不许混进 text**（M5.8）")
+@check("适配器：思考帧走 reasoning_text，正文走 text —— **思考不许混进 text**")
 def _() -> str:
     adapter, _fake = _adapter_with(
         [
@@ -419,7 +419,7 @@ def _() -> str:
     return f"{len(deltas)} 帧，最后一帧 last=True / reason=stop"
 
 
-@check("适配器：finish_reason='length' → 收尾帧 truncated=True（M4 那次半截答案就是这个）")
+@check("适配器：finish_reason='length' → 收尾帧 truncated=True（那次半截答案就是这个）")
 def _() -> str:
     adapter, _fake = _adapter_with(
         [_FakeChunk(KB_HALF), _FakeChunk(None, {"finish_reason": "length"})]
@@ -720,7 +720,7 @@ def _() -> str:
 
     注意 `auto` 那一半也在断言**默认没被悄悄改掉**:它必须仍在思考。
 
-    M5.8 起改走**我们自己的适配器**(以前是绕过它直接看 SDK 的 chunk,因为那时适配器
+    改走**我们自己的适配器**(以前是绕过它直接看 SDK 的 chunk,因为那时适配器
     按设计把思考丢了):现在「思考帧有没有交出来」本身就是契约的一部分 ——
     延迟账里的 think_tokens / llm_think_ms 全靠它,只测 SDK 就测不到这一段。
     """
@@ -785,7 +785,7 @@ def _() -> str:
     return "语法自检通过"
 
 
-# ── 5. 流式入口(M5.3b)：帧协议,以及「流式 = 非流式的管道」 ────────────────────
+# ── 5. 流式入口：帧协议,以及「流式 = 非流式的管道」 ────────────────────
 @check("domain：QaEvent 是 frozen+slots，kind 只有 sources/token/done，包入口可导入")
 def _() -> str:
     QaEvent = _qa_event()
@@ -1064,7 +1064,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M5.3 流式（结束原因可见 + 流式入口）验收")
+    return report("流式（结束原因可见 + 流式入口）验收")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """延迟账本的反向测试:把「一次请求一条账」改回坏样子,确认检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m5_5_latency.py          # 全部
     uv run python scripts/acceptance/reverse_m5_5_latency.py RT-1     # 只跑某几条

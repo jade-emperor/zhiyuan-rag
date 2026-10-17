@@ -4,8 +4,7 @@
 每条契约都要有一条**反向测试**证明它真的会红（把代码改坏一次，看那一条检查是不是真 FAIL）。
 所以这里的贡献流程可能比一般项目多两步，但那两步正是这个项目最值钱的地方。
 
-> 说明：文中出现的 `docs/...` 是**维护者本地的决策与状态文档，不随仓库发布**。
-> 对贡献者而言，可执行的判据一律在 `scripts/acceptance/` 的 docstring 与 `scripts/README.md` 里。
+> 说明：可执行的判据一律在 `scripts/acceptance/` 的 docstring 与 `scripts/README.md` 里。
 
 ## 一、能贡献什么
 
@@ -16,7 +15,7 @@
 | **新的验收检查** | 见下方「加一条检查」 | **必须**配反向测试 |
 | **新的适配器 / 端口实现** | 换模型厂商、换向量库、换缓存……只该动 `adapters/` 下一个文件 | 契约 + 反向 |
 | **前端改动** | `web/` 是 Vite + Vue3 + TS | 必须 `npm run build`（产物入库，有摘要契约盯着） |
-| **性能优化** | **先量再改**：本项目的每条性能结论都带实测数字（延迟账本那一行 26 个字段就是干这个的） | 前后对照读数 |
+| **性能优化** | **先量再改**：本项目的每条性能结论都带实测数字（延迟账本那一行 31 个字段就是干这个的） | 前后对照读数 |
 
 ## 二、开发环境
 
@@ -48,7 +47,7 @@ docker compose up -d app          # 或者整份用容器跑（宿主 8080，页
 ## 三、提交前自检（和 CI 跑的一样）
 
 ```bash
-./scripts/dev.sh ci        # pyright + 22 套契约 + 22 份反向 runner（= CI 的 contracts 任务）
+./scripts/dev.sh ci        # pyright + 23 套契约 + 24 份反向 runner（= CI 的 contracts 任务）
 ./scripts/dev.sh frontend  # 改了 web/ 才需要：typecheck + build（产物要一起提交）
 
 # 只想跑你改到的那一块时：
@@ -60,7 +59,7 @@ uv run python scripts/acceptance/reverse_<同族>.py     # 反向：全红才算
 `scripts/acceptance/run_all.py`（分组依据写在它的 docstring 里）。
 
 改到跨模块的东西（端口签名、领域模型、帧协议）请跑**全量回归** ——
-`docs/STATUS.md` §2 是权威清单，口径是「全部检查 0 失败 · 反向 runner 全红 · pyright 0 error · 无残留」。
+`scripts/README.md` 与 `run_all.py` 的分组是权威清单，口径是「全部检查 0 失败 · 反向 runner 全红 · pyright 0 error · 无残留」。
 
 ### 加一条检查时
 
@@ -75,7 +74,7 @@ uv run python scripts/acceptance/reverse_<同族>.py     # 反向：全红才算
 - **分层由机器强制**（AST 扫描，违反即验收失败）：`domain/` 只用标准库、`ports/` 只声明能力、
   `adapters/` 是全项目**唯一** import 第三方 SDK 的地方、`api/` 与 `cli/` 只经 `Deps` 工厂组装。
 - **注释即契约**：写「为什么这么做」和「当初踩了什么」，不写「这行在做什么」。
-  反例：`# 增加计数`；正例：`# 计数只在这里加:另一处加会让 p95 少算一次冷启动(见 STATUS §0.3 第 12 条)`。
+  反例：`# 增加计数`；正例：`# 计数只在这里加:另一处加会让 p95 少算一次冷启动`。
 - **命名按机制**，不用架构术语。
 - **中文注释、中文提交信息**（项目现状如此）。
 - 提交信息建议 `<范围>: <做了什么>`，例如 `限流: Redis 滑动窗口 + 兜底话术`；

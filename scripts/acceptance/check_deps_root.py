@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """组合根 `Deps` 的**形状契约**（字段名、默认值、冻结方式）。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_deps_root.py
 
 **这份为什么单独一个文件**：这段契约原来住在 `check_m2_faq.py` 里，而那份脚本属于
 `--set local`（要真 FAQ 语料）—— 于是**常规回归根本不跑它**，同一个洞连咬两次：
-稀疏列与磁盘索引那次加字段没同步、M8 查询改写那次又没同步（`query_rewriter_factory`），
+稀疏列与磁盘索引那次加字段没同步、查询改写那次又没同步（`query_rewriter_factory`），
 两次都是"红的契约躺了很久"（`check_m2_faq.py` 里原来那句注释已经写了第一次）。
 按项目规矩，同一条教训第二次出现就该做成机制，而不是再改一遍数字 —— 机制就是
 **把它放进 `--set ci` 会跑的文件里**（`run_all.py` 按 `check_*.py` 通配，所以这个文件
@@ -69,23 +69,23 @@ def _() -> str:
         "faq_store_factory",
         "matcher_factory",
         "cache_factory",
-        # M3.2 / M3.8 / M3.9 起:RAG 通道的四个工厂。字段名也是契约 ——
+        # RAG 通道的四个工厂。字段名也是契约 ——
         # 往 Deps 加字段就得同步这里（漏一个是 m2 先红,不是 m3）。
         "embedder_factory",
         "vector_store_factory",
         "keyword_index_factory",
         "reranker_factory",
-        # M5.2 起:会话历史的工厂。字段名同样是契约 —— 加字段就得同步这里。
+        # 会话历史的工厂。字段名同样是契约 —— 加字段就得同步这里。
         "conversation_store_factory",
-        # P0-2起:延迟账本落表。默认 None = 不落表(只记日志),
+        # 延迟账本落表。默认 None = 不落表(只记日志),
         # 连不上 MySQL 时 `attach_ledger` 会退到这一档 —— 所以它**必须**允许为 None。
         "ledger_store_factory",
-        # P0-3a起:认证与授权(用户/令牌/会话归属)。默认 None = **无认证模式**
+        # 认证与授权(用户/令牌/会话归属)。默认 None = **无认证模式**
         # —— 只可能来自显式注入(验收/本机),`build_real_deps` 永远接上。
         "auth_store_factory",
-        # P0-3b-2起:文档登记表。默认 None = 不接(纯检索路径与老契约用不上)。
+        # 文档登记表。默认 None = 不接(纯检索路径与老契约用不上)。
         "document_store_factory",
-        # P0-3b-3起:上传入库要用的三样(切分器/装载函数/后缀表)。
+        # 上传入库要用的三样(切分器/装载函数/后缀表)。
         # 走工厂而不是让 api/ 直接 import 适配器 —— 分层法律有 AST 检查钉着。
         "chunker_factory",
         "loader_factory",
@@ -95,31 +95,31 @@ def _() -> str:
         # 于是"红的契约"躺了很久）。加字段时**必须**同步这张表。
         "sparse_encoder_factory",
         "disk_files_factory",
-        # P0-5 之后起:集合级运维 —— 列出集合、删掉一个集合。
+        # 集合级运维 —— 列出集合、删掉一个集合。
         # Milvus 特有,所以包成两个函数放在组合根;命令层不 import pymilvus。
         "collections_factory",
         "drop_collection_factory",
-        # M7.1起:会话目录(前端左侧「我有哪些会话」)。
+        # 会话目录(前端左侧「我有哪些会话」)。
         # 与 conversation_store_factory 是**两张不同的表**(归属表 + 对话表),所以是两个工厂。
         "session_catalog_factory",
-        # M7.4起:限流计数器(默认 Redis,见 cli/deps.py 的 `_rate_limiter`)。
+        # 限流计数器(默认 Redis,见 cli/deps.py 的 `_rate_limiter`)。
         "rate_limiter_factory",
-        # P0-6起:可见范围(组 / 组员 / 每份文档授权给谁)。默认 None = **不做可见范围**
+        # 可见范围(组 / 组员 / 每份文档授权给谁)。默认 None = **不做可见范围**
         # (一条规则都没有时本来就人人可见,所以"不接"与"接了但没规则"行为一致);
         # `build_real_deps` 永远接上 —— 生产路径上没有"忘了配权限"这一档。
         "access_store_factory",
-        # M8 起:查询改写(FAQ 未命中 → 向量检索之间那一步)。默认 None = **不改写** ——
+        # 查询改写(FAQ 未命中 → 向量检索之间那一步)。默认 None = **不改写** ——
         # 与其它工厂同一条口径,但这里的默认是**真的默认**:`build_real_deps` 只在
         # `rewrite.enabled=true` 时才接上(那一步要多花一次 LLM 调用,见 config.RewriteConfig)。
         # ⚠️ 这一行就是漏掉过一次的那个:契约当时住在 check_m2_faq.py(local 档),
         #    常规回归不跑,于是加了这个字段而契约没跟着改。
         "query_rewriter_factory",
     )
-    # M5.8 起:思考档位。它**不是工厂** —— 是个静态标签,唯一用途是让延迟账里能看出
+    # 思考档位。它**不是工厂** —— 是个静态标签,唯一用途是让延迟账里能看出
     # 「这一轮按哪一档跑的」。命令层把它转交出去,用例与账本都不认识 config。
     # cache_ttl 同理:缓存过期秒数也是「命令层从配置读出来、交给用例」的静态标量,
     # 它不该是工厂(不需要惰性构造),也不该由用例自己去读 config。
-    # P0-7 起多一个静态标量:消耗报表的两个值(单价表 + 币种)。同样由命令层从配置读出来
+    # 多一个静态标量:消耗报表的两个值(单价表 + 币种)。同样由命令层从配置读出来
     # 交给用例/接口,理由与 cache_ttl 一样 —— 用例层不认识 config,验收也能注入自己的价目表。
     labels = (
         "faq_threshold",
@@ -127,8 +127,8 @@ def _() -> str:
         "thinking",
         "cost_prices",
         "cost_currency",
-        # P0-7 起多一个:时段规则(分时段计价靠它;窗口为空的规则 = 不分时段)。
-        # 它是**解析好的值对象**,不是三个原始列表 —— 解析只发生在组合根(法则 #25)。
+        # 多一个:时段规则(分时段计价靠它;窗口为空的规则 = 不分时段)。
+        # 它是**解析好的值对象**,不是三个原始列表 —— 解析只发生在组合根。
         "cost_rule",
     )
     missing = [n for n in want_factories + labels if n not in fields]
@@ -171,7 +171,7 @@ def _() -> str:
         if got != want:
             raise AssertionError(
                 f"裸 Deps().{name} 应取自配置（{want!r}），实际 {got!r}；"
-                "默认值别写成字面量 —— 那会让同一个值有两个真源（法则 #25）"
+                "默认值别写成字面量 —— 那会让同一个值有两个真源"
             )
     return (
         f"字段与默认值一致（{len(want_factories)} 个工厂 + {len(labels)} 个静态标量，"

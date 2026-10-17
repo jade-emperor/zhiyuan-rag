@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M6.4 反向测试：把部署配置逐个改回「坏的样子」，确认对应那条检查真的会红。
+"""反向测试：把部署配置逐个改回「坏的样子」，确认对应那条检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m6_deploy.py           # 全部
     uv run python scripts/acceptance/reverse_m6_deploy.py RT-3     # 只跑某几条
@@ -242,7 +242,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "端口分层",
     ),
     (
-        "RT-28 config.yaml 的 api.port 改回容器口（裸跑又和容器抢；作者定的是 18080）",
+        "RT-28 config.yaml 的 api.port 改回容器口（裸跑又和容器抢；约定的是 18080）",
         "config/config.yaml",
         "  port: 18080",
         "  port: 8080",

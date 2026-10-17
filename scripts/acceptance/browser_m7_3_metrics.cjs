@@ -1,5 +1,5 @@
 /**
- * M7.3/P0-7 的浏览器实测：报表页（延迟 + 消耗）。运维与管理员可见。
+ * 报表页的浏览器实测：（延迟 + 消耗）。运维与管理员可见。
  *
  * 对着 `scripts/acceptance/serve_fake_backend.py`(真 uvicorn + 假账本,18081)跑:
  *
@@ -14,7 +14,7 @@
  *      后端回来说话就恢复,而不是拿着一个空的窗口名一直说"还没读到 capabilities";
  *   7. 0 条 JS 报错 / 0 个失败请求。
  *
- * 跑法(准备见 docs/frontend.md §7)::
+ * 跑法(准备)：
  *
  *   RAG_EMBEDDING__DEVICE=cpu .venv/bin/python scripts/acceptance/serve_fake_backend.py
  *   LD_LIBRARY_PATH=$PWD/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu \
@@ -22,7 +22,7 @@
  */
 
 // Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 见 docs/frontend.md §7 的三步准备）；换机器时不改源码，设个环境变量即可。
+// 的三步准备）；换机器时不改源码，设个环境变量即可。
 // 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
 const path = require('path')
 const REPO_ROOT = path.resolve(__dirname, '../..')
@@ -151,7 +151,7 @@ async function main() {
   )
   await page.screenshot({ path: `${SHOT}_2_30d.png` })
 
-  // ── 消耗区(P0-7):三档 × 两时段,金额真的算出来了 ──────────────────────
+  // ── 消耗区:三档 × 两时段,金额真的算出来了 ──────────────────────
   const costSection = page.locator('section', { hasText: '消耗' }).first()
   const costText = (await costSection.innerText()).replace(/\n/g, ' ')
   // **此刻窗口是 30d**(上面刚切过):假账本在 30d 里是 25 行,其中 24 条热 + 1 条冷启动,

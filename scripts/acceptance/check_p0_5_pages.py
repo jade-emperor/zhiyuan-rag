@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""P0-5 契约:页码从 PDF 一路走到**引用**上,中间每一步都不许静默错位。
+"""契约:页码从 PDF 一路走到**引用**上,中间每一步都不许静默错位。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_p0_5_pages.py
 
-**这是 P0-5 里最危险的一环**:页码错了**不会报错** —— 引用里那个页号看着完全合法,只是不对。
+**这是最危险的一环**:页码错了**不会报错** —— 引用里那个页号看着完全合法,只是不对。
 所以整条链路分段钉死(夹具现造,不需要模型;Milvus 那两条要容器,连不上就 SKIP):
 
 第一环 · 适配器(区间表怎么来):
@@ -24,7 +24,7 @@
    不报偏移的切分器也给 None(**不许猜**);横跨页边界的块取**起始页**;
 8. 引用上的页码**跟着子块走**:折叠 / 重排重建 ``Citation`` 之后仍在(所以它是 property,不是字段);
 9. Milvus 往返:有页码给页码、没页码给 ``None``;存储层的哨兵**不许漏到领域层**;
-10. **老集合**(P0-5 之前建的、没有 page 列):读得回来(页码 None),但**写入当场报错**
+10. **老集合**（之前建的、没有 page 列):读得回来(页码 None),但**写入当场报错**
     —— 静默丢掉页码等于这次优化白做;报错里点名的两条出路(`collections` / `drop`)各有契约:
 11. `collections` 列得出块数 / 有没有 page 列 / 当前配置指向哪个(撞上限要渲染成 `16384+`);
 12. `drop` **不给 `--yes` 一块都不删**,给了才点名删那一个(不是当前配置那个)。
@@ -420,7 +420,7 @@ def _milvus_round_trip() -> str:
             raise AssertionError(f"search 回来的页码该带上 7,实际 {hits}")
 
         # 存储层长什么样也钉一下:Milvus 2.4.4 **不支持 nullable**(建集合时收下 nullable=True、
-        # 插入缺列的行时却拒收,实测见 STATUS §0.3),所以列里存哨兵 -1。
+        # 插入缺列的行时却拒收,实测),所以列里存哨兵 -1。
         # 等到升上 ≥2.5 换成 nullable 时,这一条会和适配器一起改 —— 那时它会**红**,正是提醒。
         raw = {
             row["chunk_id"]: row["page"]
@@ -457,7 +457,7 @@ def _legacy_collection_refuses_write() -> str:
     name = f"rag_legacy_p05_{uuid.uuid4().hex[:8]}"
     uri = f"http://{settings.milvus.host}:{settings.milvus.port}"
     client = MilvusClient(uri=uri)
-    # 手搓一个 **P0-5 之前**的集合:字段与老 schema 一致,就是没有 page
+    # 手搓一个**加 page 列之前**的集合:字段与老 schema 一致,就是没有 page
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
     schema.add_field("chunk_id", DataType.VARCHAR, is_primary=True, max_length=64)
     schema.add_field("text", DataType.VARCHAR, max_length=512)
@@ -494,7 +494,7 @@ def _legacy_collection_refuses_write() -> str:
         else:
             raise AssertionError(
                 "往没有 page 列的集合里写,居然成功了 —— 页码会被静默丢掉,"
-                "而 P0-5 的全部意义就是让页码落库"
+                "而这一批的全部意义就是让页码落库"
             )
         if name not in message or "page" not in message:
             raise AssertionError(f"报错里该说清是哪个集合缺哪一列,实际:{message[:120]}")
@@ -510,10 +510,10 @@ def _legacy_collection_refuses_write() -> str:
         store.drop()
 
 
-# ── 集合级运维(P0-5 迁移的配套接口:列现状 / 删老集合) ──────────────────────
+# ── 集合级运维（迁移的配套接口:列现状 / 删老集合) ──────────────────────
 @check("集合运维：collections 列得出「块数 / 有没有 page 列 / 当前配置指向哪个」")
 def _collections_command() -> str:
-    """P0-5 之后「哪个集合能用」是个必须先看一眼的问题：往没有 ``page`` 列的集合写会被拒，
+    """之后「哪个集合能用」是个必须先看一眼的问题：往没有 ``page`` 列的集合写会被拒，
     而删集合是破坏性动作。这条钉**看得到**：块数、有没有 page 列、哪个是当前配置指向的。
 
     夹具里那条 16384 块的是**撞上限**的样子（必须渲染成 ``16384+``，
@@ -611,7 +611,7 @@ def _drop_command() -> str:
 
 def main() -> int:
     return report(
-        "P0-5 契约:PDF 页码从区间表一路到引用 + 集合运维",
+        "契约:PDF 页码从区间表一路到引用 + 集合运维",
         notes=(
             "说明:第一环与第二环前半用现造夹具(不需要模型/网络);Milvus 那两条要容器,连不上就 SKIP;"
             "集合运维那两条(collections / drop)全用假件。",

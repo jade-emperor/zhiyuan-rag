@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M4.6 验收:查询改写 A/B(评估集 mix_v1 + 两臂数据集 + 两臂读数 + 对比报告)。
+"""验收:查询改写 A/B(评估集 mix_v1 + 两臂数据集 + 两臂读数 + 对比报告)。
 
-用法::
+用法：
 
     .venv/bin/python scripts/acceptance/check_m4_rewrite_ab.py
 
@@ -62,7 +62,7 @@ def _need(path: Path, owner: str) -> Path:
 
 def _rows() -> list[dict]:
     """输入:无。行为:读评估集 rows。输出:行列表。"""
-    doc = json.loads(_need(EVAL_SET, "M4.6 评估集构造").read_text(encoding="utf-8"))
+    doc = json.loads(_need(EVAL_SET, "改写 A/B 评估集构造").read_text(encoding="utf-8"))
     if not isinstance(doc, dict) or "rows" not in doc:
         raise AssertionError(f"{EVAL_SET.name} 顶层要是 {{meta, rows}}")
     return doc["rows"]
@@ -70,7 +70,7 @@ def _rows() -> list[dict]:
 
 def _raw(name: str) -> dict:
     """输入:数据集名。行为:读 builder 的 raw.json。输出:整个文档。"""
-    path = _need(DATASET_DIR / f"{name}_raw.json", "M4.6 A/B 两臂的 builder")
+    path = _need(DATASET_DIR / f"{name}_raw.json", "改写 A/B 两臂的 builder")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -78,7 +78,7 @@ def _rows_csv(tag: str) -> list[dict]:
     """输入:tag。行为:读最新一次该 tag 的逐条结果。输出:行列表。"""
     found = sorted(RUNS_DIR.glob(f"run_*_{tag}.rows.csv"))
     if not found:
-        raise SkipCheck(f"还没有 tag={tag} 的 RAGAS 结果;owner:M4.6 两臂评估")
+        raise SkipCheck(f"还没有 tag={tag} 的 RAGAS 结果;owner：改写 A/B")
     with found[-1].open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
 
@@ -166,7 +166,7 @@ def _() -> str:
 
 @check("mix 评估集:vague 是空泛问法(不是拿标题冒充),且与冻结的问题表一致")
 def _() -> str:
-    cache = json.loads(_need(VAGUE_CACHE, "M4.6 vague 问题生成").read_text(encoding="utf-8"))
+    cache = json.loads(_need(VAGUE_CACHE, "vague 问题生成").read_text(encoding="utf-8"))
     frozen = {str(key): str(value) for key, value in (cache.get("questions") or {}).items()}
     for row in _rows():
         if row["kind"] != "vague":
@@ -271,7 +271,7 @@ def _() -> str:
 def _() -> str:
     direct = [row for row in _raw(REWRITE)["rows"] if row.get("strategy") == "direct"]
     if not direct:
-        raise SkipCheck("这一轮改写臂里没有 direct 的行:分类器把每条都判成要改写了;owner:M4.6")
+        raise SkipCheck("这一轮改写臂里没有 direct 的行:分类器把每条都判成要改写了;owner：改写 A/B")
     wasted = [row["id"] for row in direct if int(row.get("rewrite_calls") or 0) != 0]
     if wasted:
         raise AssertionError(
@@ -295,7 +295,7 @@ def _() -> str:
     for tag in (BASELINE, REWRITE):
         found = sorted(RUNS_DIR.glob(f"run_*_{tag}.summary.csv"))
         if not found:
-            raise SkipCheck(f"还没有 tag={tag} 的 summary;owner:M4.6 两臂评估")
+            raise SkipCheck(f"还没有 tag={tag} 的 summary;owner：改写 A/B")
         with found[-1].open(encoding="utf-8", newline="") as handle:
             row = next(csv.DictReader(handle))
         path = DATASET_DIR / row["dataset_file"]
@@ -323,7 +323,7 @@ def _() -> str:
 
 @check("报告:四指标表里的每个数都能从两份 rows.csv 重算出来")
 def _() -> str:
-    path = _need(REPORT, "M4.6 A/B 报告")
+    path = _need(REPORT, "改写 A/B 报告")
     base = _rows_csv(BASELINE)
     new = _rows_csv(REWRITE)
     index = {row["user_input"]: row for row in new}
@@ -393,7 +393,7 @@ def _() -> str:
 
 @check("报告:代价与噪声底那两节在(延迟 / 钱 / 改写行为 / 噪声底),不能只报好指标")
 def _() -> str:
-    text = _need(REPORT, "M4.6 A/B 报告").read_text(encoding="utf-8")
+    text = _need(REPORT, "改写 A/B 报告").read_text(encoding="utf-8")
     for needle in ("## 三、代价", "### 延迟", "### 钱", "## 四、改写到底做了什么", "95% 自助区间", "噪声底"):
         if needle not in text:
             raise AssertionError(f"报告里缺「{needle}」:只报四指标会把代价与噪声藏起来")
@@ -401,7 +401,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M4.6 查询改写 A/B 验收")
+    return report("查询改写 A/B 验收")
 
 
 if __name__ == "__main__":

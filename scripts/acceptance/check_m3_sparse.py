@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M3 契约：**索引类型（FLAT / IVF_FLAT）与 BM25 稀疏向量**这两条新路。
+"""契约：**索引类型（FLAT / IVF_FLAT）与 BM25 稀疏向量**这两条新路。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m3_sparse.py
 
@@ -497,7 +497,7 @@ def _() -> str:
     import subprocess
 
     # **这条必须另起进程**:它要读两次配置(memory / milvus),而 get_settings() 是进程级单例。
-    # 这正是作者踩过的那个坑:`keyword.backend` 还是 memory,而编码器被无条件装配 ——
+    # 这正是踩过的那个坑:`keyword.backend` 还是 memory,而编码器被无条件装配 ——
     # ingest 先算了一遍全库 BM25 统计,再撞上"集合没有 sparse_vector 列"。
     def encoder_wired(backend: str) -> bool:
         code = (
@@ -624,7 +624,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M3 索引类型（FLAT / IVF_FLAT）+ BM25 稀疏向量",
+        "索引类型（FLAT / IVF_FLAT）+ BM25 稀疏向量",
         hint="真实往返（建集合 / 稀疏检索 / 重建索引）见 check_m3_sparse_milvus.py（services 档）",
     )
 

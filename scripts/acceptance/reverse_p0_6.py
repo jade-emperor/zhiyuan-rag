@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-6 反向测试:把"谁能看什么"改回坏样子,确认契约真的会红。
+"""反向测试:把"谁能看什么"改回坏样子,确认契约真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_p0_6.py
 
@@ -118,7 +118,7 @@ CASES: tuple[Case, ...] = (
         needle="落地 删文档：连带清掉它的可见范围规则",
     ),
     Case(
-        title="RT-10 运维从知识库能力表里被拿掉(作者要求他能问答)",
+        title="RT-10 运维从知识库能力表里被拿掉(他能问答)",
         target=ROOT / "src" / "project_rag" / "domain" / "auth.py",
         old='KNOWLEDGE_ROLES: tuple[UserRole, ...] = ("employee", "ops", "admin")',
         new='KNOWLEDGE_ROLES: tuple[UserRole, ...] = ("employee", "admin")',
@@ -189,6 +189,13 @@ CASES: tuple[Case, ...] = (
         new="  if (need !== undefined && false) return landingRoute()",
         needle="角色分流：页签按能力渲染",
         script="check_m7_frontend.py",
+    ),
+    Case(
+        title="RT-19  403 文案说反了(运维能问答之后又写回『运维只能看报表』)",
+        target=API / "auth.py",
+        old='                detail="这个操作需要问答权限",',
+        new='                detail="这个操作需要员工或管理员角色(运维只能看报表)",',
+        needle="403 文案与能力表一致",
     ),
 )
 

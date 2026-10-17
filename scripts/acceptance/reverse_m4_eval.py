@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""M4 新评估集（八股 + PDF）的反向测试：把数据改回「坏的样子」，确认对应那条检查真的会红。
+"""新评估集（八股 + PDF）的反向测试：把数据改回「坏的样子」，确认对应那条检查真的会红。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/reverse_m4_eval.py        # 全部
     uv run python scripts/acceptance/reverse_m4_eval.py RT-1   # 只跑某几条

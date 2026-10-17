@@ -1,19 +1,19 @@
 #!/usr/bin/env python
-"""M7.1 契约：前端聊天页（Vite+Vue3+TS）+ 它依赖的三个后端接口。
+"""契约：前端聊天页（Vite+Vue3+TS）+ 它依赖的三个后端接口。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m7_frontend.py
 
 **这一份在堵什么洞**：在这之前 `src/project_rag/api/static/index.html` 只有 101 行、
 是文档里自己标注的「内置调试页」—— 没有会话列表、没有角色分流、没有参数面板；
 而参数面板要的那些旋钮（融合方式 / 两路权重 / 重排开关 / 上下文条数）**在 HTTP 上根本不存在**
-（`QueryRequest` 只有 query/session_id/source_filter/k）。M7.1 把这条链补成
+（`QueryRequest` 只有 query/session_id/source_filter/k）。聊天页把这条链补成
 「前端每个控件 → 一个接口字段 → 一次可断言的行为」。那份旧页面后来被删掉：
 它守着的那两条性质搬到了新前端上 —— 「页面连的是服务端那条 WS」归**前端清单↔后端路由表**
 那条，「令牌走 `?token=`」归 WebSocket 那条（见 `reverse_m7_frontend` 的 RT-11 / RT-12）。
 
-公开契约::
+公开契约：
 
     GET  /api/v1/capabilities
         -> {suffixes, max_upload_mb, models[], model_settings, retrieval{modes, fusions,
@@ -26,7 +26,7 @@
     GET  /static/app/  -> 前端产物（index.html 引用 ./assets/…）
     GET /static/index.html -> **404**（那份 101 行的内置调试页 已删，界面只留一份）
 
-**五条口径**（每条都对着一个静默坏法）::
+**五条口径**（每条都对着一个静默坏法）：
 
     1. **capabilities 是前端唯一的能力来源**：前端源码里不许出现写死的后缀表 / 检索方式表 /
        模型名。写两份的后果是"界面允许、后端拒绝"（或反过来：后端新加一种融合方式，
@@ -288,7 +288,7 @@ class _World:
 def _options_for(**payload):
     """输入:QueryRequest 的字段。行为:走 `_options` 翻译一次。输出:RetrievalOptions。
 
-    P0-6 起 `_options` 还要一个可见范围结论(``denied_docs``)。这里给**不受限**的那一份:
+    `_options` 还要一个可见范围结论(``denied_docs``)。这里给**不受限**的那一份:
     这条检查测的是"检索旋钮怎么翻译",可见范围另有一套契约(``check_p0_6_access.py``)。
     """
     from project_rag.api.schemas import QueryRequest
@@ -493,7 +493,7 @@ def _() -> str:
 
 @check("角色分流：页签按能力渲染（对话/知识库/报表/账号），路由按能力拦")
 def _() -> str:
-    """P0-6:导航不再按"是不是管理员"分两档,而是按**能力**分四档 ——
+    """导航不再按"是不是管理员"分两档,而是按**能力**分四档 ——
     运维看到「对话 + 报表」(他也要能问答),员工看到「对话 + 知识库」,管理员全都看到。
 
     这几条断言盯的是"三件事必须同时成立",漏一件就会出现
@@ -796,7 +796,7 @@ def _() -> str:
 
 def main() -> int:
     return report(
-        "M7.1 前端（聊天页）+ capabilities / 检索旋钮 / 会话目录",
+        "前端（聊天页）+ capabilities / 检索旋钮 / 会话目录",
         hint="前端改动后先 `cd web && npm run build`；产物要入库（Python 侧与镜像都不装 node）",
     )
 

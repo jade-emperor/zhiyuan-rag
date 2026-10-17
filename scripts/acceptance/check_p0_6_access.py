@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""P0-6 契约:第三个角色(运维)、账号管理、分组(一类员工)、文档可见范围。
+"""契约:第三个角色(运维)、账号管理、分组(一类员工)、文档可见范围。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_p0_6_access.py
 
@@ -13,7 +13,7 @@
 
 * **角色是闭集** `("employee", "ops", "admin")`;能力判断只在 `domain/auth.py` 的三张表里,
   调用点不比较角色字符串;
-* **运维(ops)**:能问答 + 能看报表(延迟 + 消耗),**但管不了文档与账号**(作者要求:
+* **运维(ops)**:能问答 + 能看报表(延迟 + 消耗),**但管不了文档与账号**(:
   他既要回答"这套系统跑得好不好",也要能自己问一句验一验);
 * **可见范围只用来收窄** —— 没配规则的文档人人可见;配了规则的,名单里的人 +
   名单里的组(并集)+ 管理员可见;**空规则 = 不禁**(不是"全禁");
@@ -345,6 +345,52 @@ def _roles_closed_set() -> str:
         if stray:
             raise AssertionError(f"能力表里出现了闭集外的角色:{stray}")
     return "三角色 + 三张能力表,没有闭集外的角色"
+
+
+@check("403 文案与能力表一致：谁被拦，文案里才点谁的名（运维能问答之后不许再写「运维只能看报表」）")
+def _role_guard_copy() -> str:
+    """三道闸的 403 文案必须能对得上**能力表**。
+
+    这一条来自一个真 bug：运维被加进 `KNOWLEDGE_ROLES` 之后，`require_knowledge` 的 docstring
+    改了，可它那句 403 还写着「(运维只能看报表)」—— 代码是对的，**话说反了**。
+    这种漂移没有报错：403 今天甚至不可达（三个角色都有问答权限），只有读文案的人会被误导。
+    判据两条：① 三道闸的文案逐字钉住（改口径就得改这里）；② **谁被拦只许点谁** ——
+    知识库那道（三个角色都放行）的文案里**不许出现任何角色名**，否则就是在说假话。
+    """
+    from types import SimpleNamespace
+
+    from project_rag.api.auth import Authenticator
+    from project_rag.domain.auth import USER_ROLES
+
+    labels = {"employee": "员工", "ops": "运维", "admin": "管理员"}
+
+    def detail_of(guard, **flags) -> str:
+        try:
+            guard(SimpleNamespace(**flags))
+        except Exception as exc:  # HTTPException
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, str):
+                return detail
+        raise AssertionError(f"{guard.__name__} 该 403 却放行了 —— 这道闸没起作用")
+
+    knowledge = detail_of(Authenticator.require_knowledge, can_use_knowledge=False)
+    named = [labels[role] for role in USER_ROLES if labels[role] in knowledge]
+    if named:
+        raise AssertionError(
+            f"知识库那道 403 点了 {named} 的名，可三个角色都有问答权限（文案与能力表打架）：{knowledge!r}"
+        )
+    reports = detail_of(Authenticator.require_reports, can_view_reports=False)
+    admin = detail_of(Authenticator.require_admin, is_admin=False)
+    want = {
+        "knowledge": "这个操作需要问答权限",
+        "reports": "这个操作需要运维或管理员角色(员工只能检索与问答)",
+        "admin": "这个操作需要管理员角色",
+    }
+    got = {"knowledge": knowledge, "reports": reports, "admin": admin}
+    if got != want:
+        drift = {k: (got[k], want[k]) for k in want if got[k] != want[k]}
+        raise AssertionError(f"403 文案变了（改口径要同步改这里）:{drift}")
+    return "三道闸的文案与能力表一致（问答不点名角色，报表点名员工，管理点名管理员）"
 
 
 @check("角色能力：三个角色 × 四个谓词的真值表（权限判断只有 domain/auth.py 那一处）")
@@ -1162,7 +1208,7 @@ def _group_documents_ui() -> str:
 
 @check("落地 运维：**能问答能看报表**,但管理动作与授权全 403")
 def _ops_scope() -> str:
-    """作者要求:运维除了看报表,也要能问答。
+    """:运维除了看报表,也要能问答。
 
     所以这条从"知识库全 403"翻过来:``require_knowledge`` 那一档(提问 / 会话 / 来源 /
     预览)对运维放行,而 ``require_admin`` 那一档(建号、分组、授权、删文档、上传)照旧 403 ——
@@ -1327,7 +1373,7 @@ def _delete_document_clears_acl() -> str:
 
 def main() -> int:
     return report(
-        "P0-6 契约：运维角色 / 账号管理 / 分组 / 文档可见范围",
+        "契约：运维角色 / 账号管理 / 分组 / 文档可见范围",
         notes=(
             "说明：全部内存假件（不需要容器 / 模型 / 网络）；真 MySQL 往返见 check_p0_7_cost.py。",
             "口径：没配规则的文档人人可见；配了规则的只有名单里的人 / 组 + 管理员可见。",

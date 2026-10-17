@@ -1,10 +1,10 @@
-"""M5.8 反向测试:逐个把产品改回「坏的样子」,确认对应的新检查真的会红。
+"""反向测试:逐个把产品改回「坏的样子」,确认对应的新检查真的会红。
 
 **为什么要有这个文件**:验收检查最容易骗人的失败方式是「无论产品怎样都绿」。
 每加一条口径/契约,就得把产品改坏一次、看它红一次 —— 红不了就说明检查没在测它。
-(`docs/STATUS.md` §5 第 16 / 23 条;反向测试不是可选项。)
 
-用法(会临时改 src/ 下的文件,**跑完自动还原**)::
+
+用法(会临时改 src/ 下的文件,**跑完自动还原**)：
 
     uv run python scripts/acceptance/reverse_m5_8.py
 
@@ -84,7 +84,7 @@ CASES: list[tuple[str, Path, str, str, str, str]] = [
         "check_m5_5_latency.py",
     ),
     (
-        "RT-7 适配器又把思考吞掉(M5.8 之前的样子)—— 真 provider 检查也要红",
+        "RT-7 适配器又把思考吞掉（之前的样子)—— 真 provider 检查也要红",
         ADAPTER,
         "            if thought:\n                yield LlmDelta(reasoning_text=thought)\n",
         "",

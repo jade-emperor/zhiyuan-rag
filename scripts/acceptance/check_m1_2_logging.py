@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""M1.2 验收：日志地基。
+"""验收：日志地基。
 
-用法::
+用法：
 
     uv run python scripts/acceptance/check_m1_2_logging.py
 
-本脚本固化的「公开契约」——这两样必须能从 ``project_rag.observability`` 直接 import::
+本脚本固化的「公开契约」——这两样必须能从 ``project_rag.observability`` 直接 import：
 
     configure_logging(settings: Settings | None = None) -> None
         **每次调用都重建配置**（dictConfig 的 force=True 语义），而不是「首次生效后短路」。
@@ -249,7 +249,7 @@ def _() -> str:
 
 
 def main() -> int:
-    return report("M1.2 日志验收")
+    return report("日志验收")
 
 
 if __name__ == "__main__":
