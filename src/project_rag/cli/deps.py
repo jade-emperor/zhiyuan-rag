@@ -589,6 +589,35 @@ def ensure_documents_schema(deps: Deps) -> str | None:
     return None
 
 
+def ensure_conversation_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保会话历史表存在**并把老表补到当前结构**(幂等)。输出:失败原因;成功给 None。
+
+    **为什么在启动时建**:``MySQLConversationStore.ensure_table()`` 里除了建表还带着一次
+    **给老表补 ``citations`` 列**的 ALTER —— 而它此前只有在维护者手动跑
+    ``scripts/tools/init_conversation.py`` 时才会执行(那个脚本的 docstring 却写着
+    "API 服务启动时也会调一次")。于是任何**升级过代码、没重跑脚本**的库,
+    ``GET /api/v1/history/{id}`` 与带 ``session_id`` 的问答都会在 SQL 层炸:
+
+        pymysql.err.OperationalError: (1054, "Unknown column 'citations' in 'field list'")
+
+    而 500 的响应体是 uvicorn 那句 ``Internal Server Error`` —— 调用方完全看不出是"库没迁移"。
+    与另外三个 ``ensure_*`` 同一条政策:失败只记警告,不拦启动。
+
+    **判据是"有没有 ``ensure_table``",不是"是不是真库"**:注入式验收的假件没有这个方法,
+    那不是故障,跳过即可(所以不用 ``isinstance`` 去认适配器类型)。
+    """
+    if deps.conversation_store_factory is None:  # 注入式部署(验收/假件):不碰真库
+        return None
+    try:
+        ensure = getattr(deps.conversation_store_factory(), "ensure_table", None)
+        if ensure is None:  # 假件:不建表,也不算失败
+            return None
+        ensure()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def ensure_auth_schema(deps: Deps) -> str | None:
     """输入:Deps。行为:确保认证那三张表存在(**幂等**)。输出:失败原因;成功给 None。
 

@@ -152,6 +152,7 @@ from project_rag.cli.deps import (
     build_real_deps,
     ensure_access_schema,
     ensure_auth_schema,
+    ensure_conversation_schema,
     ensure_documents_schema,
     knowledge_callable,
 )
@@ -1340,6 +1341,12 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     documents_problem = ensure_documents_schema(deps)
     if documents_problem:
         _logger.warning("登记表未就绪(建表失败):%s", documents_problem)
+    # 会话历史表:除了建表,它还负责**给老表补 citations 列**。少了这一步,升级过代码
+    # 却没重跑迁移脚本的库会在读历史时抛 MySQL 1054,而对外只是一句 500 Internal Server Error
+    # (见 cli/deps.ensure_conversation_schema 的 docstring)
+    conversation_problem = ensure_conversation_schema(deps)
+    if conversation_problem:
+        _logger.warning("会话历史表未就绪(建表失败):%s", conversation_problem)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
     # 限流计数器**从组合根来**(Redis 或内存,见 cli/deps.py 的 `_rate_limiter`);

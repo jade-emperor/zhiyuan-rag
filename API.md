@@ -12,7 +12,7 @@
 | 技术栈 | FastAPI + WebSocket + Milvus / MySQL / Redis |
 | 版本 | `0.1.0`（见 `/openapi.json` 的 `info.version`） |
 | 鉴权 | `Authorization: Bearer <令牌>`；WebSocket 用 `?token=<令牌>` |
-| 编码 | 请求与响应都是 JSON（UTF-8）；上传例外，见 §7.1 |
+| 编码 | 请求与响应都是 JSON（UTF-8）；上传例外，见 §9.1 |
 
 ```bash
 uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host / api.port
@@ -25,11 +25,10 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ## 目录
 
-1. [通用约定](#1-通用约定)　2. [端点一览](#2-端点一览)　3. [健康检查](#3-健康检查--health)
-4. [能力自述](#4-能力自述-get-apiv1capabilities)　5. [认证](#5-认证)　6. [问答](#6-问答)
-7. [会话](#7-会话)　8. [来源](#8-来源)　9. [文档治理](#9-文档治理)　10. [报表](#10-报表)
-11. [账号 / 组 / 可见范围](#11-账号--组--可见范围)　12. [限流、CSP 与 CORS](#12-限流csp-与-cors)
-13. [CLI](#13-cli)　14. [版本与兼容](#14-版本与兼容)
+1. [通用约定](#1-通用约定)　2. [端点一览](#2-端点一览)　3. [健康检查](#3-健康检查)　4. [能力自述](#4-能力自述)
+5. [认证](#5-认证)　6. [问答](#6-问答)　7. [会话](#7-会话)　8. [来源](#8-来源)　9. [文档治理](#9-文档治理)
+10. [报表](#10-报表)　11. [账号 / 组 / 可见范围](#11-账号--组--可见范围)
+12. [限流、CSP 与 CORS](#12-限流csp-与-cors)　13. [CLI](#13-cli)　14. [版本与兼容](#14-版本与兼容)
 
 ---
 
@@ -37,8 +36,10 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 - **Base URL**：`http://<host>:<port>`；业务接口**一律在 `/api/v1` 下**（从 `/api/*` 迁完，没有留别名）。
   根上只有三个东西：`/health`、`/`（307 跳前端）、`/static`（静态资源，前端产物在 `/static/app/`）。
+- **请求头**：业务接口一律带 `Authorization: Bearer <令牌>`（`POST /api/v1/auth/login` 获取）；
+  有请求体的再带 `Content-Type: application/json`。**WebSocket 用 `?token=<令牌>`**
+  （浏览器不能给 WS 设自定义头）。
 - **无状态**：服务端不发 cookie。`session_id` 指一段对话，令牌证明你是谁 —— 两件事，都由调用方保存。
-- **鉴权**：业务接口 `Authorization: Bearer <令牌>`；WebSocket 用 `?token=`（浏览器不能给 WS 设自定义头）。
   会话**绑在账号上**：读别人的会话是 `403`。
 - **角色三种（闭集）**：`employee`（问答 + 看清单）/ `ops`（问答 + 报表）/ `admin`（全部）。没有注册接口。
 
@@ -91,7 +92,7 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `GET` | `/api/v1/sources` | 语料里真实有哪些来源 | Bearer |
 | `POST` | `/api/v1/auth/login` | 账号密码换令牌 | — |
 | `GET` | `/api/v1/auth/me` | 当前账号 + 三个能力布尔值 | Bearer |
-| `POST` | `/api/v1/auth/logout` | 撤销当前令牌（幂等） | Bearer |
+| `POST` | `/api/v1/auth/logout` | 撤销当前令牌（幂等） | Bearer（可缺） |
 | `GET` | `/api/v1/capabilities` | 后缀/上限/模型/检索选项（前端能力的唯一来源） | — |
 | `POST` | `/api/v1/documents?filename=…` | 上传文档（原始 body，`202`） | admin |
 | `GET` | `/api/v1/documents` | 知识库清单（登记表×磁盘×向量库三处对账） | Bearer |
@@ -116,7 +117,15 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ---
 
-## 3. 健康检查 `GET /health`
+## 3. 健康检查
+
+**请求**
+
+```
+GET /health
+```
+
+**响应**
 
 ```json
 { "status": "ok" }
@@ -126,10 +135,18 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ---
 
-## 4. 能力自述 `GET /api/v1/capabilities`
+## 4. 能力自述
 
 **前端唯一的能力来源**：上传框的 `accept`、参数面板的下拉项与上限、模型下拉全从这来，别在前端写死。
 **不需要登录**（不含任何数据），登录页也要用它 —— 后端地址填错时第一个报错应该发生在这里。
+
+**请求**
+
+```
+GET /api/v1/capabilities
+```
+
+**响应**
 
 ```json
 {
@@ -151,6 +168,8 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 }
 ```
 
+**字段说明**
+
 | 字段 | 说明 |
 |---|---|
 | `retrieval.defaults` | 配置里**生效的那一份**（不是代码默认值） |
@@ -162,25 +181,18 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ## 5. 认证
 
-**业务接口（`/api/v1/**`）一律带 `Authorization: Bearer <令牌>`**；令牌由 5.1 换得，有效期 12 小时，
-`logout` 立即作废。唯一例外是 **WebSocket**：用 `?token=<令牌>`（浏览器不能给 WS 设自定义头）。
+### 5.1 登录
 
-调不通先看 `detail` —— 四种错分得很清，别一起归成"没权限"：
+**请求**
 
-| 状态 | `detail` | 怎么办 |
-|---|---|---|
-| `401` | `缺少 Bearer 令牌(Authorization: Bearer <token>)` | 头没带，或格式不是 `Bearer xxx` —— 先调 5.1 换令牌 |
-| `401` | `令牌无效或已过期,请重新登录` | 重新登录；退出登录之后旧令牌**立刻**失效 |
-| `403` | 写明要什么角色（如 `这个操作需要管理员角色`） | 账号权限不够，不是令牌的问题 |
-| `503` | 写明读不到什么（如会话表 / 账本表） | 中间件没起或连不上；看 detail 里驱动给的原因 |
+```
+POST /api/v1/auth/login
+```
 
-登录本身是 **10 次/分钟/IP** 的限流档（超了 `429` + `Retry-After`）。用 Postman / Apifox 调时：
-把令牌存进环境变量、在**集合级**设一次 Bearer，别在每个请求的前置脚本里都去登录。
-
-### 5.1 `POST /api/v1/auth/login`
+**请求体**
 
 ```json
-{ "username": "demo_admin", "password": "…" }
+{ "username": "admin", "password": "你的口令" }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
@@ -188,30 +200,52 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `username` | string | ✅ | 账号 |
 | `password` | string | ✅ | 口令 |
 
+**响应**
+
 ```json
-{ "token": "…", "username": "demo_admin", "role": "admin", "expires_in": 43200 }
+{ "token": "…", "username": "admin", "role": "admin", "expires_in": 43200 }
 ```
 
-令牌有效期 **12 小时**（`expires_in` 秒）；库里存的是它的 sha256，不是令牌本身。
+| 字段 | 说明 |
+|---|---|
+| `token` | 后续请求放进 `Authorization: Bearer <token>`；库里存的是它的 sha256 |
+| `expires_in` | 有效期（秒），默认 **12 小时** |
+
 登录失败一律 `401` + 同一句话（用户不存在与口令错误不分开说 —— 那是用户名枚举）。
 
-### 5.2 `GET /api/v1/auth/me`
+### 5.2 当前账号
+
+**请求**
+
+```
+GET /api/v1/auth/me
+```
+
+**响应**
 
 ```json
-{ "username": "demo_admin", "role": "admin", "is_admin": true,
+{ "username": "admin", "role": "admin", "is_admin": true,
   "can_view_reports": true, "can_use_knowledge": true, "can_manage": true }
 ```
 
 前端按**能力布尔值**显示页签，**不比较角色字符串** —— 后端加第四个角色时前端不用改。
 但权限在后端：每条路由各自 `require_*`，藏起来 ≠ 安全。
 
-### 5.3 `POST /api/v1/auth/logout`
+### 5.3 登出
+
+**请求**
+
+```
+POST /api/v1/auth/logout
+```
+
+吊销当前令牌（不只是前端删本地副本），幂等；没带令牌也给 `200`（`revoked: false`）。
+
+**响应**
 
 ```json
 { "revoked": true }
 ```
-
-撤销当前令牌（不只是前端删本地副本），幂等。
 
 | 场景 | 行为 |
 |---|---|
@@ -222,9 +256,33 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ## 6. 问答
 
-### 6.1 `POST /api/v1/query`
+### 6.1 非流式问答
 
-请求体：
+**请求**
+
+```
+POST /api/v1/query
+```
+
+**请求体**
+
+```json
+{
+  "query": "装饰器有什么用？",
+  "session_id": "b7f0…",
+  "source_filter": "bagu_ai",
+  "k": 5,
+  "mode": "hybrid",
+  "fusion": "rrf",
+  "bm25_weight": 0.5,
+  "vector_weight": 0.5,
+  "rerank": true,
+  "max_context": 2,
+  "rrf_k": 60
+}
+```
+
+只填 `query` 就能跑；其余都是可选的覆盖值。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -242,10 +300,7 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 **两种组合 `422`**（都是"两个真值来源必然打架"）：`mode` 与两个权重**不能同时给**；两个权重**不能同时为 0**。
 
-```bash
-curl -s http://127.0.0.1:8080/api/v1/query -H 'Content-Type: application/json' \
-  -d '{"query": "装饰器有什么用？"}'
-```
+**响应**
 
 ```json
 {
@@ -281,10 +336,24 @@ FAQ 命中（≥ faq.threshold 且过两个覆盖率门槛）→ 标准答案直
 否则 → 知识库检索 → 有命中：检索 + 生成 + [n] 引用；无命中：拒答话术（不调模型）
 ```
 
-### 6.2 `WS /api/v1/stream`
+### 6.2 流式问答（WebSocket）
+
+#### 连接
+
+```
+WS /api/v1/stream?token=<令牌>
+```
 
 连上后客户端**逐条发 JSON**（形状同 `QueryRequest`），服务端逐帧回 JSON。
 **同一条连接可以连续问多轮**（FAQ 命中、寒暄、请求体畸形都不会关连接）。
+
+#### 发送消息
+
+```json
+{ "query": "装饰器有什么用？", "session_id": "b7f0…" }
+```
+
+#### 接收消息
 
 | 帧 | 何时 | 字段 |
 |---|---|---|
@@ -293,11 +362,20 @@ FAQ 命中（≥ faq.threshold 且过两个覆盖率门槛）→ 标准答案直
 | `done` | 恰好 1 帧收尾 | `answer` / `channel` / `refused` / `truncated` / `citations` / `session_id` |
 | `error` | 请求体不是合法 JSON 或校验失败 | `detail: string`（连接留着，可重发） |
 
+**帧示例**
+
+```json
+{ "type": "sources", "citations": [ { "index": 1, "source": "bagu_ai", "page": 37 } ] }
+{ "type": "token", "text": "装饰器是" }
+{ "type": "done", "answer": "装饰器是……", "channel": "rag", "refused": false,
+  "truncated": false, "citations": [ … ], "session_id": "b7f0…" }
+```
+
 **恒等式**：`done.answer == "".join(所有 token 帧的 text)`。答案**一律走 token 帧**（标准答案、拒答话术都在内），
 前端只要"打印 token"，不用为"这句话从哪来"写分支。**非流式就是流式的收拢器**：两条入口的答案逐字相同。
 
 ```javascript
-const ws = new WebSocket("ws://127.0.0.1:8080/api/v1/stream?token=<令牌>");
+const ws = new WebSocket(`ws://${host}/api/v1/stream?token=${token}`);
 ws.onopen = () => ws.send(JSON.stringify({ query: "装饰器有什么用？" }));
 ws.onmessage = (event) => {
   const frame = JSON.parse(event.data);
@@ -312,23 +390,89 @@ ws.onmessage = (event) => {
 
 ## 7. 会话
 
-| 端点 | 请求 | 响应 |
-|---|---|---|
-| `POST /api/v1/create_session` | — | `{"session_id": "b7f0…"}`（`uuid4`，当场绑归属） |
-| `GET /api/v1/sessions?limit=50` | `limit` 1..200，默认 50 | `{"sessions": [{session_id, title, rounds, created_at, updated_at}]}` |
-| `GET /api/v1/history/{session_id}` | — | `{"session_id": "…", "rounds": [{question, answer, citations[]}]}` |
-| `DELETE /api/v1/history/{session_id}` | — | `{"session_id": "…", "deleted": 3}` |
+### 7.1 建会话
 
-- `sessions`：**只列有轮次的会话**（刚建没问过的不占地方），按最近活动倒序；标题 = 首问裁到 40 字。
-  无认证模式给空表；认证开着却没装配会话目录 → `503`（不拿空表冒充"你还没有会话"）。
-- `history`：最近 N 轮（`conversation.history_rounds`，默认 5），按时间正序，**与喂给模型的是同一份**。
-  每轮的 `citations[]` 是**当轮引用卡片的快照**，形状与 `/query` 出参里那份逐字相同；
-  更早的轮次给空列表（那一轮的出处当时没留下 —— 不编）。
-- `session_id` **不可猜**：光有 ID 也读不到别人的会话（`403`）；**没主人的会话也拒绝**。
+**请求**
+
+```
+POST /api/v1/create_session
+```
+
+**响应**
+
+```json
+{ "session_id": "b7f0…" }
+```
+
+`uuid4`，**当场把归属绑到你账号上**：光有 ID 也读不到别人的会话（`403`）。
+
+### 7.2 我名下的会话目录
+
+**请求**
+
+```
+GET /api/v1/sessions?limit=50
+```
+
+| 查询参数 | 范围 | 默认 |
+|---|---|---|
+| `limit` | 1..200 | 50 |
+
+**响应**
+
+```json
+{ "sessions": [
+    { "session_id": "b7f0…", "title": "每周加班最多多长时间", "rounds": 3,
+      "created_at": "<ISO 时间>", "updated_at": "<ISO 时间>" }] }
+```
+
+**只列有轮次的会话**（刚建没问过的不占地方），按最近活动倒序；标题 = 首问裁到 40 字。
+无认证模式给空表；认证开着却没装配会话目录 → `503`（不拿空表冒充"你还没有会话"）。
+
+### 7.3 读历史
+
+**请求**
+
+```
+GET /api/v1/history/{session_id}
+```
+
+**响应**
+
+```json
+{ "session_id": "b7f0…",
+  "rounds": [ { "question": "…", "answer": "…", "citations": [ … ] } ] }
+```
+
+最近 N 轮（`conversation.history_rounds`，默认 5），按时间正序，**与喂给模型的是同一份**。
+每轮的 `citations[]` 是**当轮引用卡片的快照**，形状与 `/query` 出参里那份逐字相同；
+更早的轮次给空列表（那一轮的出处当时没留下 —— 不编）。
+
+### 7.4 清空会话
+
+**请求**
+
+```
+DELETE /api/v1/history/{session_id}
+```
+
+**响应**
+
+```json
+{ "session_id": "b7f0…", "deleted": 3 }
+```
 
 ---
 
-## 8. 来源 `GET /api/v1/sources`
+## 8. 来源
+
+**请求**
+
+```
+GET /api/v1/sources
+```
+
+**响应**
 
 ```json
 { "sources": ["bagu_ai", "bagu_java"] }
@@ -340,17 +484,16 @@ ws.onmessage = (event) => {
 
 ## 9. 文档治理
 
-### 9.1 `POST /api/v1/documents?filename=lecture01.pdf`
+### 9.1 上传
 
-**原始 body 流式上传**（`Content-Type: application/octet-stream`，**不要 multipart**）。
+**请求**
 
-```bash
-curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' \
-  --data-binary @lecture01.pdf
+```
+POST /api/v1/documents?filename=lecture01.pdf
+Content-Type: application/octet-stream
 ```
 
-`202` + `DocumentOut`（见 9.2 的字段表，此时 `status: "pending"`）。
+请求体是**文件原始字节**（不是 multipart）。响应 `202` + `DocumentOut`（见 §9.2 的字段表，此时 `status: "pending"`）。
 
 | 情况 | 行为 |
 |---|---|
@@ -359,9 +502,17 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 | 文件名带路径 | basename 化（`../../逃逸.md` → `逃逸.md`） |
 | 入库 | **异步**：立刻 `202`，后台切块嵌入；状态流转 `pending → processing → processed`，失败进 `failed`（带 `error`）；**只有 `processed` 可检索** |
 
-### 9.2 `GET /api/v1/documents`
+### 9.2 知识库清单
+
+**请求**
+
+```
+GET /api/v1/documents
+```
 
 清单是**实时视图**：后端每次把"登记表 / 磁盘 / 向量库"三处摆到一起再出参。
+
+**响应**
 
 ```json
 {
@@ -386,7 +537,15 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 | `searchable` | 按**库内实际块数**算 —— 登记说 `processed` 不算数 |
 | `restricted` | 这份文档被收窄过（规则只用来收窄，见 §11.3）；**没授权给你的不出现** |
 
-### 9.3 `DELETE /api/v1/documents/{document_id}`
+### 9.3 删除
+
+**请求**
+
+```
+DELETE /api/v1/documents/{document_id}
+```
+
+**响应**
 
 ```json
 { "document_id": "lecture01.pdf", "deleted_chunks": 42, "removed_file": true,
@@ -397,18 +556,26 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 删除顺序「标记 `deleting` → 删向量 → 删原文件 → 删登记行」——**向量删失败就不动登记行**。
 `removed_file`（真删了原件）与 `kept_source`（`data/corpus/**` 是源材料，故意没动）是两件事。
 
-### 9.4 `GET /api/v1/documents/{document_id}/chunks?limit=20&chars=400`
+### 9.4 预览
+
+**请求**
+
+```
+GET /api/v1/documents/{document_id}/chunks?limit=20&chars=400
+```
+
+| 查询参数 | 范围 | 默认 |
+|---|---|---|
+| `limit` | 1..100 | 20 |
+| `chars` | 50..2000 | 400 |
+
+**响应**
 
 ```json
 { "document_id": "handbook.pdf", "parent_blocks": 15, "child_chunks": 42, "returned": 15,
   "truncated": false,
-  "blocks": [{ "index": 1, "page": 7, "last_page": 8, "chars": 1180, "text": "……前 400 字……" }] }
+  "blocks": [ { "index": 1, "page": 7, "last_page": 8, "chars": 1180, "text": "……前 400 字……" } ] }
 ```
-
-| 参数 | 范围 | 默认 |
-|---|---|---|
-| `limit` | 1..100 | 20 |
-| `chars` | 50..2000 | 400 |
 
 - **显示的是父块**（按 `parent_id` 折叠）：那才是模型真正读到的东西。`child_chunks` 与 `parent_blocks` 差着切分比例，两个都给。
 - `chars` 是**截断前**的字数；`page` / `last_page` 不同 = 这一段跨页；都是 `null` = 不知道（md/txt）。
@@ -422,15 +589,28 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 
 两个报表**同权限、同窗口白名单、读同一批账本行**。`window` ∈ `1h / 6h / 24h / 7d / 30d`（别的 `400`）。
 
-### 10.1 `GET /api/v1/reports/metrics?window=24h&top=5`
+### 10.1 延迟报表
+
+**请求**
+
+```
+GET /api/v1/reports/metrics?window=24h&top=5
+```
+
+| 查询参数 | 范围 | 默认 |
+|---|---|---|
+| `window` | 上面那五个 | `24h` |
+| `top` | 1..`metrics.top_max` | 5 |
+
+**响应**
 
 ```json
 {
   "window": "24h", "rows": 37, "warm_rows": 34, "cold_rows": 3,
   "warm": { "rows": 34, "refused": 1, "truncated": 0, "aborted": 0, "faq_hits": 21, "rag_answers": 12 },
   "cold": { "rows": 3,  "refused": 0, "truncated": 0, "aborted": 0, "faq_hits": 1,  "rag_answers": 2 },
-  "segments": [{ "name": "total_ms", "n": 34, "p50": 1991.3, "p95": null, "p99": null, "maximum": 5369.1 }],
-  "slowest": [{ "request_id": "5b7ad6acb0da", "channel": "rag", "cold": true, "total_ms": 5369.1 }]
+  "segments": [ { "name": "total_ms", "n": 34, "p50": 1991.3, "p95": null, "p99": null, "maximum": 5369.1 } ],
+  "slowest": [ { "request_id": "5b7ad6acb0da", "channel": "rag", "cold": true, "total_ms": 5369.1 } ]
 }
 ```
 
@@ -440,11 +620,19 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 | `warm` / `cold` | 冷热**各一整套**计数，**故意没有合计栏**：两层分母不同，比率不可加 |
 | `segments[]` | 分位数**只用热行**算（冷行仍进 `rows` 与最慢榜）；`null` = 样本量不够（`p95` 要 n≥20、`p99` 要 n≥100），**不折算成 0** |
 | `segments[].name` | `total_ms` / `ttft_ms` / `retrieve_ms` / `llm_*` 等；`vector` 与 `bm25` 是并行两路，各自报时长，加起来不要求等于 `retrieve_ms` |
-| `slowest[]` | **含冷启动**并标 `cold`（那是用户真实等到的）；`top` ∈ [1, `top_max`] |
+| `slowest[]` | **含冷启动**并标 `cold`（那是用户真实等到的） |
 
 分位数口径：最近秩、不插值。没接账本表 → `503`。
 
-### 10.2 `GET /api/v1/reports/cost?window=24h`
+### 10.2 消耗报表
+
+**请求**
+
+```
+GET /api/v1/reports/cost?window=24h
+```
+
+**响应**
 
 ```json
 {
@@ -453,9 +641,9 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
   "period_unknown_calls": 0, "zone_unknown_calls": 0, "calendar_unknown_calls": 0, "cache_unknown_calls": 0,
   "input_tokens": 29412, "cached_input_tokens": 17638, "output_tokens": 16848,
   "total_tokens": 46260, "total_cost": 0.071582, "all_priced": true, "unpriced_models": [],
-  "periods": [{ "period": "peak", "calls": 24, "input_tokens": 29412, "output_tokens": 16848, "total_cost": 0.071582 }],
-  "lines": [{ "model": "deepseek-flash", "period": "peak", "calls": 24, "input_tokens": 29412,
-              "cached_input_tokens": 17638, "output_tokens": 16848, "total_cost": 0.071582 }],
+  "periods": [ { "period": "peak", "calls": 24, "input_tokens": 29412, "output_tokens": 16848, "total_cost": 0.071582 } ],
+  "lines": [ { "model": "deepseek-flash", "period": "peak", "calls": 24, "input_tokens": 29412,
+               "cached_input_tokens": 17638, "output_tokens": 16848, "total_cost": 0.071582 } ],
   "peak_weekdays": [1, 2, 3, 4, 5], "peak_windows": [["09:00", "12:00"], ["14:00", "18:00"]],
   "holiday_years": [2025, 2026]
 }
@@ -491,30 +679,65 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 
 ### 11.1 账号（admin）
 
-| 端点 | 请求 | 响应 |
-|---|---|---|
-| `GET /api/v1/admin/users` | — | `{"users": [{user_id, username, role, is_admin, group_ids[]}]}`（**不含密码**） |
-| `POST /api/v1/admin/users` | `{username, password, role}` | `201` + `{user_id, username, role}`（不回显密码） |
-| `POST /api/v1/admin/users/{user_id}/password` | `{password}` | `UserOut` |
-| `DELETE /api/v1/admin/users/{user_id}` | — | `{user_id, username, deleted: true}` |
+**请求**
 
-`role` ∈ `employee` / `ops` / `admin`（别的 `422`）。删号连带删令牌、组员行与授权行；
+```
+GET    /api/v1/admin/users
+POST   /api/v1/admin/users
+POST   /api/v1/admin/users/{user_id}/password
+DELETE /api/v1/admin/users/{user_id}
+```
+
+| 请求 | 请求体 | 响应 |
+|---|---|---|
+| `GET /admin/users` | — | `{"users": [{user_id, username, role, is_admin, group_ids[]}]}`（**不含密码**） |
+| `POST /admin/users` | `{"username":"zhangsan","password":"口令至少 8 位","role":"employee"}` | `201` + `{user_id, username, role}` |
+| `POST /admin/users/{user_id}/password` | `{"password":"新口令"}` | `UserOut` |
+| `DELETE /admin/users/{user_id}` | — | `{user_id, username, deleted: true}` |
+
+**请求体**
+
+```json
+{ "username": "zhangsan", "password": "口令至少 8 位", "role": "employee" }
+```
+
+`role` ∈ `employee` / `ops` / `admin`。删号连带删令牌、组员行与授权行；
 **不能删自己、不能删最后一个管理员**（`400`）。不存在的账号 `404`。
 
 ### 11.2 组（admin）
 
-| 端点 | 请求 | 响应 |
+**请求**
+
+```
+GET    /api/v1/admin/groups
+POST   /api/v1/admin/groups
+PUT    /api/v1/admin/groups/{group_id}/members
+DELETE /api/v1/admin/groups/{group_id}
+GET    /api/v1/admin/groups/{group_id}/documents
+PUT    /api/v1/admin/groups/{group_id}/documents
+```
+
+| 请求 | 请求体 | 响应 |
 |---|---|---|
-| `GET /api/v1/admin/groups` | — | `{"groups": [{group_id, name, member_ids[]}]}` |
-| `POST /api/v1/admin/groups` | `{name}` | `201` + `{group_id, name, member_ids[]}`（重名 `400`） |
-| `PUT /api/v1/admin/groups/{group_id}/members` | `{user_ids: []}` | `GroupOut`（**整份**替换，声明式） |
-| `DELETE /api/v1/admin/groups/{group_id}` | — | `{group_id, deleted: true}`（连带清掉授权给它的规则） |
-| `GET /api/v1/admin/groups/{group_id}/documents` | — | `GroupDocumentsOut` |
-| `PUT /api/v1/admin/groups/{group_id}/documents` | `{allowed: ["a.pdf", …]}` | `GroupDocumentsOut` + `granted` / `revoked` / `opened` + 一句 `notice` |
+| `GET /admin/groups` | — | `{"groups": [{group_id, name, member_ids[]}]}` |
+| `POST /admin/groups` | `{"name": "销售"}` | `201` + `{group_id, name, member_ids[]}`（重名 `400`） |
+| `PUT /admin/groups/{group_id}/members` | `{"user_ids": ["U-1","U-2"]}` | `GroupOut`（**整份**替换，声明式） |
+| `DELETE /admin/groups/{group_id}` | — | `{group_id, deleted: true}`（连带清掉授权给它的规则） |
+| `GET /admin/groups/{group_id}/documents` | — | `GroupDocumentsOut` |
+| `PUT /admin/groups/{group_id}/documents` | `{"allowed": ["内部报价单.md"]}` | `GroupDocumentsOut` + `granted` / `revoked` / `opened` + 一句 `notice` |
+
+**请求体**
 
 ```json
-{ "group_id": "g-1", "name": "销售", "documents": [
-    { "document_id": "内部报价单.md", "filename": "内部报价单.md", "visibility": "open", "other_subjects": 0 }],
+{ "allowed": ["内部报价单.md"] }
+```
+
+**响应**
+
+```json
+{ "group_id": "G-1", "name": "销售",
+  "documents": [ { "document_id": "内部报价单.md", "filename": "内部报价单.md",
+                   "visibility": "open", "other_subjects": 0 } ],
   "granted": [], "revoked": [], "opened": [], "notice": "…" }
 ```
 
@@ -523,13 +746,21 @@ curl -X POST "http://127.0.0.1:8080/api/v1/documents?filename=lecture01.pdf" \
 
 ### 11.3 文档可见范围（admin）
 
-| 端点 | 请求 | 响应 |
-|---|---|---|
-| `GET /api/v1/admin/documents/{document_id}/acl` | — | `DocumentAclOut` |
-| `PUT /api/v1/admin/documents/{document_id}/acl` | `{user_ids: [], group_ids: []}` | `DocumentAclOut` |
+**请求**
+
+```
+GET /api/v1/admin/documents/{document_id}/acl
+PUT /api/v1/admin/documents/{document_id}/acl
+```
+
+**请求体**
 
 ```json
-{ "document_id": "内部报价单.md", "restricted": true, "user_ids": ["u-abc"], "group_ids": ["g-1"] }
+{ "user_ids": ["U-1"], "group_ids": ["G-1"] }
+```
+
+```json
+{ "document_id": "内部报价单.md", "restricted": true, "user_ids": ["U-1"], "group_ids": ["G-1"] }
 ```
 
 | 规则 | |
@@ -585,9 +816,9 @@ Redis 故障 → **降级放行**（fail-open）+ WARNING：限流是保护不�
 | `rag` | `-q/--question` | `--k` `--source` | 只走知识库：检索 + 生成 + `[1][2]` 引用 |
 | `qa` | `-q/--question` | `--k` `--source` `--session` `--stream` | **合流**：FAQ 优先、知识库兜底（日常入口） |
 | `rewrite` | `-q/--question` | — | 查询改写诊断：判成哪一类、改写成哪几句（不检索、不生成） |
-| `search` | `-q/--question` | `--k` `--source` `--route {both,vector,bm25}` | 只检索、**不调模型**；`both` 打四段：向量 / BM25 / 融合 / 重排 |
+| `search` | `-q/--question` | `--k` `--source` `--route {both,vector,bm25}` | 只检索、**不调模型** |
 | `ingest` | — | `--path` `--dry-run` `--purge-source` `--batch-size` | 切块入库；默认 `data/corpus/pdf_data` |
-| `collections` | — | `--reindex` `--yes` | 列出集合（块数 / `page` 列 / 稀疏列 / 索引类型）；`--reindex` 按配置重建索引（数据不动） |
+| `collections` | — | `--reindex` `--yes` | 列出集合（块数 / `page` 列 / 稀疏列 / 索引类型）；`--reindex` 按配置重建索引 |
 | `sparse` | — | `--yes` `--batch-size` | 按当前语料重算全库 BM25 稀疏向量（`keyword.backend=milvus` 那一档） |
 | `drop` | `--collection` | `--yes` | 删一个向量集合（不给 `--yes` 只说不做，退出码 1） |
 | `metrics` | — | `--window` | 延迟报表（与 HTTP 同一份口径） |
@@ -596,7 +827,7 @@ Redis 故障 → **降级放行**（fail-open）+ WARNING：限流是保护不�
 
 约定：**退出码** `0` 成功 / `1` 业务失败（短消息在 stderr）/ `2` 用法错误；
 **stdout 只放结果**（答案、引用、统计），提示一律走 stderr（便于管道消费）；
-`ingest` 幂等（主键 = `sha256(来源|文档|位置|内容)`，重灌条数与块 id 不变）；
+`ingest` 幂等（主键 = `sha256(来源|文档|位置|内容)`）；
 答案不对时先 `search` 再 `rag` —— 分清是"没捞到"还是"答不好"。
 
 ---
