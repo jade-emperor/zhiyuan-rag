@@ -6,7 +6,7 @@ Milvus 向量库适配器(**只管稠密一路**)。
 
 文件末尾还有两个**集合级**的工具(``list_collections`` / ``drop_collection``):端口 ``VectorStore``
 讲的是"一个集合怎么读写",而"库里有哪几个集合、某个集合要不要删"是**运维视角**的东西 ——
-P0-5 加 ``page`` 列之后,旧集合不能写、新集合要建/要删,这类事必须有接口(见 ``cli/commands/drop.py``)。
+有了 ``page`` 列之后,旧集合不能写、新集合要建/要删,这类事必须有接口(见 ``cli/commands/drop.py``)。
 """
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ _SPARSE_FIELD = "sparse_vector"
 # ``page`` 不在这里:老集合(见 _output_fields)没有这一列,取它会让整份语料查不出来。
 _OUTPUT_FIELDS = ["text", "source", "doc_id", "parent_id", "parent_content"]
 
-# P0-5:页码列名,以及"没有页码"在**存储层**的表示。
+# 页码列名,以及"没有页码"在**存储层**的表示。
 #
 # 为什么用哨兵而不是 NULL:Milvus 2.4.4 **不支持 nullable** —— 建集合时 `nullable=True` 被
 # 原样收下(describe 里连字段都不回),插入一行缺这个字段时却报
 # `Insert missed an field 'page' to collection without set nullable==true or set default_value`。
-# 「服务端接受 ≠ 支持」,实测记录见 STATUS §0.3。
+# 「服务端接受 ≠ 支持」—— 实测如此。
 # 哨兵取 **-1**:页码从 1 开始,负数不可能与真实页号撞;而 0 会被读成"第 0 页"。
 # **翻译只发生在这一层**(`_to_row` 写、`_page_of_row` 读),领域层永远是 None。
 _PAGE_FIELD = "page"
@@ -198,7 +198,7 @@ class MilvusVectorStore(VectorStore):
             raise RuntimeError(
                 f"集合 {self._collection} 没有 {_SPARSE_FIELD} 列 —— 关键字那一路"
                 "(`keyword.backend=milvus`)要它。要么换回 `keyword.backend=memory`,"
-                "要么按新 schema 重灌一份(见 README 的「换后端要重灌」那一段)。"
+                "要么按新 schema 重灌一份。"
                 "**不许把它当成「没检索到」**:那会让答案静默变差。"
             )
 
@@ -418,7 +418,7 @@ class MilvusVectorStore(VectorStore):
     def _output_fields(self) -> list[str]:
         """输入:无。行为:按集合**实际有的**列决定取哪些标量字段。输出:字段名列表。
 
-        **老集合(没有 page 列)要能读**:P0-5 之前入库的块没有页码,读回来是 None ——
+        **老集合(没有 page 列)要能读**:早期建的集合里那些块没有页码,读回来是 None ——
         与「父子分层之前入库的扁平块 parent_id 为空串」是同一个约定:旧数据也得能跑。
         硬要 page 只会让整份语料在迁移完成之前一句都答不出来。
         """
@@ -431,13 +431,13 @@ class MilvusVectorStore(VectorStore):
         """输入:无。行为:确认集合有 page 列,没有就抛错并给出路。输出:无。
 
         **写入**与读取相反,必须报错而不是"没有这一列就不写":那等于把页码静默丢掉,
-        而 P0-5 的全部意义就是让页码落库 —— 灌完 500 页语料才发现页码没进去,代价是再灌一次
+        而这一列的全部意义就是让页码落库 —— 灌完 500 页语料才发现页码没进去,代价是再灌一次
         (CPU 上 8 分钟,还要重新嵌入)。宁可当场停下。
         """
         if _PAGE_FIELD in self._fields():
             return
         raise RuntimeError(
-            f"集合 {self._collection} 没有 {_PAGE_FIELD} 列(P0-5 之前建的)"
+            f"集合 {self._collection} 没有 {_PAGE_FIELD} 列(早期建的老集合)"
             " —— 现在写进去,页码会被静默丢掉。三条路(先 `project-rag collections` 看现状):"
             "① 已有带 page 列的新集合 → 改 config 里 milvus.collection 指过去(最省事,可回滚);"
             "② 想原地重建 → `project-rag drop --collection "
@@ -491,7 +491,7 @@ class MilvusVectorStore(VectorStore):
         # 父子分层字段:父子分层之前入库的扁平块没有父块,所以允许空串;新写入的都带
         schema.add_field("parent_id", DataType.VARCHAR, max_length=64)
         schema.add_field("parent_content", DataType.VARCHAR, max_length=_MAX_PARENT)
-        # P0-5:页码(1 起)。**建不出 nullable 的列**(2.4.4 不支持,见 _PAGE_NONE),
+        # 页码(1 起)。**建不出 nullable 的列**(2.4.4 不支持,见 _PAGE_NONE),
         # 所以每一行都必须带这个字段:没有页码时写哨兵 -1。
         schema.add_field(_PAGE_FIELD, DataType.INT64)
         if self._sparse:
@@ -606,7 +606,7 @@ class CollectionInfo:
     name: str
     rows: int  # 真实块数(query 的行数,**不是** count(*))
     capped: bool  # 撞到单次查询上限(16384) ⇒ 真实块数 ≥ rows
-    has_page: bool  # 有没有 P0-5 加的 page 列
+    has_page: bool  # 有没有 page 列
     dim: int | None
     has_sparse: bool = False  # 有没有稀疏列(keyword.backend=milvus 建出来的才有)
     index_type: str = "?"  # 稠密列上的索引类型(FLAT / IVF_FLAT / …);读不到给 "?"
@@ -623,7 +623,7 @@ def _rows_of(client: MilvusClient, name: str) -> tuple[int, bool]:
     """输入:客户端 + 集合名。行为:数真实块数(只取主键)。输出:``(块数, 是否撞上限)``。
 
     **不用 ``count(*)``**:它把"已按 ``doc_id`` 删掉但还没压实"的旧块一起算进去
-    (实测同一时刻 ``count(*)`` 报 2844、``query`` 只回 1491,见 STATUS §0)。
+    (实测同一时刻 ``count(*)`` 报 2844、``query`` 只回 1491)。
     盘点集合大小时给人一个虚高的数,比不给还糟。
     """
     # 上限就是 16384(Milvus 的 (offset+limit) 窗口上限):多要一行会被服务端直接拒

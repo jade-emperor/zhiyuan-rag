@@ -92,9 +92,9 @@ def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list
     子块 id 里**含父块序号**:同一段文本落在两个父块下时它们是两个块,
     各自记着自己的父块 —— 否则父块归属会张冠李戴。
 
-    **页码(P0-5)也在这一步定下来,但它不进任何 id**:身份是「内容 + 结构位置」,
+    **页码也在这一步定下来,但它不进任何 id**:身份是「内容 + 结构位置」,
     页码是源文件的排版属性 —— 混进 id 就意味着"PDF 重新导出一次,整库 id 全变、
-    历史引用全部失效"(决策见 STATUS §7 P0-5)。所以 ``Chunk.page`` 只当载荷,重灌即可修正。
+    历史引用全部失效"。所以 ``Chunk.page`` 只当载荷,重灌即可修正。
     """
     chunks: list[Chunk] = []
     for document in documents:

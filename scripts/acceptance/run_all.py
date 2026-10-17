@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -51,6 +52,11 @@ LOCAL_ONLY = [
     "check_m2_faq.py",  # 需要 faq 表里那 463 条真实语料（有版权，不公开）
     "check_m5_qa.py",  # 同上：合流入口的真 FAQ 表
     "check_m5_stream.py",  # 3 次真 DeepSeek 调用（要 key、要花钱）
+    # 查询改写 A/B：产物全在 data/eval/ 下（评估集 / 两臂数据集 / 对比报告）—— 都不公开。
+    # 它对应的反向测试 reverse_m4_rewrite_ab.py **不在**这一档：数据不在时它会打印
+    # 「数据不在本地，跳过」并以 0 退出（与 reverse_m4_eval.py 同一口径），
+    # 于是公开 CI 仍能验证「这条检查确实会红」这件事本身没坏。
+    "check_m4_rewrite_ab.py",
 ]
 # 其余全部属于 ci 组（含上面 services 里那四份：它们在缺少中间件时会 SKIP 而不是 FAIL）
 
@@ -109,6 +115,45 @@ def _run(path: Path, timeout_s: int) -> Result:
     return Result(path.name, False, seconds, detail[:200])
 
 
+def _lock_or_die() -> object | None:
+    """输入:无。行为:抢一把进程锁,防止两份 run_all 同时跑。输出:要一直持有到进程结束的句柄。
+
+    **为什么需要**:反向测试靠「改坏源码 → 跑检查 → 还原」工作,而**两份 run_all 同时跑会互相拆台** ——
+    A 的还原会把 B 正在用的补丁撤掉,B 的检查于是报出一些莫名其妙的错(实测:同一个词重复两遍
+    的分数报 2.000、索引类型报 FLAG、密码哈希说"盐不是随机的"),
+    更糟的是两边都可能在对方还原之后**再写一次坏版本**,最后留下一份没人还原的源码
+    (`api/app.py` 上留着 `visible = list(views)`,等于把 ACL 关掉)。
+
+    这不是纪律问题(「记得别同时跑」),是工程问题:**让并发在入口就失败**,
+    而不是让它在几十分钟后表现成"某个检查是摆设"。``--force`` 显式跳过
+    (调试 runner 本身时用,那时不会有别人在改源码)。
+    """
+    import fcntl
+
+    lock_path = ROOT / ".cache" / "run_all.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # **a+ 而不是 w**:用 w 会在抢锁之前先把文件截断 —— 而那正是持有者写 pid 的地方,
+    # 于是第二条永远只报得出「pid 未知」(实测踩到)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.seek(0)
+        holder = handle.read().strip() or "(pid 未知)"
+        print(
+            f"已经有一份 run_all 在跑({holder})—— 两份同时跑会互相还原对方正在用的补丁,\n"
+            f"结果是「某个检查是摆设」这种假故障。等它跑完,或 --force 明确跳过这道闸。",
+            file=sys.stderr,
+        )
+        handle.close()
+        raise SystemExit(2)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} 启动于 {time.strftime('%H:%M:%S')}\n")
+    handle.flush()
+    return handle
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="按外部依赖分组跑验收")
     parser.add_argument("--set", dest="set_name", default="ci", choices=["ci", "services", "local", "all"])
@@ -116,11 +161,15 @@ def main() -> int:
     parser.add_argument("--reverse-only", action="store_true", help="只跑 reverse_*.py")
     parser.add_argument("--timeout", type=int, default=900, help="单个脚本的超时秒数")
     parser.add_argument("--list", action="store_true", help="只打印选中哪些脚本")
+    parser.add_argument("--force", action="store_true", help="跳过「不许并发」这道闸(调试 runner 时用)")
     args = parser.parse_args()
 
     checks = not args.reverse_only
     reverse = not args.checks_only
     scripts = _selected(args.set_name, checks, reverse)
+    # 反向测试会改源码再还原,所以**必须**独占跑。--list 不改任何东西,不必抢锁
+    _lock = None if (args.list or args.force) else _lock_or_die()
+    _ = _lock  # 持有到进程结束(局部变量被回收 = 释放) —— 所以这里刻意不让它出作用域
     if args.list:
         for path in scripts:
             print(path.name)

@@ -128,6 +128,21 @@ async function main() {
   expect('PDF 引用带页码', pageTag.includes('第 7 页'), pageTag)
   const unknown = await page.locator('.citation .tag.soft', { hasText: '页码未知' }).count()
   expect('md 引用显示页码未知', unknown === 1, `「页码未知」出现 ${unknown} 次`)
+
+  // ── 4b. 引用**落了库**:旧会话里的引用卡片是从 /history 读回来的 ─────────
+  // 作者报的就是这条:以前引用只活在浏览器内存里,切回旧会话只剩正文里的 [1](等于没有出处)。
+  // 假后端种子里第一轮带引用快照(新账)、第二轮不带(老账)—— 两种都要如实画出来
+  await page.locator('.sidebar .item', { hasText: '每周加班最多多长时间' }).first().click()
+  await page.waitForSelector('.messages .row', { timeout: 10000 })
+  await page.waitForTimeout(600)
+  const historyCards = await page.locator('.citation').count()
+  const lastAnswer = await page.locator('.row.assistant .text').last().innerText()
+  expect(
+    '旧会话第一轮:引用卡片跟着正文一起从后端回来',
+    historyCards === 2,
+    `${historyCards} 条引用`,
+  )
+  expect('老账那一轮(没存过引用)不编卡片', lastAnswer.includes('三十六小时'), lastAnswer.slice(0, 30))
   await page.screenshot({ path: `${SHOT}_3_answer.png` })
 
   // ── 5. 参数面板真的改了请求 ──────────────────────────────────────────

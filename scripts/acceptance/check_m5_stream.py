@@ -278,15 +278,23 @@ def _() -> str:
     if not getattr(_llm_delta(), "__slots__", None):
         raise AssertionError("LlmDelta 应为 slots=True")
     names = [field.name for field in dataclasses.fields(_llm_delta())]
-    if names != ["text", "reasoning_text", "finish_reason", "last"]:
+    # `usage` 是 P0-7 加的（provider 在收尾帧回报 token 用量，消耗报表的唯一来源）。
+    # **这条断言以前漏了它**：check_m5_stream 在 LOCAL_ONLY（要真 key），
+    # 所以 `--set ci` 永远照不到这一条 —— 契约跟着 domain 变了它却没人改。
+    if names != ["text", "reasoning_text", "finish_reason", "last", "usage"]:
         raise AssertionError(
-            f"字段应为 ['text','reasoning_text','finish_reason','last']，实际 {names}"
+            f"字段应为 ['text','reasoning_text','finish_reason','last','usage']，实际 {names}"
         )
     empty = LlmDelta()
     if (empty.text, empty.reasoning_text, empty.finish_reason, empty.last) != ("", "", None, False):
         raise AssertionError(
             f"默认值应为 ('', '', None, False)，实际 "
             f"{(empty.text, empty.reasoning_text, empty.finish_reason, empty.last)}"
+        )
+    if empty.usage is not None:
+        raise AssertionError(
+            f"usage 默认应为 None（没量到 ≠ 0），实际 {empty.usage!r} —— "
+            "折成 0 会让报表把「不知道多少钱」显示成 0.00"
         )
     if empty.reasoning or LlmDelta(text="答").reasoning or not LlmDelta(reasoning_text="想").reasoning:
         raise AssertionError("reasoning 应只看 reasoning_text：空帧/正文帧 False，思考帧 True")
@@ -531,7 +539,7 @@ def _() -> str:
             "装饰器有什么用",
             faq_store=FakeFaqStore([_faq_entry()]),
             matcher=FakeMatcher(faq_score),
-            knowledge=lambda _history: _stream_rag()(
+            knowledge=lambda _history, _timing: _stream_rag()(
                 "装饰器有什么用",
                 embedder=FakeEmbedder(),
                 store=FakeVectorStore([_kb_hit()]),
@@ -878,7 +886,7 @@ def _() -> str:
     store = FakeConversationStore()
     calls: list = []
 
-    def knowledge(history):
+    def knowledge(history, timing):
         calls.append(tuple(history))
         return iter(())
 
@@ -914,7 +922,7 @@ def _() -> str:
             "装饰器有什么用",
             faq_store=FakeFaqStore([_faq_entry()]),
             matcher=FakeMatcher(None),
-            knowledge=lambda history: _rag_stream(FakeLLM(("装饰器是", "给函数加行为的语法 [1]")), history=history),
+            knowledge=lambda history, timing: _rag_stream(FakeLLM(("装饰器是", "给函数加行为的语法 [1]")), history=history),
             session=_session(store, rounds=3),
         )
     )
@@ -941,7 +949,7 @@ def _() -> str:
         "装饰器有什么用",
         faq_store=FakeFaqStore([_faq_entry()]),
         matcher=FakeMatcher(None),
-        knowledge=lambda history: _rag_stream(
+        knowledge=lambda history, timing: _rag_stream(
             FakeLLM(("装饰器是", "完整的后半句 [1]")), history=history
         ),
         session=_session(store),
@@ -971,7 +979,7 @@ def _() -> str:
             "装饰器有什么用",
             faq_store=FakeFaqStore([_faq_entry()]),
             matcher=FakeMatcher(faq_score),
-            knowledge=lambda history: knowledge(hits, history),
+            knowledge=lambda history, timing: knowledge(hits, history),
             faq_threshold=0.85,
         )
         streamed = _done_of()(
@@ -979,7 +987,7 @@ def _() -> str:
                 "装饰器有什么用",
                 faq_store=FakeFaqStore([_faq_entry()]),
                 matcher=FakeMatcher(faq_score),
-                knowledge=lambda history: knowledge(hits, history),
+                knowledge=lambda history, timing: knowledge(hits, history),
                 faq_threshold=0.85,
             )
         )

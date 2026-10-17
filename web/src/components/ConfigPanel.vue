@@ -8,8 +8,7 @@
  *    这里自动多一个选项;
  * 2. **权重只在混合检索下露出**,因为单路时它没有任何作用(后端那边 mode 与权重
  *    也不能同时给:两个真值来源必然打架)。给用户一个调了不生效的滑条比不给他调更糟;
- * 3. **模型与温度是只读的**:它们是服务端启动期配置,开放按请求覆盖要动后端与账本口径
- *    (触发条件见 docs/frontend.md §5)。这里如实显示"服务端现在用的是什么"。
+ * 3. **模型与温度是只读的**:它们是服务端启动期配置,这里如实显示"现在用的是什么"。
  */
 import { computed, onMounted, ref } from 'vue'
 
@@ -51,7 +50,7 @@ const FUSION_LABELS: Record<FusionMode, string> = {
 const weightHint = computed(() =>
   params.fusion === 'weighted'
     ? '两路分数先各自 min-max 归一化到 0~1,再按权重相加:能表达“哪一路更可信”。'
-    : 'RRF 下这两个是**排名权重**:权重越大,那一路的名次在融合里越占优。',
+    : 'RRF 下这两个是排名权重:权重越大,那一路的名次在融合里越占优。',
 )
 
 function touch(): void {
@@ -67,7 +66,7 @@ function touch(): void {
 
     <section>
       <h4>知识库</h4>
-      <p class="faint">按来源过滤。M7.1 只支持单选;多选要改后端端口签名(见 docs/frontend.md §5)。</p>
+      <p class="faint">按来源过滤,一次只选一个。</p>
       <p v-if="sourcesError" class="alert error small">{{ sourcesError }}</p>
       <label class="option">
         <input v-model="params.source_filter" type="radio" :value="null" @change="touch" />
@@ -143,7 +142,7 @@ function touch(): void {
         <span>
           重排
           <span class="faint">
-            ({{ retrieval?.rerank_available === false ? '这个部署没装重排器' : 'CrossEncoder 精排;实测中位 0.7s / p95 5.4s' }})
+            ({{ retrieval?.rerank_available === false ? '这个部署没装重排器' : 'CrossEncoder 精排,更准但更慢' }})
           </span>
         </span>
       </label>
@@ -159,7 +158,7 @@ function touch(): void {
           <option v-for="model in models" :key="model.id" :value="model.id">{{ model.label }}</option>
         </select>
       </label>
-      <p class="faint">预留位:当前只有一个模型,选择走服务端配置(改 config.yaml 后重启)。</p>
+      <p class="faint">模型由服务端配置决定(改 config.yaml 后重启生效)。</p>
 
       <div class="field">
         <span>Temperature <span class="faint">{{ modelSettings?.temperature ?? '—' }}</span></span>
@@ -168,7 +167,7 @@ function touch(): void {
       <div class="field">
         <span>思考模式 <span class="faint">{{ modelSettings?.thinking ?? '—' }}</span></span>
       </div>
-      <p class="faint">这两项是服务端配置:按请求覆盖会绕过配置与延迟账的口径。</p>
+      <p class="faint">这两项由服务端配置决定,界面上不可改。</p>
     </section>
   </aside>
 </template>

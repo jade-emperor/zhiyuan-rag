@@ -173,6 +173,21 @@ CASES: tuple[Case, ...] = (
         new="export const STREAM_PATH = `${API_PREFIX}/query`",
         needle="前端清单与后端路由表",
     ),
+    Case(
+        title="RT-13  会话列表把存储层的异常直接抛出去（用户只看到「Internal Server Error」）",
+        target=APP,
+        old=(
+            "        try:\n"
+            "            rows = await _call(catalog.list_for, user.user_id, limit=limit)\n"
+            "        except Exception as exc:  # noqa: BLE001"
+        ),
+        new=(
+            "        if True:\n"
+            "            rows = await _call(catalog.list_for, user.user_id, limit=limit)\n"
+            "        elif False:  # noqa: BLE001"
+        ),
+        needle="sessions：无认证给空表",
+    ),
 )
 
 

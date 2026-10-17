@@ -30,9 +30,13 @@ from datetime import datetime
 
 import pymysql
 
+from project_rag.adapters.mysql_schema import COLLATION, TABLE_OPTIONS, align_tables
 from project_rag.config import MySQLConfig
 from project_rag.domain.access import SUBJECT_KINDS, DocumentAcl, Group
+from project_rag.observability import get_logger
 from project_rag.ports import AccessStore
+
+_logger = get_logger("adapters.access_mysql")
 
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -48,7 +52,7 @@ CREATE TABLE IF NOT EXISTS {groups} (
   group_id VARCHAR(32) PRIMARY KEY,
   name VARCHAR(64) NOT NULL UNIQUE,
   created_at DATETIME(3) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
     """
 CREATE TABLE IF NOT EXISTS {members} (
@@ -57,7 +61,7 @@ CREATE TABLE IF NOT EXISTS {members} (
   created_at DATETIME(3) NOT NULL,
   PRIMARY KEY (group_id, user_id),
   KEY idx_members_user (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
     """
 CREATE TABLE IF NOT EXISTS {subjects} (
@@ -67,7 +71,7 @@ CREATE TABLE IF NOT EXISTS {subjects} (
   created_at DATETIME(3) NOT NULL,
   PRIMARY KEY (document_id, subject_kind, subject_id),
   KEY idx_subjects_subject (subject_kind, subject_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
 )
 
@@ -115,16 +119,26 @@ class MySQLAccessStore(AccessStore):
         self._subjects = subjects_table
 
     def init_schema(self) -> None:
-        """输入:无。行为:建三张表(幂等)。输出:无。"""
+        """输入:无。行为:建三张表(幂等),并把老表的排序规则扳回来。输出:无。
+
+        ``CREATE TABLE IF NOT EXISTS`` 不给老表改排序规则,而这一族表以前建的时候只写了
+        ``CHARSET`` —— 混着的两族表一旦 JOIN 就是 1267(见 ``adapters/mysql_schema.py``)。
+        """
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
                 for ddl in _DDL:
                     cur.execute(
                         ddl.format(
-                            groups=self._groups, members=self._members, subjects=self._subjects
+                            groups=self._groups,
+                            members=self._members,
+                            subjects=self._subjects,
+                            options=TABLE_OPTIONS,
                         )
                     )
+                stale = align_tables(cur, (self._groups, self._members, self._subjects))
+                if stale:
+                    _logger.info("排序规则已对齐到 %s(老表):%s", COLLATION, "、".join(stale))
         finally:
             conn.close()
 

@@ -2,7 +2,7 @@
 MySQL 文档登记适配器:``documents`` 表。
 
 **为什么状态用 VARCHAR 而不是 ENUM**:``ENUM`` 改集合要 ALTER TABLE,
-而状态机是会长大的(这轮就加了 ``deleting``);校验放在 ``domain/documents.py``
+而状态机是会长大的(``deleting`` 就是后加的);校验放在 ``domain/documents.py``
 的闭集里 —— 读回来时当场校验,脏数据立刻炸,而不是被默默当成某个合法状态。
 """
 
@@ -14,9 +14,13 @@ from datetime import datetime
 
 import pymysql
 
+from project_rag.adapters.mysql_schema import COLLATION, TABLE_OPTIONS, align_tables
 from project_rag.config import MySQLConfig
 from project_rag.domain.documents import DOC_STATUSES, DocRecord, DocStatus
+from project_rag.observability import get_logger
 from project_rag.ports import DocumentStore
+
+_logger = get_logger("adapters.documents_mysql")
 
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_TABLE = "documents"
@@ -33,7 +37,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   error VARCHAR(512) NULL,
   KEY idx_documents_created (created_at),
   KEY idx_documents_source (source)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """
 
 
@@ -55,11 +59,19 @@ class MySQLDocumentStore(DocumentStore):
         self._table = table
 
     def init_schema(self) -> None:
-        """输入:无。行为:建表(幂等)。输出:无。"""
+        """输入:无。行为:建表(幂等),并把老表的排序规则扳回来。输出:无。
+
+        ``CREATE TABLE IF NOT EXISTS`` 不给老表改排序规则(理由见 ``adapters/mysql_schema.py``):
+        这张表以前只写了 ``CHARSET``,而可见范围那些表写的是 ``COLLATE`` —— 两族混着,
+        按 ``document_id`` JOIN 起来就是 1267。
+        """
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
-                cur.execute(_DDL.format(table=self._table))
+                cur.execute(_DDL.format(table=self._table, options=TABLE_OPTIONS))
+                stale = align_tables(cur, (self._table,))
+                if stale:
+                    _logger.info("排序规则已对齐到 %s(老表):%s", COLLATION, "、".join(stale))
         finally:
             conn.close()
 

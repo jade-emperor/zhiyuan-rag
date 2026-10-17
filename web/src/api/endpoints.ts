@@ -2,7 +2,7 @@
  * 接口清单 —— 每个函数对应后端一条路由,路径与 `src/project_rag/api/app.py` 一一对应。
  *
  * 路径**全写在这里**,不在组件里拼:业务接口一律在 `/api/v1` 下(后端有命名空间契约),
- * 拼错一个前缀只会在运行时变成 404,而写在一处就能被契约脚本静态检查。
+ * 拼错一个前缀只会在运行时变成 404,而写在一处就能被静态检查。
  */
 
 import { request } from './client'
@@ -17,6 +17,7 @@ import type {
   DocumentPreview,
   DocumentRecord,
   DocumentsOut,
+  GroupDocumentsOut,
   GroupOut,
   GroupsOut,
   HistoryOut,
@@ -86,7 +87,7 @@ export function clearSession(sessionId: string): Promise<DeletedOut> {
   })
 }
 
-// ── 文档治理(M7.2 的知识库管理页)────────────────────────────────────────
+// ── 文档治理(知识库管理页)──────────────────────────────────────────────
 export function documents(): Promise<DocumentsOut> {
   return request<DocumentsOut>(`${API_PREFIX}/documents`)
 }
@@ -130,7 +131,7 @@ export function documentPreview(
   )
 }
 
-// ── 报表(M7.3 的可观测看板 + P0-7 的消耗)────────────────────────────────
+// ── 报表(延迟看板 + 消耗)───────────────────────────────────────────────
 /**
  * 延迟报表(**运维与管理员**)。`window` 的白名单与 `top` 的上限都来自
  * `capabilities.metrics` —— 前端不写死,否则后端改了窗口这里会拿着一个 400 的窗口名去打。
@@ -151,7 +152,7 @@ export function cost(window: string): Promise<CostOut> {
   return request<CostOut>(`${API_PREFIX}/reports/cost?window=${encodeURIComponent(window)}`)
 }
 
-// ── 账号与可见范围(P0-6,仅管理员)───────────────────────────────────────
+// ── 账号与可见范围(仅管理员)────────────────────────────────────────────
 /** 全部账号(用户名 / 角色 / 所属组)。**不含密码**。 */
 export function adminUsers(): Promise<UsersOut> {
   return request<UsersOut>(`${API_PREFIX}/admin/users`)
@@ -210,6 +211,29 @@ export function adminSetMembers(groupId: string, userIds: string[]): Promise<Gro
   )
 }
 
+/** **这个组能看哪些文档**(组侧授权页的读数,三态:人人可见 / 已授权 / 看不到)。 */
+export function adminGroupDocuments(groupId: string): Promise<GroupDocumentsOut> {
+  return request<GroupDocumentsOut>(
+    `${API_PREFIX}/admin/groups/${encodeURIComponent(groupId)}/documents`,
+  )
+}
+
+/**
+ * **整份**设置"这个组能看的文档"(声明式)。
+ *
+ * 两条边界由后端定、界面照着说:人人可见的文档在这里动不了(那要走文档侧可见范围);
+ * 取消授权后名单变空的文档会回到人人可见,出参的 `opened` 会点名它们。
+ */
+export function adminSetGroupDocuments(
+  groupId: string,
+  allowed: string[],
+): Promise<GroupDocumentsOut> {
+  return request<GroupDocumentsOut>(
+    `${API_PREFIX}/admin/groups/${encodeURIComponent(groupId)}/documents`,
+    { method: 'PUT', body: { allowed } },
+  )
+}
+
 /** 一份文档的可见范围(授权给了哪些人、哪些组)。 */
 export function adminDocumentAcl(documentId: string): Promise<DocumentAclOut> {
   return request<DocumentAclOut>(
@@ -228,7 +252,7 @@ export function adminSetDocumentAcl(
   )
 }
 
-/** 非流式问答。**M7.1 的界面走 WebSocket**;这条留给"不要流式"的调用方与排障。 */
+/** 非流式问答。**界面走 WebSocket**;这条留给"不要流式"的调用方与排障。 */
 export function query(payload: QueryRequest): Promise<QueryResponse> {
   return request<QueryResponse>(`${API_PREFIX}/query`, { method: 'POST', body: payload })
 }

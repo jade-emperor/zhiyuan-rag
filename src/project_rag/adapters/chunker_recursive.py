@@ -17,7 +17,7 @@
 父 1200 / 子 300 / 重叠 50):**15 个父块、70 个子块**,子块 41~299 字,无空块。
 (不分层时是 68 块 —— 先切父块会改变子块的边界,所以数量不完全等于单级切分。)
 
-**偏移(P0-5)**:``add_start_index=True`` 让 langchain 把每块的起始偏移一起给我们,
+**偏移**:``add_start_index=True`` 让 langchain 把每块的起始偏移一起给我们,
 页码就是拿它去查 ``Document.pages``(见 ``domain/pages.py``)。
 ⚠️ 这个开关在 langchain-text-splitters **1.x 是构造参数**,0.x 才是 ``create_documents`` 的参数 ——
 写成 0.x 那种"1.1.2 直接 TypeError";而写在构造函数上却能一直用。
@@ -44,7 +44,7 @@ if TYPE_CHECKING:  # 只为类型注解;运行期在 _build 里延迟 import
         **为什么不用 langchain 的 ``Document`` 做注解**:1.x 的 ``langchain_text_splitters``
         **不再导出** ``Document``(它搬去了 ``langchain_core``),写成注解会被 pyright 判成
         ``"Document" is unknown import symbol`` —— 而为了一个纯注解去 import ``langchain_core``,
-        等于把一个**传递依赖**写进依赖表(法律 6)。结构类型反而更准确:我们只依赖
+        等于把一个**传递依赖**写进依赖表。结构类型反而更准确:我们只依赖
         ``page_content`` 与 ``metadata["start_index"]`` 这两样。
         """
         page_content: str
@@ -73,7 +73,7 @@ def _build(chunk_size: int, chunk_overlap: int) -> RecursiveCharacterTextSplitte
         keep_separator=True,
         # 中文按「字数」而不是 token 算长度 —— 300 字对 BGE-M3 是合适的输入规模
         length_function=len,
-        # P0-5:把每块的起始偏移写进 metadata["start_index"](页码靠它查)
+        # 把每块的起始偏移写进 metadata["start_index"](页码靠它查)
         add_start_index=True,
     )
 

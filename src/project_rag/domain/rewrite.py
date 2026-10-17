@@ -96,8 +96,7 @@ class QueryRewrite:
       说明有地方在偷偷改写而账上写着「没改」。
 
     ``confidence`` / ``decided_by`` / ``note`` 只用于日志与排查,**不参与任何判定** ——
-    低置信怎么处理是策略问题(实测见 ``tools/lora/finetune_report.md`` §6:
-    一刀切回退反而更差),不该散落在检索路径里。
+    低置信怎么处理是策略问题(实测过:一刀切回退反而更差),不该散落在检索路径里。
     """
 
     original: str

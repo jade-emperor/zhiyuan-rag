@@ -31,7 +31,10 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 from project_rag.domain import (
@@ -181,6 +184,48 @@ def _noop(name: str) -> None:
     return None
 
 
+def _noop_span(name: str, ms: float) -> None:
+    """输入:段名 + 毫秒。行为:什么都不做。输出:无(理由同 ``_noop``)。"""
+    return None
+
+
+def _elapsed_ms(started: float) -> float:
+    """输入:起跑时刻(``time.perf_counter()``)。行为:算到现在的毫秒。输出:毫秒。"""
+    return (time.perf_counter() - started) * 1000.0
+
+
+@dataclass(slots=True)
+class _Leg:
+    """子线程里那一路召回的收成:命中 + 它自己的耗时(毫秒) + 抛出的异常(没抛就是 None)。
+
+    **异常必须存在这里带回来**:线程里抛的异常没人接(``Thread.join`` 只等人,不传异常),
+    默认行为是往 stderr 打一条栈然后主线程当没事发生 —— 那会变成"关键字那一路静默消失",
+    检索结果少一半而账上一切正常,是最难查的那种坏法。
+    """
+
+    hits: Sequence[RetrievedChunk] = field(default_factory=tuple)
+    ms: float = 0.0
+    error: BaseException | None = None
+
+
+def _recall_keyword(
+    leg: _Leg,
+    keyword_index: KeywordIndex,
+    query: str,
+    *,
+    k: int,
+    source: str | None,
+) -> None:
+    """输入:待填的收成 + 关键字索引 + 检索语句 + 条数 + 来源过滤。行为:在**子线程**里跑关键字那一路。输出:无(结果写进 ``leg``)。"""
+    started = time.perf_counter()
+    try:
+        leg.hits = keyword_index.search(query, k=k, source=source)
+    except BaseException as exc:  # noqa: BLE001 —— 原样带回去由主线程重抛,不在这里吞、也不在这里包装
+        leg.error = exc
+    finally:
+        leg.ms = _elapsed_ms(started)
+
+
 def _gather(
     query: str,
     *,
@@ -189,11 +234,17 @@ def _gather(
     keyword_index: KeywordIndex | None,
     options: RetrievalOptions,
     mark: Callable[[str], None],
+    span: Callable[[str, float], None],
 ) -> tuple[Citation, ...]:
-    """输入:一句检索语句 + 端口 + 旋钮 + 打点函数。
+    """输入:一句检索语句 + 端口 + 旋钮 + 打点/分段函数。
 
-    行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重新编号。
+    行为:跑有索引的那几路(**互不依赖的那两路并行**) → 融合(单路则跳过) → 折叠父块 → 重新编号。
     输出:引用序列(已折叠,**未重排、未截断**);没检索到给空序列。
+
+    **两路为什么并行**:它们是同一个问题的两种捞法,谁也不等谁的结果(稠密那路要嵌入,
+    关键字那路自己分词),融合本来就要等两路都到手 —— 串着跑纯属白等。真栈上
+    「稠密 425ms + 关键字 200ms」叠起来 ≈ 425ms。关键字的活主要在等 Milvus,
+    重建索引那段又是纯 CPU,两者不抢同一件资源。
 
     **权重 ≤ 0 的那一路不跑**(连检索都不做,不只是融合时跳过)。两个权重同时 ≤ 0 时
     结果是空序列 —— 而"什么都没检索"与"检索了但没命中"在这一层看不出区别,
@@ -219,17 +270,89 @@ def _gather(
     #
     # **权重 ≤ 0 = 明确关掉这一路**(融合层本来就会跳过它,见 ``fusion.fuse_rankings``),
     # 所以这里连检索都不做:白跑一趟再丢掉,账本上的 ``embed`` / ``vector`` / ``bm25``
-    # 三段就都在骗人。前端「只用向量 / 只用关键字」这两个档就是靠它表达的(M7.1)。
+    # 三段就都在骗人。前端「只用向量 / 只用关键字」这两个档就是靠它表达的。
+    # 「有没有查询向量」就是「稠密那一路跑不跑」:一次嵌入只为这一路服务,
+    # 关掉那一路时连嵌入都不做(理由见上)。
+    query_vector = embedder.embed([query])[0] if options.vector_weight > 0 else None
+    mark("embed")
+
     rankings: dict[str, Sequence[RetrievedChunk]] = {}
-    if options.vector_weight > 0:
-        query_vector = embedder.embed([query])[0]
-        mark("embed")
-        rankings[VECTOR_ROUTE] = store.search(query_vector, k=ask, source=options.source)
-        mark("vector")
-    if keyword_index is not None and options.bm25_weight > 0:
-        rankings[KEYWORD_ROUTE] = keyword_index.search(
-            query, k=ask, source=options.source
+    vector_ms: float | None = None
+    keyword_ms: float | None = None
+
+    # 两路召回**互不依赖**(稠密那路要嵌入,关键字那路自己分词),所以能并行。
+    # 真栈 A/B(真语料、同一个 store 实例、各 5 次取中位):串行 稠密 398ms + 关键字 399ms
+    # = 797ms → 并行墙钟 **400ms**。省下的正好是"较快那一路"的时间,所以它随当次的一致性等待
+    # 落在 200~400ms(= 一次真问答墙钟的 10~20%),而且一个口径都不用动:
+    # 两路照样先汇齐、再融合(融合要的正是"两路都在手上")。
+    #
+    # 谁进子线程:关键字那一路。因为它可能触发一次 BM25 重建(``load_all`` + 分词 ≈ 1.5s,
+    # 纯 CPU 且按片持有 GIL),而稠密那一路绝大部分时间在等 Milvus 的网络往返(放 GIL)——
+    # 这样"CPU 那段"与"等待那段"是重叠的,不是抢的。
+    #
+    # **两路共用同一个 MilvusVectorStore**(``deps`` 里 `_vector_store()` 是 `lru_cache`),
+    # 也就是同一个 pymilvus 客户端被两个线程同时用 —— 上面那次 A/B 逐条比对过结果,
+    # 5 轮并发没有异常(并行化真正的隐含前提是这条,不是"代码看起来能跑")。
+    #
+    # 代价说清楚:每个在跑的检索多占**一条原生线程**(不是 anyio 池里的,池子的上限不受影响),
+    # 上界 = 同时在跑的检索数。只有一路在跑时**不建线程**(见下面的 else),那条路上的
+    # 行为与并行之前逐字一样。
+    if query_vector is not None and keyword_index is not None and options.bm25_weight > 0:
+        leg = _Leg()
+        worker = threading.Thread(
+            target=_recall_keyword,
+            args=(leg, keyword_index, query),
+            kwargs={"k": ask, "source": options.source},
+            name="rag-keyword-recall",
+            # 守护线程:它只是这一次检索的一部分,绝不该拖住进程退出
+            daemon=True,
         )
+        worker.start()
+        started = time.perf_counter()
+        failure: BaseException | None = None
+        try:
+            rankings[VECTOR_ROUTE] = store.search(
+                query_vector, k=ask, source=options.source
+            )
+        except BaseException as exc:  # noqa: BLE001 —— 先收线再重抛,见下面的 join
+            failure = exc
+        finally:
+            vector_ms = _elapsed_ms(started)
+            # 本线程这一路炸了也要先把子线程收回来:留一条野线程继续跑,它的结果会晚一步
+            # 落在**下一次**请求的账旁边(而且下一次请求可能已经在用同一份索引了)
+            worker.join()
+        if failure is not None and leg.error is not None:
+            # 两路都炸:只能抛一个。另一个必须留痕 —— 静默丢掉的那个迟早变成"偶发少召回"
+            _logger.warning(
+                "两路召回都抛了异常;关键字那一路的会被丢掉:"
+                f"{type(leg.error).__name__}: {leg.error}"
+            )
+        if failure is not None:
+            raise failure
+        if leg.error is not None:
+            raise leg.error
+        rankings[KEYWORD_ROUTE] = leg.hits
+        keyword_ms = leg.ms
+    else:
+        if query_vector is not None:
+            started = time.perf_counter()
+            rankings[VECTOR_ROUTE] = store.search(
+                query_vector, k=ask, source=options.source
+            )
+            vector_ms = _elapsed_ms(started)
+        if keyword_index is not None and options.bm25_weight > 0:
+            started = time.perf_counter()
+            rankings[KEYWORD_ROUTE] = keyword_index.search(query, k=ask, source=options.source)
+            keyword_ms = _elapsed_ms(started)
+
+    # 分段值由**各路自己报**(账户口径见 ``StreamTiming.span``):并行时相邻打点之差
+    # 量不出谁花了多久。下面两条打点仍在召回段结束时落下,只负责让融合那几段的差值接得上 ——
+    # 融合的起点因此是"两路都到手"那一刻,而不是先结束的那一路。
+    if vector_ms is not None:
+        span("vector", vector_ms)
+        mark("vector")
+    if keyword_ms is not None:
+        span("bm25", keyword_ms)
     mark("bm25")
     if denied:
         rankings = {
@@ -316,9 +439,13 @@ def retrieve(
 
     这是**单句检索**的入口。开了查询改写之后,真正被调的是 ``retrieve_many``
     (它可能带回来好几句);``retrieve_many([q])`` 与 ``retrieve(q)`` 逐字等价。
+
+    ``vector`` / ``bm25`` 那两格走 ``span``(各路自己报自己的时长)而不是打点之差 ——
+    这两路是**并行**跑的,见 ``_gather``。
     """
     options = options or RetrievalOptions()
     mark = timing.mark if timing is not None else _noop
+    span = timing.span if timing is not None else _noop_span
     citations = _gather(
         query,
         embedder=embedder,
@@ -326,6 +453,7 @@ def retrieve(
         keyword_index=keyword_index,
         options=options,
         mark=mark,
+        span=span,
     )
     return _finish(query, citations, reranker=reranker, options=options, mark=mark)
 
@@ -361,9 +489,10 @@ def retrieve_many(
     **代价说清楚**:没装重排器时最终顺序就是"各句分数直接比大小",那是近似的。
     日志里记了这次是几句召回,排查时对得上。
 
-    **六段子打点仍只记第一句**(``mark`` 只认第一次到达):所以 N>1 时它们不再与
-    ``retrieve_ms`` 相加相等。这是刻意的 —— "第一句花在哪"比"N 句的平均"更能解释问题,
-    而"这次是 N 句"在日志里有。
+    **六段子打点仍只记第一句**(``mark`` 只认第一次到达,``span`` 同理):所以 N>1 时它们
+    不再与 ``retrieve_ms`` 相加相等 —— 两路召回并行之后,那两格本来就是"各自花了多久",
+    N>1 时也只是各自取第一句的那一份。这是刻意的 —— "第一句花在哪"比"N 句的平均"更能
+    解释问题,而"这次是 N 句"在日志里有。
     """
     cleaned = [one for one in (queries or ()) if one and one.strip()]
     if not cleaned:
@@ -372,6 +501,7 @@ def retrieve_many(
         return ()
     options = options or RetrievalOptions()
     mark = timing.mark if timing is not None else _noop
+    span = timing.span if timing is not None else _noop_span
 
     best: dict[str, Citation] = {}
     for one in cleaned:
@@ -382,6 +512,7 @@ def retrieve_many(
             keyword_index=keyword_index,
             options=options,
             mark=mark,
+            span=span,
         ):
             current = best.get(citation.chunk.chunk_id)
             if current is None:
@@ -427,12 +558,18 @@ def stream_rag(
     history: Sequence[ConversationTurn] = (),
     thinking: str | None = None,
     rewriter: QueryRewriter | None = None,
+    timing: StreamTiming | None = None,
 ) -> Iterator[QaEvent]:
     """输入/输出同 ``_rag_frames``,额外做一件事:**计时并记一条 latency 日志**。
 
     TTFT / 吐字速率只有在「边界」上才看得到 —— 管道自己不知道「什么时候交出去」。
     这一层只观察:帧的内容、顺序、条数一个字节都不改(验收拿未包装的流逐帧比对过)。
     账本字段与口径见 ``observability/latency.py``。
+
+    ``timing`` 给了就**用别人的账本**:合流入口(``stream_question``)是"一次请求"的那一层,
+    它把自己的账本交下来,检索/生成的打点记在同一行上 —— 一次请求只落一行账。
+    这时这里**不再包 ``timed()``**(再包一层会把每个 token 数两遍,而且 ``emit`` 也不是
+    这一层该做的事)。不给就自己开一条(直调知识库通道的调用方,例如 ``rag`` 命令)。
 
     ``thinking`` 是**给日志用的静态标签**(配置里的档位,组合根从 config 读出来交进来):
     用例层不认识 config,账本更不认识 —— 账本只负责渲染。默认 None → 账里是 ``-``,
@@ -442,9 +579,8 @@ def stream_rag(
     被用到(FAQ 命中时压根不会走到 ``stream_rag``),所以「FAQ 未命中 → 改写 →
     向量检索」这个顺序是**结构上**成立的,不靠调用方记得先调改写。
     """
-    timing = StreamTiming(label="rag", channel="rag", thinking=thinking)
-    yield from timed(
-        _rag_frames(
+    if timing is not None:
+        yield from _rag_frames(
             query,
             embedder=embedder,
             store=store,
@@ -455,8 +591,23 @@ def stream_rag(
             history=history,
             timing=timing,
             rewriter=rewriter,
+        )
+        return
+    own = StreamTiming(label="rag", channel="rag", thinking=thinking)
+    yield from timed(
+        _rag_frames(
+            query,
+            embedder=embedder,
+            store=store,
+            llm=llm,
+            keyword_index=keyword_index,
+            reranker=reranker,
+            options=options,
+            history=history,
+            timing=own,
+            rewriter=rewriter,
         ),
-        timing,
+        own,
     )
 
 

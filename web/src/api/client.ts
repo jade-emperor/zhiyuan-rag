@@ -5,8 +5,8 @@
  * 默认值取本页 origin(后端托管时天然正确),也可以被用户改掉并记住(桌面壳就靠这个:
  * 壳里只有一份静态产物,连哪台后端由使用者填)。
  *
- * 令牌放 localStorage:**这是 M7.1 的选择,不是终局** —— XSS 能把令牌读走。
- * 更严的做法(内存 + httpOnly cookie 换票)要动后端,记在 docs/frontend.md §5。
+ * 令牌放 localStorage:XSS 能把令牌读走。更严的做法(内存 + httpOnly cookie 换票)
+ * 要动后端 —— 目前不做。
  */
 
 const BACKEND_KEY = 'project-rag.backend'
@@ -87,7 +87,7 @@ export function setStoredUsername(value: string | null): void {
 /**
  * 从地址上认一次 `?backend=…`,然后**把它从地址栏抹掉**。
  *
- * 给谁用:桌面壳(M7.4)打开的是**本地文件**,`location.origin` 是 `null`,
+ * 给谁用:桌面壳打开的是**本地文件**,`location.origin` 是 `null`,
  * 没有这一手用户第一次必须手输后端地址;有了它,壳只要把地址拼在 URL 上就行。
  * 抹掉是因为地址不该留在能被人截屏/顺手复制的地方(令牌同理,所以令牌从不进 URL)。
  */

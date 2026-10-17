@@ -146,8 +146,17 @@ CASES: tuple[Case, ...] = (
 )
 
 
-def run(needle: str) -> tuple[bool, str]:
-    """输入:期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。输出:(是否 FAIL, 那一行)。"""
+# 目标检查因为「前置数据不在本地」而 SKIP 时的判据。这些前置文件**不随仓库发布**
+# (扩充 FAQ 池等),所以在这台机器上量不出那一条 —— 那就如实记成"跳过",不能算成
+# "检查是摆设"(那是把"没测"说成"测了没用",与 reverse_p0_4 同一条规矩)。
+_MISSING_PREREQ = ("不在本地", "RAG_EXTRA_FAQ_POOL")
+
+
+def run(needle: str) -> tuple[bool | None, str]:
+    """输入:期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。输出:(是否 FAIL, 那一行)。
+
+    ``None`` = 目标检查**跳过**了(前置数据不在本地),既不算红也不算绿。
+    """
     proc = subprocess.run(
         [sys.executable, f"scripts/acceptance/{SCRIPT}"],
         cwd=str(ROOT),
@@ -161,6 +170,8 @@ def run(needle: str) -> tuple[bool, str]:
     hits = [line for line in body if needle in line]
     if len(hits) != 1:
         return False, f"⚠️ 片段 {needle!r} 命中了 {len(hits)} 行:{hits}"
+    if "[SKIP]" in hits[0] and any(word in hits[0] for word in _MISSING_PREREQ):
+        return None, hits[0]
     return "[FAIL]" in hits[0], hits[0]
 
 
@@ -169,6 +180,7 @@ def main() -> int:
     if stale:
         print(f"⚠️  上次被打断时留下的坏源码,已自动还原:{stale}\n")
     bad = 0
+    skipped: list[str] = []
     for case in CASES:
         original = case.target.read_text(encoding="utf-8")
         hits = original.count(case.old)
@@ -180,11 +192,18 @@ def main() -> int:
             continue
         with patched_source(case.target, case.old, case.new):
             red, line = run(case.needle)
-        if not red:
+        mark = "○ 跳过(前置数据不在本地)" if red is None else ("✔ 红了(检查有效)" if red else "✘ 还是绿的(检查是摆设)")
+        if red is False:
             bad += 1
-        print(f"{'✔ 红了(检查有效)' if red else '✘ 还是绿的(检查是摆设)'}  {case.title}\n      {line}")
+        elif red is None:
+            skipped.append(case.title)
+        print(f"{mark}  {case.title}\n      {line}")
     print("─" * 68)
-    print("全部反向测试都红了" if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    ran = len(CASES) - len(skipped)
+    summary = f"{ran - bad} 条全红" if ran else "一条都没跑成"
+    if skipped:
+        summary += f";{len(skipped)} 条跳过(前置数据不随仓库发布,本机要跑就 export RAG_EXTRA_FAQ_POOL=<扩充 CSV 的路径>)"
+    print(summary if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码({summary})")
     return 1 if bad else 0
 
 

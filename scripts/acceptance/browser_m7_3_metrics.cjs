@@ -126,6 +126,22 @@ async function main() {
   expect('切窗口后条数跟着变', requests30.value === '25', requests30.value)
   expect('冷启动条数跟着变', requests30.detail.includes('冷启动 1'), requests30.detail)
 
+  // 这一窗里有 24 条热 + 1 条冷启动,而那条冷启动**也是拒答**:拒答率的分母必须仍是
+  // 热行的 24(2/24),不是 25 —— 冷启动里用户等的是模型加载,混进来这一版的成绩
+  // 就会随"这周重启过几次"漂。
+  const refused30 = await card('拒答率')
+  expect(
+    '冷启动那次拒答没被算进拒答率(分母仍是热行 24)',
+    refused30.detail.includes('2/24'),
+    refused30.detail,
+  )
+  const coldNote = await page.locator('.cold-note').innerText()
+  expect(
+    '冷启动自己那一套数单独报出来',
+    coldNote.includes('只数热行') && /拒答\s*1/.test(coldNote),
+    coldNote.replace(/\n/g, ' '),
+  )
+
   const slowHead = page.locator('section', { hasText: '最慢的几条' }).locator('tbody tr').first()
   const slowCells = await slowHead.locator('td').allInnerTexts()
   expect(
@@ -137,9 +153,7 @@ async function main() {
 
   // ── 消耗区(P0-7):三档 × 两时段,金额真的算出来了 ──────────────────────
   const costSection = page.locator('section', { hasText: '消耗' }).first()
-  // 页面上有几处 `**…**` 是**直接写进模板的**(与这一页原有的文案风格一致,不是 markdown
-  // 渲染),所以断言前把它去掉 —— 断言要盯着"数对不对",不是盯着那几个星号。
-  const costText = (await costSection.innerText()).replace(/\n/g, ' ').replace(/\*\*/g, '')
+  const costText = (await costSection.innerText()).replace(/\n/g, ' ')
   // **此刻窗口是 30d**(上面刚切过):假账本在 30d 里是 25 行,其中 24 条热 + 1 条冷启动,
   // 冷启动那条也是 rag 行、也带 token —— 所以这里数到 25,不是 24。
   expect(

@@ -7,8 +7,10 @@
  *   2. 建一个新组 → 出现在列表里(后端真收到了 PUT/POST);
  *   3. 知识库页那张**受限文档**卡片带「限定可见」标记 → 点「权限」→ 弹层里「销售」是勾上的
  *      → 清空名单保存 → 标记消失、弹层说「人人可见」;
- *   4. **运维登录** → 页签只有「报表」;手输 `#/knowledge` 会被守卫送回报表页;
- *   5. 运维的报表页能读(200),而知识库清单对他是 403(界面藏了,后端也拦着);
+ *   4. **运维登录** → 页签是「对话 + 报表」(他要能问答);手输 `#/knowledge` 会被守卫送回;
+ *   5. 运维能读知识库清单与报表(200),而**管理动作**(建号 / 删文档 / 授权)是 403;
+ *   6. **组侧授权**:「销售」组能看哪些文档(三态)、勾上「看不到」的那份并保存
+ *      (这一段排在文档侧授权之前 —— 那一段会把名单清空);
  *   6. 0 条 JS 报错 / 0 个失败请求。
  *
  * 跑法(准备见 docs/frontend.md §7)::
@@ -44,7 +46,7 @@ function expect(name, condition, detail) {
 
 async function login(page, username, password) {
   // 等的是**顶部导航**(登录成功的标志),而不是某一页的内容 ——
-  // 运维登录后落在「报表」页,等 `Configuration`(对话页的参数面板)会等不到。
+  // 不同角色落在不同页(运维现在落在「对话」),等某一页的控件会等不到。
   await page.goto(BASE, { waitUntil: 'domcontentloaded' })
   await page.getByLabel('用户名').fill(username)
   await page.getByLabel('密码').fill(password)
@@ -96,7 +98,7 @@ async function main() {
     JSON.stringify(groupNames.map((t) => t.replace(/\n/g, ' '))),
   )
   const opsRow = await page.locator('tbody tr', { hasText: 'ops' }).first().innerText()
-  expect('运维那一行标着「运维(只看报表)」', opsRow.includes('运维'), opsRow.replace(/\n/g, ' | '))
+  expect('运维那一行标着「运维(问答 + 报表)」', opsRow.includes('运维'), opsRow.replace(/\n/g, ' | '))
   await page.screenshot({ path: `${SHOT}_1_accounts.png` })
 
   // ── 2. 建一个组(后端真的收到了)──────────────────────────────────────
@@ -118,6 +120,50 @@ async function main() {
     afterCreate.some((cell) => cell.includes(newGroup)),
     JSON.stringify(afterCreate.map((t) => t.replace(/\n/g, ' '))),
   )
+
+  // ── 3. 组侧授权:这个组能看哪些文档(作者要的"按组定制") ──────────────────
+  // **必须排在文档侧那段之前**:那一段会清空「内部报价单」的名单(它是有意要验"回到人人可见"),
+  // 一清就没有"已授权本组"这个状态可看了
+  await page.getByRole('link', { name: '账号与权限' }).click()
+  await page.waitForSelector('tbody tr', { timeout: 15000 })
+  // 用「有没有那个按钮」定位分组行:账号表的"所属组"列里也会出现「销售」,
+  // 只按文本找会点到账号行上(第一次就是这么超时的)
+  const groupRow = page
+    .locator('tbody tr', { has: page.getByRole('button', { name: '文档权限' }) })
+    .filter({ hasText: '销售' })
+    .first()
+  await groupRow.getByRole('button', { name: '文档权限' }).click()
+  const groupDialog = page.locator('.dialog[aria-label="组的文档权限"]')
+  await groupDialog.waitFor({ timeout: 15000 })
+  // 弹层挂上 ≠ 数据到了:行是拿到三态之后才渲染的,不等它读到的是一份空列表
+  await groupDialog.locator('.row').first().waitFor({ timeout: 15000 })
+  const groupRows = await groupDialog.locator('.row').allInnerTexts()
+  const joined = groupRows.map((text) => text.replace(/\n/g, ' ')).join(' || ')
+  expect(
+    '组侧授权页三态齐全(已授权 / 看不到 / 人人可见)',
+    joined.includes('已授权本组') && joined.includes('看不到') && joined.includes('人人可见'),
+    joined.slice(0, 240),
+  )
+  expect(
+    '看不到的那份点了「取消后回到人人可见」的提醒',
+    joined.includes('取消后这份会回到人人可见'),
+    joined.slice(0, 240),
+  )
+  // 把「员工手册.md」(现在看不到)勾上 → 保存 → 变成已授权本组
+  const handBook = groupDialog.locator('.row', { hasText: '员工手册.md' }).first()
+  await handBook.locator('input[type=checkbox]').check()
+  await groupDialog.getByRole('button', { name: '保存（整份名单）' }).click()
+  await page.waitForTimeout(600)
+  const afterGrant = (await groupDialog.locator('.row', { hasText: '员工手册.md' }).first().innerText()).replace(/\n/g, ' ')
+  expect('勾上 + 保存之后那份变成了「已授权本组」', afterGrant.includes('已授权本组'), afterGrant)
+  const notice = await groupDialog.locator('.alert.info').first().innerText()
+  expect('保存后如实回报改了什么', notice.includes('新授权 1 份'), notice)
+  await page.screenshot({ path: `${SHOT}_4_group_documents.png` })
+  await groupDialog.getByRole('button', { name: '关闭' }).click()
+  await page.waitForTimeout(400)
+  // 回知识库:下一段(文档侧授权弹层)在这一页上
+  await page.getByRole('link', { name: '知识库' }).click()
+  await page.waitForSelector('.doc', { timeout: 15000 })
 
   // ── 3. 文档可见范围:卡片标记 → 权限弹层 → 清空名单 ────────────────────
   await page.getByRole('link', { name: '知识库' }).click()
@@ -162,15 +208,15 @@ async function main() {
   const cardAfter = await page.locator('.doc', { hasText: '内部报价单.md' }).first().innerText()
   expect('卡片上的「限定可见」跟着消失', !cardAfter.includes('限定可见'), cardAfter.replace(/\n/g, ' | ').slice(0, 120))
 
-  // ── 4. 运维:只看到报表页;手输知识库 URL 会被送回 ──────────────────────
+  // ── 4. 运维:能问答 + 能看报表;管理动作被拦(作者要求) ──────────────────
   const opsPage = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   const opsErrors = []
   opsPage.on('pageerror', (error) => opsErrors.push(error.message))
   await login(opsPage, 'ops', 'ops-pass')
   const opsTabs = await opsPage.locator('header .tab').allInnerTexts()
   expect(
-    '运维只看到一个页签(报表)',
-    opsTabs.length === 1 && opsTabs[0] === '报表',
+    '运维看到「对话 + 报表」两个页签(不再只有报表)',
+    opsTabs.join(',') === '对话,报表',
     JSON.stringify(opsTabs),
   )
   const opsRole = await opsPage.locator('header .who').innerText()
@@ -179,23 +225,36 @@ async function main() {
   await opsPage.goto(`${BASE}#/knowledge`, { waitUntil: 'domcontentloaded' })
   await opsPage.waitForTimeout(800)
   expect(
-    '手输 #/knowledge 落到报表页(不是空白页)',
-    opsPage.url().includes('#/reports'),
+    '手输 #/knowledge 被守卫送回去(运维管不了文档)',
+    /#\/(chat|reports)/.test(opsPage.url()),
     opsPage.url(),
   )
-  const opsReport = await opsPage.locator('h1').first().innerText()
-  expect('落地页是报表', opsReport.includes('报表'), opsReport)
 
-  // 运维的报表能读(页面渲染出请求数),而清单接口对他是 403
+  // 运维的报表能读(页面渲染出请求数);而"能读清单"不等于"能管"
+  await opsPage.goto(`${BASE}#/reports`, { waitUntil: 'domcontentloaded' })
   await opsPage.waitForSelector('.metric', { timeout: 15000 })
-  const docsStatus = await opsPage.evaluate(async (base) => {
+  const opsCalls = await opsPage.evaluate(async (base) => {
     const token = window.localStorage.getItem('project-rag.token')
-    const response = await fetch(`${base}api/v1/documents`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    return response.status
+    const withToken = { Authorization: `Bearer ${token}` }
+    const get = async (path) => (await fetch(`${base}api/v1${path}`, { headers: withToken })).status
+    const del = async (path) =>
+      (await fetch(`${base}api/v1${path}`, { method: 'DELETE', headers: withToken })).status
+    return {
+      documents: await get('/documents'),
+      users: await get('/admin/users'),
+      remove: await del('/documents/内部报价单.md'),
+    }
   }, BASE)
-  expect('运维读知识库清单被后端 403(界面藏了,后端也拦着)', docsStatus === 403, `status=${docsStatus}`)
+  expect(
+    '运维能读知识库清单(他要能问答,先得知道库里有啥)',
+    opsCalls.documents === 200,
+    `status=${opsCalls.documents}`,
+  )
+  expect(
+    '运维的管理动作被拦(建号 / 删文档都要管理员)',
+    opsCalls.users === 403 && opsCalls.remove === 403,
+    JSON.stringify(opsCalls),
+  )
   await opsPage.screenshot({ path: `${SHOT}_3_ops_reports.png` })
   expect('运维那一页没有 JS 报错', opsErrors.length === 0, opsErrors.slice(0, 2).join(' | ') || '无')
 

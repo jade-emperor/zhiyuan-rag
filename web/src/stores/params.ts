@@ -26,7 +26,7 @@ export interface RetrievalParams {
   k: number
   max_context: number
   rrf_k: number
-  /** 知识库(来源)过滤。M7.1 **单选**;多选要改后端端口签名,见 docs/frontend.md §5。 */
+  /** 知识库(来源)过滤。**单选**。 */
   source_filter: string | null
 }
 

@@ -1,11 +1,12 @@
 # CI：三件事，按"需要什么外部条件"分层
 #
-#   ① `contracts`  —— **零容器、零网络、零模型**：pyright + 22 套契约 + 21 份反向 runner。
+#   ① `contracts`  —— **零容器、零网络、零模型**：pyright + 22 套契约 + 23 份反向 runner。
 #                     分组依据是实测（scripts/acceptance/run_all.py 的 docstring 记了探测方法），
 #                     缺模型/语料的检查会 SKIP 并点名 owner，不是 FAIL。这一层是 required。
 #   ② `frontend`   —— 前端：typecheck + build + **断言产物与源码同源**（构建后 git diff 必须为空）。
 #   ③ `services`   —— 夜间/手动：起真 Milvus/MySQL/Redis 后再跑那 4 套依赖真中间件的契约。
-#                     需要真数据的 3 套（check_m2_faq / check_m5_qa / check_m5_stream）**永不进 CI**
+#                     需要真数据的 4 套（check_m2_faq / check_m5_qa / check_m5_stream /
+#                     check_m4_rewrite_ab）**永不进 CI**
 #                     —— 语料有版权、真 provider 调用花钱，见 run_all.py 的 LOCAL_ONLY。
 #
 # 平台说明：主仓在 Gitee，这个文件是 GitHub Actions 的格式。两种用法：① 在 GitHub 上镜像一份跑；
@@ -52,7 +53,7 @@ jobs:
       - name: 类型检查
         run: uv run pyright src scripts
 
-      - name: 验收（ci 集合：22 套契约 + 21 份反向 runner）
+      - name: 验收（ci 集合：22 套契约 + 23 份反向 runner）
         run: uv run python scripts/acceptance/run_all.py --set ci
 
   frontend:

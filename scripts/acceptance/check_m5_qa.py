@@ -293,7 +293,7 @@ class _World:
         self.knowledge_history: tuple = ()
         self.factory_calls: dict[str, int] = {}
 
-    def knowledge(self, history=()):
+    def knowledge(self, history=(), timing=None):
         """假的知识库通道：记下「被调用几次」和「收到什么历史」，然后按帧协议吐一帧流。
 
         模仿真通道的交付方式(sources + token + done),而不是直接扔一个 RagAnswer ——
@@ -954,7 +954,11 @@ def _() -> str:
             f"只是拿到那个闭包就构造了 {world.factory_calls} —— "
             "「造得晚」正是这个闭包存在的唯一理由"
         )
-    events = list(call(()))
+    # 调用时要把这一轮的账本交进去（合流入口就是这么调的）；假的账本够用 —— 这里验的是
+    # 「构造推迟到调用那一刻」，不是账本本身
+    from project_rag.observability import StreamTiming
+
+    events = list(call((), StreamTiming(label="qa")))
     if not events or events[-1].kind != "done":
         raise AssertionError(f"闭包应吐帧并以 done 收尾（帧协议），实际 {events!r}")
     used = _kb_factories_used(world)
@@ -1188,7 +1192,7 @@ def _() -> str:
         query,
         faq_store=world.faq_store,
         matcher=world.matcher,
-        knowledge=lambda history: stream_rag(
+        knowledge=lambda history, timing: stream_rag(
             query,
             embedder=BGEM3Embedder(settings.embedding),
             store=MilvusVectorStore(settings.milvus),
@@ -1197,6 +1201,7 @@ def _() -> str:
             reranker=None,
             options=_options(k=5, max_context=2, source=None),
             history=history,
+            timing=timing,
         ),
         faq_threshold=DEFAULT_THRESHOLD,
     )

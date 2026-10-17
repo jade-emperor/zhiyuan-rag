@@ -1,5 +1,5 @@
 /**
- * 可观测看板的取数(M7.3)。
+ * 可观测看板的取数。
  *
  * 三条口径,与后端 `application/metrics.py` 的 docstring 一字对应:
  *
@@ -25,7 +25,7 @@ const state = reactive({
   top: 10,
   data: null as MetricsOut | null,
   /**
-   * 消耗那一半(P0-7)。**与延迟分开两个字段、一起取**:两半读的是同一批账本行,
+   * 消耗那一半。**与延迟分开两个字段、一起取**:两半读的是同一批账本行,
    * 合成一个对象会让"这一半拿到了、那一半没拿到"这种事看不出来。
    */
   cost: null as CostOut | null,

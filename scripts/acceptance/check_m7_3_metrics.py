@@ -170,6 +170,30 @@ def _() -> str:
     return "— / 分子分母 / 冷启动标记 / 含冷启动说明 四处都在"
 
 
+@check("看板按冷热分层读数：比率的分母是**热行**，冷启动单独一行报出来")
+def _() -> str:
+    view = _read("views/MetricsView.vue")
+    code = _strip_comments(view)
+    # 六格 KPI 的读数必须来自 warm 那一层 —— 拿 data.rows(总数)当分母就是把冷启动
+    # 算进了拒答率:那几次用户等的是模型加载,混进来成绩会随"这周重启过几次"漂
+    for field in ("refused", "truncated", "aborted", "faq_hits"):
+        assert f"data.warm.{field}" in code, f"{field} 没从热行那一层读"
+    assert "data.warm.rag_answers" in code, "知识库回答没从热行那一层读"
+    # 每一个比率的两端都要落在热行那一套里:拿 data.rows(总数)当分母就是
+    # 把冷启动算进了拒答率 —— 那几次用户等的是模型加载
+    for args in re.findall(r"(?:rate|share)\((data\.[^)]*)\)", code):
+        assert "warm" in args, f"有比率的分子/分母不是热行那一套:{args}"
+        assert "data.rows" not in args, (
+            f"有比率拿未分层的总行数当分母(冷启动会被算进去):{args}"
+        )
+    # 冷启动那一套数也要看得见:藏起来("它们不算")和混进去("一起算")一样糟
+    assert "data.cold_rows" in code and "data.cold.refused" in code, (
+        "冷启动自己的那套数没有画出来(拒答/截断/中断/通道都要能看见)"
+    )
+    assert "只数热行" in view, "没有一句话说明上面六项只数热行"
+    return "六格 KPI 读 warm;冷启动单独一行;分母不是总行数"
+
+
 @check("窗口选项来自 capabilities；空窗口有话术；分段保持后端顺序")
 def _() -> str:
     view = _read("views/MetricsView.vue")
@@ -295,12 +319,17 @@ def _() -> str:
     ]
     body = client.get("/api/v1/reports/metrics?window=24h&top=3").json()
     assert body["rows"] == 5, body
-    assert (body["refused"], body["truncated"], body["aborted"]) == (1, 1, 1), body
-    assert body["faq_hits"] == 1 and body["rag_answers"] == 4, body
     assert body["cold_rows"] == 1 and body["warm_rows"] == 4, body
+    # 行为口径**分层给**:c 是那条冷启动(它同时是 aborted),它不许混进热行那一套数里
+    assert (body["warm"]["refused"], body["warm"]["truncated"]) == (1, 1), body["warm"]
+    assert body["warm"]["aborted"] == 0, body["warm"]
+    assert body["cold"]["aborted"] == 1 and body["cold"]["rows"] == 1, body["cold"]
+    assert body["warm"]["rag_answers"] == 3 and body["cold"]["rag_answers"] == 1, body
+    assert body["warm"]["faq_hits"] == 1 and body["cold"]["faq_hits"] == 0, body
+    assert (body["warm"]["rows"] + body["cold"]["rows"]) == body["rows"], body
     assert len(body["slowest"]) == 3, "top=3 应该只回 3 条最慢"
     assert body["slowest"][0]["cold"] is True, "最慢榜要含冷启动,而且 cold 标记要透出来"
-    return "rows/refused/truncated/aborted/faq_hits/cold_rows 齐;top 生效;最慢榜带 cold"
+    return "rows/冷热两套行为计数齐(冷启动不计入拒答与通道);top 生效;最慢榜带 cold"
 
 
 # ══ 二、前端静态 ═════════════════════════════════════════════════════════════
@@ -311,7 +340,7 @@ def _() -> str:
     assert "metrics" in _read("api/endpoints.ts"), "endpoints.ts 没有报表函数"
     for call in ("loadMetrics", "setWindow"):
         assert call in view, f"视图没有调 {call}"
-    for field in ("p95", "p99", "cold_rows", "refused", "aborted", "slowest"):
+    for field in ("p95", "p99", "cold_rows", "warm", "cold", "slowest"):
         assert field in view, f"看板没有画 {field}(报表里最该看的几项)"
     return "接上报表接口;p95/p99/冷热/拒答/中断/最慢榜都画了"
 

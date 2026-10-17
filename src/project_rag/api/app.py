@@ -22,11 +22,11 @@ pymilvus 的 async 客户端),把 ``_call`` 里的 ``run_in_threadpool`` 换成�
 1. **``POST /api/v1/query`` 直接给完整答案**,不要求前端换 WebSocket 才拿得到结果 ——
    我们有同步用例,强制换协议是更差的契约;要逐字出字才走 WS。
 2. **过滤走 ``RetrievalOptions.source``,不引 ``VALID_SOURCES`` 白名单**:白名单该从哪来
-   还没定论(见 ``deferred.md`` §1.3 第 22 条);而 ``/api/v1/sources`` 直接从向量库读**真实**
+   还没定论(目前不做);而 ``/api/v1/sources`` 直接从向量库读**真实**
    来源,比在配置里写死一份更可信。
 3. **问候拦截放在 ``application/greeting.py``**:「什么算寒暄」是业务规则,HTTP 与 WS
    共用一份,不写在接口层。
-4. **业务接口一律在 ``/api/v1`` 下** —— 从 ``/api/*`` 统一迁过来(P0-3b-5-②),
+4. **业务接口一律在 ``/api/v1`` 下** —— 从 ``/api/*`` 统一迁了过来,
    **没有留别名**:两套路径就是两个真值来源,契约要写两遍,而前端只要一个前缀。
    留在根上的只有 ``/health``(探活)、``/``(跳前端 app)与 ``/static``(静态资源,
    前端产物在 ``/static/app/``)—— 它们不是业务接口,也不该跟着 API 版本走。这条有契约钉着(``check_m5_api`` 的「命名空间」那条):漏一个
@@ -70,6 +70,7 @@ from starlette.requests import HTTPConnection
 
 from project_rag.api.auth import Authenticator
 from project_rag.api.schemas import (
+    BehaviorOut,
     K_MAX,
     TOP_MAX,
     MAX_CONTEXT_MAX,
@@ -93,6 +94,8 @@ from project_rag.api.schemas import (
     DocumentsOut,
     DocumentSummaryOut,
     GroupOut,
+    GroupDocumentOut,
+    GroupDocumentsOut,
     GroupsOut,
     HealthOut,
     HistoryOut,
@@ -117,6 +120,7 @@ from project_rag.api.schemas import (
     SessionSummaryOut,
     SessionsOut,
     SetDocumentAclRequest,
+    SetGroupDocumentsRequest,
     SetMembersRequest,
     SlowRowOut,
     SourcesOut,
@@ -124,7 +128,15 @@ from project_rag.api.schemas import (
     UsersOut,
 )
 from project_rag.application import Session, answer_question, stream_question
-from project_rag.application.access import UNRESTRICTED, AccessContext, context_of
+from project_rag.application.access import (
+    UNRESTRICTED,
+    AccessContext,
+    GroupDocumentRow,
+    GroupGrantPlan,
+    context_of,
+    group_document_rows,
+    plan_group_documents,
+)
 from project_rag.application.accounts import (
     check_delete_account,
     check_group_name,
@@ -139,22 +151,25 @@ from project_rag.cli.deps import (
     attach_ledger,
     build_real_deps,
     ensure_access_schema,
+    ensure_auth_schema,
+    ensure_documents_schema,
     knowledge_callable,
 )
 from project_rag.config import PROJECT_ROOT, get_settings, project_path
 from project_rag.domain import (
     FUSION_MODES,
     RETRIEVAL_MODES,
-    Citation,
+    CitationSnapshot,
     QaAnswer,
     QaEvent,
     RetrievalMode,
     RetrievalOptions,
+    snapshot_citations,
 )
 from project_rag.domain.access import DocumentAcl, Group
 from project_rag.domain.auth import USER_ROLES, User
 from project_rag.ports import RateLimiter
-from project_rag.observability import get_logger
+from project_rag.observability import StreamTiming, get_logger
 
 _logger = get_logger("api.app")
 
@@ -264,7 +279,7 @@ def _metrics_capabilities() -> MetricsCapabilitiesOut:
     )
 
 
-# ── 限流(M7.4):计数在组合根给的实现里(默认 Redis,见 adapters/ratelimit_redis.py);
+# ── 限流:计数在组合根给的实现里(默认 Redis,见 adapters/ratelimit_redis.py);
 #    这一层只管**策略**:哪几档、按谁计数、超了回什么 ──────────────────────
 def _rate_limit_key(connection: HTTPConnection, user: User | None) -> str:
     """输入:连接(HTTP 或 WebSocket)+ 当前用户。行为:算出这一档按谁计数。输出:键。
@@ -301,7 +316,7 @@ _BUCKET_NAMES = {"query": "提问", "upload": "上传", "login": "登录尝试"}
 def _throttle_text(bucket: str, limit: int, retry_after: int, window_s: float) -> str:
     """输入:档位、上限、建议等待秒数、窗口。行为:拼一句**可执行**的话。输出:文本。
 
-    **必须带秒数**:只说"请求过于频繁"的话,用户只能靠反复重试去猜(法律 39 的同一条规矩)。
+    **必须带秒数**:只说"请求过于频繁"的话,用户只能靠反复重试去猜。
 
     **问答与另外两档的说法不一样**,因为场景不一样:问答是"我在跟你聊天,先缓一下"(那是
     兜底话术,200);登录与上传是要**说清这是被拦了**(429)。第一版三档共用问答那句,
@@ -338,7 +353,7 @@ def _enforce_rate_limit(
 
 # 前端 app 的 CSP。**脚本只许来自本站**:Vite 的产物全是外链脚本(没有内联),
 # 所以这一条不会误伤;而它挡住了"往页面里注入一段 script"这类 XSS ——
-# 令牌还在 localStorage 里(M7.4 的已知缺口,见 deferred),CSP 是那道兜底。
+# 令牌还在 localStorage 里(已知缺口),CSP 是那道兜底。
 # `connect-src *`:这个 app 的整个设计就是"填一个后端地址就能连",所以不能限死来源;
 # 想限死的人该收紧的是后端地址白名单,不是 CSP。
 _CSP = (
@@ -421,7 +436,7 @@ def _rerank_enabled(deps: Deps, request: QueryRequest) -> bool:
     """输入:依赖 + 请求。行为:这一次要不要装重排器。输出:布尔。
 
     显式要重排、而这个部署根本没配重排器时**当场 400** —— 不静默降级成"不重排":
-    用户勾了重排却拿到没重排的结果,那是看不见的谎(法律 32)。不给这个字段则按配置。
+    用户勾了重排却拿到没重排的结果,那是看不见的谎。不给这个字段则按配置。
     """
     if request.rerank is None:
         return get_settings().rag.rerank
@@ -434,23 +449,23 @@ def _rerank_enabled(deps: Deps, request: QueryRequest) -> bool:
     return request.rerank
 
 
-def _citations(citations: Iterable[Citation]) -> list[CitationOut]:
-    """输入:引用序列。行为:转成出参模型(预览用父块正文,模型真读到的那段)。输出:出参列表。
+def _citations(snapshots: Iterable[CitationSnapshot]) -> list[CitationOut]:
+    """输入:引用快照序列(``domain.snapshot_citations`` 拍出来的)。行为:转成出参模型。输出:出参列表。
 
-    ``page`` 从引用上取(它又问子块),None 就是"不知道" —— 这里不做任何兜底,
-    编一个页号比没有页号糟得多。
+    **截断与字段口径不在这里**:它们全在 ``domain.models.snapshot_citations`` ——
+    实时这一份与落库历史那一份必须长得一样,两处各写一遍迟早漂。
     """
     return [
         CitationOut(
-            index=citation.index,
-            source=citation.chunk.source,
-            doc_id=citation.chunk.doc_id,
-            preview=citation.chunk.context_text[:120],
-            score=citation.score,
-            rerank_score=citation.rerank_score,
-            page=citation.page,
+            index=item.index,
+            source=item.source,
+            doc_id=item.doc_id,
+            preview=item.preview,
+            score=item.score,
+            rerank_score=item.rerank_score,
+            page=item.page,
         )
-        for citation in citations
+        for item in snapshots
     ]
 
 
@@ -461,7 +476,7 @@ def _to_response(result: QaAnswer, session_id: str | None) -> QueryResponse:
         channel=result.channel,
         refused=result.refused,
         truncated=result.truncated,
-        citations=_citations(result.citations),
+        citations=_citations(snapshot_citations(result.citations)),
         faq_score=result.faq_match.score if result.faq_match is not None else None,
         session_id=session_id,
     )
@@ -476,7 +491,7 @@ def _frame(event: QaEvent, session_id: str | None) -> dict[str, Any]:
     if event.kind == "sources":
         return {
             "type": "sources",
-            "citations": [c.model_dump() for c in _citations(event.citations)],
+            "citations": [c.model_dump() for c in _citations(snapshot_citations(event.citations))],
         }
     if event.kind == "token":
         return {"type": "token", "text": event.text}
@@ -486,7 +501,7 @@ def _frame(event: QaEvent, session_id: str | None) -> dict[str, Any]:
         "channel": event.channel,
         "refused": event.refused,
         "truncated": event.truncated,
-        "citations": [c.model_dump() for c in _citations(event.citations)],
+        "citations": [c.model_dump() for c in _citations(snapshot_citations(event.citations))],
         "session_id": session_id,
     }
 
@@ -553,7 +568,14 @@ def _history(deps: Deps, session_id: str) -> HistoryOut:
     return HistoryOut(
         session_id=session_id,
         rounds=[
-            HistoryTurnOut(question=turn.question, answer=turn.answer) for turn in turns
+            HistoryTurnOut(
+                question=turn.question,
+                answer=turn.answer,
+                # 出处连答案一起回去:正文里的 [1] 没有卡片可点,等于没有出处
+                # (老账没有这一列 → 空清单,界面按"这一轮的引用没留下"处理)
+                citations=_citations(turn.citations),
+            )
+            for turn in turns
         ],
     )
 
@@ -575,7 +597,7 @@ def _greeting_response(reply: str, session_id: str | None) -> QueryResponse:
 
 # 同一时刻只跑一个入库任务:嵌入模型是 CPU 密集的,并发跑只会让两边都慢十倍,
 # 而且两份文档的块交错写库更难排查。**进程内锁**够用(单进程部署);
-# 多进程部署要换成 Redis 锁或独立 worker —— 记在 deferred。
+# 多进程部署要换成 Redis 锁或独立 worker —— 目前没做。
 _INGEST_LOCK = threading.Lock()
 
 
@@ -720,7 +742,7 @@ def _documents(deps: Deps, access: AccessContext) -> DocumentsOut:
     「集合清空了卡片还写已入库 677 块」「语料目录里新放的文件前端根本看不到」
     (作者报的那个 bug)。这里把三处摆到一起,``state`` 说的才是"现在到底怎么样"。
 
-    **被收窄且没授权给他的文档不出现在清单里**(P0-6):清单是"你能检索什么"的视图,
+    **被收窄且没授权给他的文档不出现在清单里**:清单是"你能检索什么"的视图,
     列出一份他既搜不到、点预览还会 403 的文档,只会让他以为系统坏了。
     每行的 ``restricted`` 仍然如实给出 —— 那是"这份是限定的,你在名单里"。
     """
@@ -786,9 +808,9 @@ def _document_preview(
 ) -> DocumentPreviewOut:
     """输入:依赖 + 文档 ID + 两个上限 + 可见范围。行为:查得到**而且他有权看**才给预览(折叠父块)。输出:预览。
 
-    **先查登记表**:向量库里可能有登记表没有的孤儿块(P0-3b 的对账正是抓这个)。
-    那种块照样能被检索到,但"这份文档"在管理页上不存在 —— 给 404 并**指一条能走的路**
-    (法律 39),而不是回一份没有主人的预览。
+    **先查登记表**:向量库里可能有登记表没有的孤儿块(对账正是抓这个)。
+    那种块照样能被检索到,但"这份文档"在管理页上不存在 —— 给 404 并**指一条能走的路**,
+    而不是回一份没有主人的预览。
 
     **看不见的文档一律 404(不是 403)**:403 等于告诉他"这份文档存在,只是不给你看" ——
     受限文档的**存在本身**也是信息。404 与"没这份文档"完全一样,这一点是刻意的。
@@ -871,9 +893,9 @@ def _metrics(deps: Deps, window: str, top: int) -> MetricsOut:
     (那是能在没有 MySQL 的机器上单测的纯函数)。这一层只做两件事:把窗口名换成起始时刻、
     把 dataclass 搬进 pydantic 模型。
 
-    **路径说明**:``/api/v1/admin/metrics`` —— 挪进 ``admin`` 并挂 ``require_admin``(P0-3b-5-②
-    统一迁移时一起做的)。延迟数据是**运营视角**的东西:谁都能读,对外就是信息泄露
-    (能看到流量高峰、最慢的请求、拒答率)。
+    **路径说明**:这条接口在 ``/api/v1/reports/metrics``(不是 ``/admin/metrics``)——
+    运维也要看报表,而让他去打一个 ``/admin/`` 开头的接口,读代码的人会以为权限配错了。
+    延迟数据是**运营视角**的东西:对外就是信息泄露(能看到流量高峰、最慢的请求、拒答率)。
     """
     from dataclasses import asdict
 
@@ -890,11 +912,9 @@ def _metrics(deps: Deps, window: str, top: int) -> MetricsOut:
         rows=summary.rows,
         cold_rows=summary.cold_rows,
         warm_rows=summary.warm_rows,
-        refused=summary.refused,
-        truncated=summary.truncated,
-        aborted=summary.aborted,
-        faq_hits=summary.faq_hits,
-        rag_answers=summary.rag_answers,
+        # 冷热各一套:BehaviorOut 的字段与 BehaviorCounts 一一对应,口径不在这一层
+        warm=BehaviorOut(**asdict(summary.warm)),
+        cold=BehaviorOut(**asdict(summary.cold)),
         segments=[SegmentOut(**asdict(seg)) for seg in summary.segments],
         slowest=[SlowRowOut(**asdict(item)) for item in summary.slowest],
     )
@@ -972,7 +992,7 @@ def _cost(deps: Deps, window: str) -> CostOut:
     )
 
 
-# ── 账号、分组与文档可见范围(P0-6):都在线程池里跑,判定全在 application/ ──────
+# ── 账号、分组与文档可见范围:都在线程池里跑,判定全在 application/ ────────────
 def _bad_request(exc: ValueError) -> HTTPException:
     """输入:用例层抛的 ``ValueError``。行为:翻成 400。输出:``HTTPException``。
 
@@ -1060,7 +1080,7 @@ def _reset_password(deps: Deps, user_id: str, password: str) -> UserOut:
 
     **改密码不吊销令牌**(与"删号即失效"不同):改密码通常发生在"本人忘了密码"这种场景,
     此时他手上没有有效令牌;而"令牌被盗、改密码想踢掉对方"是另一件事 ——
-    那需要"吊销全部令牌"这个动作,记在 ``docs/deferred.md``。
+    那需要"吊销全部令牌"这个动作 —— 目前不做。
     """
     from project_rag.application.security import hash_password
 
@@ -1185,6 +1205,117 @@ def _set_document_acl(
     return _acl_out(store.subjects_of(document_id))
 
 
+def _group_document_rows(deps: Deps, group_id: str) -> tuple[Group, tuple[GroupDocumentRow, ...]]:
+    """输入:依赖 + 组 ID。行为:取这个组的文档三态。输出:``(组, 行序列)``;组不存在给 ``(None, ())``。
+
+    **为什么清单从登记表来而不是从规则表来**:规则表里只有"被收窄过的那几份",
+    而从那里出发会让管理员看不见"人人可见"的那一大片 —— 那正是这个组实际能看到的主体。
+    """
+    store = _factory(deps, "access_store_factory")
+    groups = {group.group_id: group for group in store.list_groups()}
+    group = groups.get(group_id)
+    if group is None:
+        return None, ()  # type: ignore[return-value]
+    pairs = [
+        (record.document_id, record.filename)
+        for record in _factory(deps, "document_store_factory").list_all()
+    ]
+    return group, group_document_rows(pairs, store.rules(), group_id=group_id)
+
+
+def _group_documents_out(
+    group: Group, rows: Sequence[GroupDocumentRow]
+) -> GroupDocumentsOut:
+    """输入:组 + 行序列。行为:转成出参。输出:``GroupDocumentsOut``(没有改动时那几栏是空的)。"""
+    return GroupDocumentsOut(
+        group_id=group.group_id,
+        name=group.name,
+        documents=[
+            GroupDocumentOut(
+                document_id=row.document_id,
+                filename=row.filename,
+                visibility=row.visibility,
+                other_subjects=row.other_subjects,
+            )
+            for row in rows
+        ],
+    )
+
+
+def _set_group_documents(
+    deps: Deps, group_id: str, request: SetGroupDocumentsRequest
+) -> GroupDocumentsOut:
+    """输入:依赖 + 组 ID + **整份**"这个组能看的文档"名单。行为:按计划增删规则。输出:更新后的三态 + 如实回报。
+
+    **这里不发明新的权限语义**:规则仍然是"只用来收窄"(见 ``domain/access.py``)。
+    这个接口只是把"从组这一侧看"翻译成对同一张规则表的增删 —— 判定逻辑一行都没有新增,
+    新增的只有 ``plan_group_documents`` 那三条翻译规则(纯函数,有契约钉着)。
+    """
+    store = _factory(deps, "access_store_factory")
+    group, rows = _group_document_rows(deps, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail=f"没有这个组({group_id!r})")
+    rules = store.rules()
+    plan, unknown = plan_group_documents(
+        [
+            (row.document_id, row.filename)
+            for row in rows
+        ],
+        rules,
+        group_id=group_id,
+        allowed=request.allowed,
+    )
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"这些文档不存在:{list(unknown)}")
+    for document_id in plan.grant:
+        acl = rules[document_id]
+        store.set_document_subjects(
+            document_id,
+            user_ids=acl.user_ids,
+            group_ids=(*acl.group_ids, group_id),
+        )
+    for document_id in plan.revoke:
+        acl = rules[document_id]
+        store.set_document_subjects(
+            document_id,
+            user_ids=acl.user_ids,
+            group_ids=tuple(gid for gid in acl.group_ids if gid != group_id),
+        )
+    _logger.info(
+        "改组可见文档 %s(%s):+%d / -%d / 回到人人可见 %d",
+        group.name,
+        group_id,
+        len(plan.grant),
+        len(plan.revoke),
+        len(plan.will_open),
+    )
+    fresh = _group_document_rows(deps, group_id)[1]
+    out = _group_documents_out(group, fresh)
+    out.granted = list(plan.grant)
+    out.revoked = list(plan.revoke)
+    out.opened = list(plan.will_open)
+    out.notice = _group_notice(plan)
+    return out
+
+
+def _group_notice(plan: GroupGrantPlan) -> str:
+    """输入:增删计划。行为:把它说成一句人话(含最该被看见的那条:名单空了会回到人人可见)。输出:文本。"""
+    parts: list[str] = []
+    if plan.grant:
+        parts.append(f"新授权 {len(plan.grant)} 份")
+    if plan.revoke:
+        parts.append(f"取消授权 {len(plan.revoke)} 份")
+    if plan.already_open:
+        parts.append(f"{len(plan.already_open)} 份本来就人人可见(不用授权)")
+    if plan.will_open:
+        # 这句话会原样出现在界面上(前端不渲染 markdown),所以不写 ** 之类的记号
+        parts.append(
+            f"其中 {len(plan.will_open)} 份的名单已经空了,它们回到了「人人可见」"
+            f"(要限制它们,请在「知识库」页给这份文档配可见范围)"
+        )
+    return ";".join(parts) if parts else "没有变化"
+
+
 def create_app(deps: Deps | None = None) -> FastAPI:
     """输入:依赖集合(不传就真实装配)。行为:建 FastAPI 应用并注册全部路由。输出:应用。
 
@@ -1200,6 +1331,15 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     access_problem = ensure_access_schema(deps)
     if access_problem:
         _logger.warning("可见范围未启用(建表失败):%s", access_problem)
+    # 认证那三张表(users / tokens / session_owner):同样幂等。**它同时是会话列表的自愈点** ——
+    # session_owner 的排序规则要在 init_schema 里扳回来(见 cli/deps.ensure_auth_schema)
+    auth_problem = ensure_auth_schema(deps)
+    if auth_problem:
+        _logger.warning("认证表未就绪(建表失败):%s", auth_problem)
+    # 登记表(documents):以前**没有任何生产入口**建它(空库上传/清单直接 500)
+    documents_problem = ensure_documents_schema(deps)
+    if documents_problem:
+        _logger.warning("登记表未就绪(建表失败):%s", documents_problem)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
     # 限流计数器**从组合根来**(Redis 或内存,见 cli/deps.py 的 `_rate_limiter`);
@@ -1212,7 +1352,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         version="0.1.0",
     )
     # 本机开发默认全开(api.cors_origins = ["*"]);要对外就得收紧到具体来源
-    # (见 deferred.md §1:限流/鉴权)
+    # (限流与鉴权都收在这一层)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.api.cors_origins,
@@ -1257,13 +1397,14 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         """语料里真实有哪些来源(去重升序)。**要 Bearer**(与 `API.md` 的表一致)。
 
         读的是**向量库**而不是配置白名单:要回答的是「库里有哪几门课」,不是「配置里写了哪几个」。
-        语料上千块,``load_all`` 一次可接受;上万块时再给端口加一个 ``sources()``(见 deferred)。
+        语料上千块,``load_all`` 一次可接受;上万块时再给端口加一个 ``sources()``。
 
-        (M7.4)补上的认证:它是**业务数据**(哪几门课、有哪些文档来源),
+        补上的认证:它是**业务数据**(哪几门课、有哪些文档来源),
         而在这之前它和 `/capabilities` 一样裸着 —— `/capabilities` 公开是有理由的
         (不含任何数据,登录页要用它渲染上传提示),这一条没有。
 
-        (P0-6)再加上"能不能用知识库"这道门:运维在这一条上拿 403 —— 来源标签是语料的目录结构。
+        再加上"能不能用知识库"这道门(员工 / 运维 / 管理员都能过):来源标签是语料的目录结构,
+        所以它不是公开数据 —— 但没有账号的人看不了。
         """
         auth.require_knowledge(user)
         return await _call(_sources, deps)
@@ -1325,12 +1466,12 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
         * **只列有轮次的会话** —— 前端是"首次提问时才建会话",刚建没问过的不该占地方;
         * **无认证模式给空表**(而不是列出所有人的会话):没有账号时,"这是谁的会话"
-          这个问题没有答案,而"没有答案就都给"是最坏的一种实现(法律 33);
+          这个问题没有答案,而"没有答案就都给"是最坏的一种实现;
         * 认证开着、却连会话目录工厂都没注入(**显式注入才会这样**)→ 503,
           不静默给空表:空表会被读成"这个账号还没有会话",与"装配缺了一件事"完全是两回事。
 
-        运维在这个接口上拿 403(``require_knowledge``):会话目录是"我读过什么"的索引,
-        属于知识库那一侧的东西(见 ``domain/auth.py`` 的角色表)。
+        这条走 ``require_knowledge``:会话目录是"我读过什么"的索引,属于知识库那一侧 ——
+        员工 / 运维 / 管理员都能看自己的(运维也能问答,见 ``domain/auth.py`` 的角色表)。
         """
         auth.require_knowledge(user)
         catalog = _optional_factory(deps, "session_catalog_factory")
@@ -1343,7 +1484,17 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             )
         if user is None:
             return SessionsOut(sessions=[])
-        rows = await _call(catalog.list_for, user.user_id, limit=limit)
+        try:
+            rows = await _call(catalog.list_for, user.user_id, limit=limit)
+        except Exception as exc:  # noqa: BLE001 - 翻成 503 + 人话:裸 500 只显示"Internal Server Error"
+            # 这条路径以前把存储层的异常直接抛给 FastAPI,前端拿到的是一句
+            # "Internal Server Error" —— 用户看到的是"会话都没了",而真正的原因
+            # (比如两张表排序规则不一致导致的 1267)一个字都没露出来。
+            _logger.warning("读会话目录失败:%s", exc, exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"读不到会话目录({type(exc).__name__}):{exc}",
+            ) from exc
         return SessionsOut(
             sessions=[
                 SessionSummaryOut(
@@ -1442,7 +1593,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         "后端直接放进去的语料"在前端永远看不见。
 
         员工也能看清单(他要知道自己能检索什么);**但删除只有管理员能**。
-        被收窄且没授权给他的文档**不在清单里**(P0-6),每行的 ``restricted`` 说明
+        被收窄且没授权给他的文档**不在清单里**,每行的 ``restricted`` 说明
         "这份是限定的、你在名单里"。
         """
         auth.require_knowledge(user)
@@ -1481,7 +1632,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     ) -> DocumentPreviewOut:
         """一份文档入库后的样子:按**父块**折叠后的前 N 段(带页码)。
 
-        **权限与清单一致(Bearer,不是 admin)**:员工本来就能看清单(P0-3b 的口径 ——
+        **权限与清单一致(Bearer,不是 admin)**:员工本来就能看清单(两者的口径一致 ——
         他要知道自己能检索什么),预览是清单的展开,是同一份数据的另一种看法;
         真正的管理动作(上传 / 删除)才是 admin。
 
@@ -1501,7 +1652,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         top: int = Query(default=5, ge=1, le=TOP_MAX),
         user: User | None = Depends(auth.user),
     ) -> MetricsOut:
-        """延迟报表:窗口内的 p50/p95/p99(热行)、冷热条数、拒答/截断/中断率、最慢几条。
+        """延迟报表:窗口内的 p50/p95/p99(热行)、冷热**各一套**计数(拒答/截断/中断/通道)、最慢几条。
 
         **谁能看:运维与管理员**(``require_reports``)。路径从 ``/admin/metrics`` 改到
         ``/reports/metrics`` 就是为了这件事 —— 运维不是管理员,让他去打一个
@@ -1533,7 +1684,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         auth.require_reports(user)
         return await _call(_cost, deps, window)
 
-    # ── 账号与可见范围(P0-6,管理员专用) ─────────────────────────────────────
+    # ── 账号与可见范围(管理员专用) ───────────────────────────────────────────
     @app.get("/api/v1/admin/users", response_model=UsersOut)
     async def admin_users(user: User | None = Depends(auth.user)) -> UsersOut:
         """全部账号(用户名 / 角色 / 所属组)。**不含密码或它的哈希**。
@@ -1613,6 +1764,41 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         auth.require_admin(user)
         return await _call(_set_members, deps, group_id, request)
 
+    @app.get(
+        "/api/v1/admin/groups/{group_id}/documents", response_model=GroupDocumentsOut
+    )
+    async def admin_group_documents(
+        group_id: str, user: User | None = Depends(auth.user)
+    ) -> GroupDocumentsOut:
+        """**这个组能看哪些文档**(组侧授权页的读数)。三态:人人可见 / 已授权 / 看不到。
+
+        与文档侧那份(`/admin/documents/{id}/acl`)读的是**同一张规则表**,只是视角反过来:
+        授权时有人盯着"这份文档给谁看",也有人盯着"这个组能看哪些" —— 两个方向都得有,
+        否则后一种人要逐份文档点开看名单。
+        """
+        auth.require_admin(user)
+        group, rows = await _call(_group_document_rows, deps, group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail=f"没有这个组({group_id!r})")
+        return _group_documents_out(group, rows)
+
+    @app.put(
+        "/api/v1/admin/groups/{group_id}/documents", response_model=GroupDocumentsOut
+    )
+    async def admin_set_group_documents(
+        group_id: str, request: SetGroupDocumentsRequest, user: User | None = Depends(auth.user)
+    ) -> GroupDocumentsOut:
+        """**整份**设置"这个组能看的文档"(声明式)。
+
+        两条边界写在这里(界面也要照着说):
+
+        * **人人可见**的文档在这个接口里动不了 —— 它本来就人人可见,要把它收窄成
+          "只有这个组能看"是一次动别人可见性的操作,得走文档侧的可见范围;
+        * 取消授权之后**名单空了**的文档会回到人人可见 —— 出参的 ``opened`` 会点名它们。
+        """
+        auth.require_admin(user)
+        return await _call(_set_group_documents, deps, group_id, request)
+
     @app.get("/api/v1/admin/documents/{document_id}/acl", response_model=DocumentAclOut)
     async def admin_document_acl(
         document_id: str, user: User | None = Depends(auth.user)
@@ -1643,7 +1829,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         """用账号密码换一个 Bearer 令牌。失败一律 401 + 同一句话(防用户名枚举)。
 
         **路径约定**:业务接口一律在 ``/api/v1`` 下 —— 老接口已经在
-        P0-3b-5-② 那一步全部迁完(见 ``docs/STATUS.md`` §7),**没有留别名**:
+        老路径全部迁完,**没有留别名**:
         两套路径就是两个真值来源,契约要写两遍,而前端只需要一个前缀。
         """
         caller = http_request.client.host if http_request.client else "unknown"
@@ -1709,7 +1895,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     async def history(session_id: str, user: User | None = Depends(auth.user)) -> HistoryOut:
         """最近 N 轮历史 —— 与喂给模型的**同一份**(所以前端看到的和模型看到的不会不一致)。
 
-        **先查归属再读**:这一条正是 P0-3a 要堵的洞 —— 会话 ID 以前是裸字符串,猜到就能读。
+        **先查归属再读**:这一条堵的正是那个洞 —— 会话 ID 以前是裸字符串,猜到就能读。
         """
         auth.require_knowledge(user)
         await auth.check_owner(session_id, user)
@@ -1786,7 +1972,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         3. 请求体畸形时回一帧 ``type="error"``,连接留着 —— 前端能看到「你发的不是 JSON」。
         """
         await websocket.accept()
-        # 认证:P0-3a 只堵了 HTTP,WS 这条路当时是**已知未闭合**的缺口。
+        # 认证:HTTP 那条路早就堵上了,WS 这条路曾经是**已知未闭合**的缺口。
         # 浏览器不能给 WS 设自定义头,所以令牌只能走 query 参数(`?token=…`)——
         # 代价是它会进服务器日志,这一点写进 api/auth.py 的 docstring 了。
         ws_token = websocket.query_params.get("token")
@@ -1799,7 +1985,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             await websocket.close(code=1008)  # 1008 = policy violation
             return
         if ws_user is not None and not ws_user.can_use_knowledge:
-            # 与 HTTP 的 **同一条口径**(``require_knowledge``):运维只能看报表。
+            # 与 HTTP 的 **同一条口径**(``require_knowledge``):员工 / 运维 / 管理员都能问。
             # 这里连上都不让连 —— 令牌有效但角色不对是"这条路不对",
             # 不是"这一句话不对",回 error 帧留着连接只会让他反复撞同一面墙。
             await websocket.send_json(
@@ -1907,7 +2093,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:
-        """根路径跳转到**前端 app**(M7.1 起)。
+        """根路径跳转到**前端 app**。
 
         为什么是重定向而不是直接返回 SPA 的 index.html:那份产物用**相对** base
         (`./assets/…`),只有 URL 以 `/static/app/` 结尾时相对路径才解析得对;
@@ -1956,7 +2142,9 @@ def _warmup_once(deps: Deps) -> None:
         _options(deps, QueryRequest(query=warmup_query), UNRESTRICTED),
         rerank=settings.rag.rerank,
     )
-    events = knowledge(())
+    # 预热**不要账本**,但通道的形状要求把账本交下去 —— 给它一个只活在这一次调用里的
+    # timing:它不经过 timed(),所以永远不会 emit,打完的点跟着这个对象一起丢掉。
+    events = knowledge((), StreamTiming(label="warmup"))
     next(events, None)  # 第一帧:有引用是 sources,没引用是拒答话术 —— 都在调 LLM 之前
     close = getattr(events, "close", None)
     if callable(close):  # 收工:再迭代下去就该去调 provider 了

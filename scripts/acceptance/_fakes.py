@@ -96,14 +96,17 @@ class FakeMatcher:
 
 
 class FakeKeywordIndex:
-    """假关键字索引:回固定命中 + 记每次查询的 ``(k, source)``。"""
+    """假关键字索引:回固定命中 + 记每次查询的 ``(k, source)``。``delay`` 模拟慢检索。"""
 
-    def __init__(self, hits=()) -> None:
+    def __init__(self, hits=(), *, delay: float = 0.0) -> None:
         self.hits = list(hits)
+        self.delay = delay
         self.searches: list[tuple[int, str | None]] = []
 
     def search(self, query, *, k, source=None):
         self.searches.append((k, source))
+        if self.delay:
+            time.sleep(self.delay)
         return list(self.hits)
 
 

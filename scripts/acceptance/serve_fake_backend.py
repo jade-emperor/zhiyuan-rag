@@ -52,7 +52,7 @@ from _fakes import (  # noqa: E402
 from project_rag.api import create_app  # noqa: E402
 from project_rag.application.security import hash_password  # noqa: E402
 from project_rag.cli import Deps  # noqa: E402
-from project_rag.domain import Chunk, ConversationTurn, RetrievedChunk  # noqa: E402
+from project_rag.domain import Chunk, Citation, ConversationTurn, snapshot_citations, RetrievedChunk  # noqa: E402
 from project_rag.domain.auth import User  # noqa: E402
 from project_rag.domain.sessions import SessionSummary  # noqa: E402
 
@@ -564,6 +564,9 @@ def _ledger_rows():
             cold=True,
             channel="rag",
             rerank_ms="5383.0",
+            # 这条冷启动**也是拒答**:报表里它必须单列,不许算进拒答率 ——
+            # 浏览器那一套就是靠这个数验"冷启动没混进热行那一套数"的
+            refused="true",
         )
     )
     return rows
@@ -577,10 +580,13 @@ class FakeAccess:
     """
 
     def __init__(self) -> None:
-        self._groups = {"g-1": "销售"}
-        self._members = {"g-1": ["u-employee"]}
+        # 两个组 + 两份受限文档:组侧授权页要能同时看到三态
+        # (销售:内部报价单=已授权、员工手册=看不到、其余=人人可见)
+        self._groups = {"g-1": "销售", "g-2": "财务"}
+        self._members = {"g-1": ["u-employee"], "g-2": []}
         self._subjects: dict[str, tuple[list[str], list[str]]] = {
             "内部报价单.md": ([], ["g-1"]),
+            "员工手册.md": ([], ["g-2"]),
         }
 
     def init_schema(self) -> None: ...
@@ -766,7 +772,23 @@ def build():
         "conversation_store_factory": lambda: FakeConversationStore(
             {
                 "11111111-1111-1111-1111-111111111111": [
-                    ConversationTurn(question="加班上限是多少", answer="每日不超过一小时,特殊原因每日不超过三小时。"),
+                    # 第一轮**带引用快照**(新账:切回旧会话要能看见出处),
+                    # 第二轮**不带**(老账:那一列还没有的时候记的 —— 界面按"出处没留下"处理)
+                    ConversationTurn(
+                        question="加班上限是多少",
+                        answer="每日不超过一小时,特殊原因每日不超过三小时。[1][2]",
+                        citations=snapshot_citations(
+                            (
+                                Citation(
+                                    index=1,
+                                    chunk=SEED_CHUNKS[0],
+                                    score=0.91,
+                                    rerank_score=0.62,
+                                ),
+                                Citation(index=2, chunk=SEED_CHUNKS[2], score=0.74),
+                            )
+                        ),
+                    ),
                     ConversationTurn(question="每月最多加班多久", answer="三十六小时。"),
                 ]
             }

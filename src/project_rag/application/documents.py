@@ -467,10 +467,10 @@ def preview_document(
     **顺序只保证稳定,不保证与原文一致**:块里没有偏移列(``chunk_id`` 是摘要),
     所以只能按「先有页码的、页码升序、再按块 ID」排。对 PDF 来说这基本就是原文顺序;
     对 md/txt 只能保证两次预览看到的是一样的。要做到严格原文顺序,得给向量库加一列偏移
-    (schema 变更 + 整库重灌,见 ``docs/deferred.md``)。
+    (要改 schema 并整库重灌;目前不做)。
 
     **为什么用 ``load_all`` 再过滤**:与 ``GET /api/v1/sources`` 同一个取舍 —— 语料几千块时
-    一次全读约 250KB,可接受;上万块时给端口加 ``chunks_of(doc_id, limit)``(已记 deferred)。
+    一次全读约 250KB,可接受;上万块时给端口加 ``chunks_of(doc_id, limit)``。
     """
     if limit <= 0:
         raise ValueError(f"limit 必须为正,收到 {limit}")

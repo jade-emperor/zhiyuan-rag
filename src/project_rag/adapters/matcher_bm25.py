@@ -27,11 +27,11 @@ BM25 匹配适配器:jieba 分词 + BM25 打分 + 自身分归一化成 0~1 + �
 ③ 比值夹回 1.0 之后，1.712 与 1.000 记成同一个数 —— **光靠阈值分不开**。
 覆盖率正是对着 ① 和 ②：提问里出现而这条答不了的词越多，提问覆盖率越低（门槛拦它）。
 
-**为什么不再加一道"上界"**（也量过）：上界要跟比值的**绝对大小**比，而比值随语料规模漂
+**为什么只留两道覆盖率、不加"上界"**（也量过）：上界要跟比值的**绝对大小**比，而比值随语料规模漂
 （``idf=ln((N+1)/df)``）—— 实测库 150 → 300 → 617 → 1324 条时「请问，<原问题>」的最高未剪辑比值
 1.000 → 1.407 → 1.334 → 1.311，`score_ceiling=1.10` 会把**合法提问**的放行率从 100% 砍到
 60%/69%/71%（假阴性）。而"夹回 0~1 + 只留两道覆盖率"在 150/300/617 三种规模上与"不夹取 + 上界"
-**逐项相同**（一字不差与礼貌语全放行、无关问法与留出题误答数一样）—— 所以上界被删掉了：
+**逐项相同**（一字不差与礼貌语全放行、无关问法与留出题误答数一样）—— 所以只留这两道：
 少一个旋钮、少一处漂移源，分数也回到 0~1。
 
 **为什么用这个参照系,而不是「top1 领先第二名的幅度」**:
@@ -43,7 +43,7 @@ BM25 匹配适配器:jieba 分词 + BM25 打分 + 自身分归一化成 0~1 + �
     (与语料规模无关)、改写问法 0.2~0.7、完全无关 ≤ 0.274(N=50)。
     但注意它只是让阈值有意义,不是让 FAQ 能理解改写 —— 改写问法归知识库通道(向量检索)。
 
-真实语料复核(N=463 条,scripts/acceptance/calibrate_threshold.py):
+真实语料复核(N=463 条):
   一字不差 1.000 / 无关问法 ≤ 0.303 / 库内近邻(次高分占比)中位 0.631、最高 0.912。
 
 已知边界(不是 bug,是分工):
@@ -54,7 +54,7 @@ BM25 匹配适配器:jieba 分词 + BM25 打分 + 自身分归一化成 0~1 + �
   - 符号型问题（`&和&&的区别`、`==和equals`、`#{}和${}`）在分词那一步就把符号丢了
     （`tokens()` 只留含 ``\\w`` 的词），所以它们的索引只剩「和/的/区别」这类虚词 ——
     任何「X 和 Y 的区别」都可能蹭到它们。修法在分词口径上（要连带重算稀疏向量），
-    记在 docs/deferred.md。
+    目前不做。
 """
 from collections.abc import Sequence
 
@@ -66,10 +66,10 @@ from project_rag.adapters.chinese_tokens import tokens
 from project_rag.domain import FaqEntry, FaqMatch
 from project_rag.ports import TextMatcher
 
-# 两道覆盖率门槛的类默认值（**改它们 = 改 FAQ 通道的命中口径**，要连带跑
-# `scripts/acceptance/faq_hijack_report.py` 与 `calibrate_threshold.py`）。
+# 两道覆盖率门槛的类默认值（**改它们 = 改 FAQ 通道的命中口径**，
+# 要连带跑 `scripts/acceptance/faq_hijack_report.py` 与 `calibrate_threshold.py` 重新标定）。
 #
-# **为什么只留覆盖率、而不是再加一道上界**（作者定稿的方案，两版都量过）：
+# **为什么只留覆盖率、而不是再加一道上界**：
 # 判"这条答得了这个提问吗"只需要两个**纯 token 计数比值**（提问覆盖率 / 条目覆盖率）——
 # 它们不含 idf、不含分数，**与语料规模无关**。上界要跟"比值的绝对大小"比，而比值会随语料漂
 # （idf=ln((N+1)/df)）：实测库 150 → 300 → 617 → 1324 条时「请问，<原问题>」的最高未剪辑比值
@@ -151,8 +151,9 @@ class BM25TextMatcher(TextMatcher):
     def score_all(self, query: str, candidates: Sequence[FaqEntry]) -> list[float]:
         """输入:问题 + 候选。行为:按 best_match 的同一口径给每个候选打分。输出:与候选同序的分数。
 
-        给诊断脚本用(calibrate_threshold.py / faq_hijack_report.py 靠它量"库内近邻有多像"
-        "哪些候选被门槛拦下")。它必须和 best_match 走同一个私有实现 ——
+        给诊断脚本用(`calibrate_threshold.py` / `faq_hijack_report.py` 靠它量
+        "库内近邻有多像"、"哪些候选被门槛拦下")。
+        它必须和 best_match 走同一个私有实现 ——
         否则脚本量出来的口径和线上跑的口径是两回事。
 
         **返回的是置信度(过不了闸门的是 0),不是排序依据**;排序次序见 ``_rank``。
@@ -179,7 +180,7 @@ class BM25TextMatcher(TextMatcher):
         **过不了闸门的候选记 0 分,并且排序**:**跳过**它们取下一个 —— "最像的那条答不了
         这个提问"时,第二名可能正是能答的那条。一条都过不了就退回首名(score=0)。
         """
-        index = self._index_for(entries)  # ← 唯一改动:不再每次 new
+        index = self._index_for(entries)  # 索引在这里取:不每次重建
         asked = tokens(query)
         raw = [float(s) for s in index.get_scores(asked)]
 

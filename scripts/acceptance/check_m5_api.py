@@ -24,7 +24,7 @@ P0-3 之后又钉上认证/角色/文档治理/命名空间(业务路由一律 `
 端点(9 个)::
 
     POST   /api/v1/create_session        -> {"session_id": uuid4}
-    GET    /api/v1/history/{session_id}  -> {"session_id", "rounds": [{question, answer}]}
+    GET    /api/v1/history/{session_id}  -> {"session_id", "rounds": [{question, answer, citations}]}
     DELETE /api/v1/history/{session_id}  -> {"session_id", "deleted": int}
     POST   /api/v1/query                 -> QueryResponse(非流式)
     WS     /api/v1/stream                -> 逐帧 {type: sources|token|done|error}
@@ -650,15 +650,28 @@ def _() -> str:
     return "三种非法请求都 422"
 
 
-@check("HTTP：历史 GET 只回最近 N 轮（与喂给模型的同一份）；DELETE 返回删掉的轮数")
+@check("HTTP：历史 GET 只回最近 N 轮（与喂给模型的同一份）、**带当轮引用**；DELETE 返回删掉的轮数")
 def _() -> str:
-    from project_rag.domain import ConversationTurn
+    from project_rag.domain import Chunk, Citation, ConversationTurn, snapshot_citations
 
     world = _World()
     client = world.client()
+    hit = Citation(
+        index=1,
+        chunk=Chunk("c1", "子块", "bagu_ai", "d1", "p1", "父块正文", page=7),
+        score=0.9,
+        rerank_score=0.4,
+    )
     for i in range(1, 4):
         world.conversation.record(
-            "s-web", ConversationTurn(question=f"q{i}", answer=f"a{i}"), keep=5
+            "s-web",
+            ConversationTurn(
+                question=f"q{i}",
+                answer=f"a{i} [1]",
+                # 第三轮故意没有引用:老账/拒答就是这种形状,它该回空列表而不是缺字段
+                citations=snapshot_citations((hit,)) if i == 3 else (),
+            ),
+            keep=5,
         )
     got = client.get("/api/v1/history/s-web")
     if got.status_code != 200:
@@ -668,13 +681,21 @@ def _() -> str:
         raise AssertionError(f"应按时间正序返回，实际 {rounds}")
     if world.conversation.reads[-1][1] != 5:
         raise AssertionError(f"读的应是配置里的轮数，实际 {world.conversation.reads[-1]}")
+    # 引用必须随答案一起回去(答案里的 [1] 没有卡片可点 = 没有出处),且形状与实时那份同源
+    cards = rounds[2]["citations"]
+    if len(cards) != 1 or cards[0]["index"] != 1 or cards[0]["page"] != 7:
+        raise AssertionError(f"历史该带当轮引用卡片,实际 {cards}")
+    if set(cards[0]) != {"index", "source", "doc_id", "preview", "score", "rerank_score", "page"}:
+        raise AssertionError(f"引用卡片的字段与实时那份不一致:{sorted(cards[0])}")
+    if rounds[0]["citations"] != []:
+        raise AssertionError(f"没有出处的那一轮该给空列表(不是缺字段也不是编一条),实际 {rounds[0]}")
 
     deleted = client.delete("/api/v1/history/s-web").json()
     if deleted["deleted"] != 3 or deleted["session_id"] != "s-web":
         raise AssertionError(f"删除结果不对：{deleted}")
     if world.conversation.recent("s-web", limit=5):
         raise AssertionError("删完应为空")
-    return "GET 最近 N 轮 + DELETE 返回条数"
+    return "GET 最近 N 轮 + 当轮引用卡片(与实时同字段) + DELETE 返回条数"
 
 
 @check("响应模型：answer 必填、channel 只认 faq/rag/greeting/throttled、citations 是出参模型")

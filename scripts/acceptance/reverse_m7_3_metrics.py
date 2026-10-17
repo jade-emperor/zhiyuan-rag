@@ -23,7 +23,9 @@
 * RT-10 守卫不补拉能力（直接落在 `#/metrics` → 红字,点「刷新」也救不回来）;
 * RT-11 store 不补拉（后端恢复后这一页永远停在"还没读到 capabilities"）;
 * RT-12 能力没读到时把"连不上"说成"还没读到 capabilities"（两件事混成一件）;
-* RT-13 空白名单冒充"不支持的类型"（用户被指到"后端不支持"这个错方向）。
+* RT-13 空白名单冒充"不支持的类型"（用户被指到"后端不支持"这个错方向）;
+* RT-14 看板拿**总行数**当比率分母（冷启动被算进拒答率:"这一版答得怎么样"于是随重启次数漂）;
+* RT-15 冷启动那一套数**不画出来**（"不算"于是变成"看不见"）。
 """
 
 from __future__ import annotations
@@ -167,6 +169,27 @@ CASES: tuple[Case, ...] = (
         ),
         new="",
         needle="白名单还没读到时不冒充",
+    ),
+    Case(
+        title="RT-14  看板拿总行数当比率分母（冷启动也被算进拒答率）",
+        target=VIEW,
+        old="          :value=\"rate(data.warm.refused, data.warm.rows)\"",
+        new="          :value=\"rate(data.warm.refused, data.rows)\"",
+        needle="看板按冷热分层读数",
+    ),
+    Case(
+        title="RT-15  冷启动那一套数不画出来（「不算」变成「看不见」）",
+        target=VIEW,
+        old=(
+            "      <p v-if=\"data.cold_rows > 0\" class=\"faint cold-note\">\n"
+            "        上面六项都<strong>只数热行</strong>。冷启动 {{ data.cold_rows }} 次不计入它们\n"
+            "        (那几次用户等的是模型加载):拒答 {{ data.cold.refused }} ·\n"
+            "        截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·\n"
+            "        FAQ 直答 {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}。\n"
+            "      </p>\n"
+        ),
+        new="",
+        needle="看板按冷热分层读数",
     ),
 )
 

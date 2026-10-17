@@ -14,7 +14,8 @@
 * RT-3 把 ``-``（没量到）**折算成 0**（p50 被拉低，而且从数字上看不出来）；
 * RT-4 冷启动行**也进分段统计**（p95 于是变成"冷启动有多慢"）；
 * RT-5 handler **不过滤**记录（普通日志也往表里写，表里全是垃圾行）；
-* RT-6 挂载**不幂等**（重复启动会把同一行账写两遍）。
+* RT-6 挂载**不幂等**（重复启动会把同一行账写两遍）;
+* RT-7 冷启动**也算进拒答率与通道计数**（"这一版答得怎么样"于是随"这周重启过几次"漂）。
 """
 
 from __future__ import annotations
@@ -77,6 +78,22 @@ CASES: list[tuple[str, str, str, str, str]] = [
             return""",
         """        row = getattr(record, LEDGER_KEY, None) or {}""",
         "落表 只转交带 ledger 的记录",
+    ),
+    (
+        "RT-7  冷启动也算进拒答率与通道计数（热行那一套拿全部行来数）",
+        "src/project_rag/application/metrics.py",
+        """        warm=_behavior(warm),
+        cold=_behavior(cold),""",
+        """        warm=BehaviorCounts(
+            rows=len(warm),
+            refused=sum(1 for row in rows if _flag(row, "refused")),
+            truncated=sum(1 for row in rows if _flag(row, "truncated")),
+            aborted=sum(1 for row in rows if _flag(row, "aborted")),
+            faq_hits=sum(1 for row in rows if row.get("channel") == "faq"),
+            rag_answers=sum(1 for row in rows if row.get("channel") == "rag"),
+        ),
+        cold=_behavior(cold),""",
+        "口径 冷热分层",
     ),
     (
         "RT-6  挂载不幂等（重复启动把同一行账写两遍）",

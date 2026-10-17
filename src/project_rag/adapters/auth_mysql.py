@@ -8,7 +8,7 @@ MySQL 认证适配器:用户 / 令牌 / 会话归属三张表。
 
 **为什么令牌表在 MySQL 而不是 Redis**:Redis 一 flush 所有人被登出;而"谁能登录"
 是安全状态,不该活在缓存里。代价是每个请求多一次查询(一次主键查,~1ms 量级),
-真嫌慢再给 ``auth_tokens`` 加一层 Redis 缓存(记在 deferred)。
+真嫌慢再给 ``auth_tokens`` 加一层 Redis 缓存;目前不做。
 
 **时间一律用数据库的 ``NOW(3)`` 判过期,不用 Python 的 now()**:应用与数据库的时钟
 可能不一致,而"过期"这件事只该有一个裁判。
@@ -22,9 +22,13 @@ from datetime import datetime
 
 import pymysql
 
+from project_rag.adapters.mysql_schema import COLLATION, TABLE_OPTIONS, align_tables
 from project_rag.config import MySQLConfig
 from project_rag.domain.auth import USER_ROLES, User, UserRole
+from project_rag.observability import get_logger
 from project_rag.ports import AuthStore
+
+_logger = get_logger("adapters.auth_mysql")
 
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -36,7 +40,7 @@ CREATE TABLE IF NOT EXISTS {users} (
   password_hash VARCHAR(255) NOT NULL,
   role VARCHAR(16) NOT NULL,
   created_at DATETIME(3) NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
     """
 CREATE TABLE IF NOT EXISTS {tokens} (
@@ -46,7 +50,7 @@ CREATE TABLE IF NOT EXISTS {tokens} (
   created_at DATETIME(3) NOT NULL,
   KEY idx_tokens_user (user_id),
   KEY idx_tokens_expires (expires_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
     """
 CREATE TABLE IF NOT EXISTS {owners} (
@@ -54,7 +58,7 @@ CREATE TABLE IF NOT EXISTS {owners} (
   user_id VARCHAR(32) NOT NULL,
   created_at DATETIME(3) NOT NULL,
   KEY idx_owners_user (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """,
 )
 
@@ -91,14 +95,27 @@ class MySQLAuthStore(AuthStore):
         self._owners = owners_table
 
     def init_schema(self) -> None:
-        """输入:无。行为:建三张表(幂等)。输出:无。"""
+        """输入:无。行为:建三张表(幂等),并把老表的排序规则扳回来。输出:无。
+
+        ``CREATE TABLE IF NOT EXISTS`` 不会给已存在的老表改排序规则,而这一族表以前建的时候
+        只写了 ``CHARSET``(见 ``adapters/mysql_schema.py``) —— 于是 ``session_owner`` 与
+        ``conversations`` JOIN 起来报 1267,表现是**会话列表整页读不出来**。
+        """
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
                 for ddl in _DDL:
                     cur.execute(
-                        ddl.format(users=self._users, tokens=self._tokens, owners=self._owners)
+                        ddl.format(
+                            users=self._users,
+                            tokens=self._tokens,
+                            owners=self._owners,
+                            options=TABLE_OPTIONS,
+                        )
                     )
+                stale = align_tables(cur, (self._users, self._tokens, self._owners))
+                if stale:
+                    _logger.info("排序规则已对齐到 %s(老表):%s", COLLATION, "、".join(stale))
         finally:
             conn.close()
 

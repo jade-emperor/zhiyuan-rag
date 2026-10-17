@@ -1,15 +1,15 @@
 """
 MySQL 账本适配器:一行账本写进 ``latency_ledger``,按时间窗读回来做聚合。
 
-**为什么整行再存一份 JSON**(``payload``):账本的字段是会长的 —— 这轮就一次加了
-三个(``request_id`` / ``cold`` / ``builds``)。表结构不该每加一个指标就改一次,所以:
+**为什么整行再存一份 JSON**(``payload``):账本的字段是会长的(``request_id`` /
+``cold`` / ``builds`` 这三个就是这么来的)。表结构不该每加一个指标就改一次,所以:
 **查询用得到的**几列单独拎出来建索引(时间、追踪号、冷热、总数、三个布尔),
 **全部字段**进 ``payload``。聚合在 Python 里做(一天几百行的量级,不值得写 SQL 聚合),
 于是加指标 = 只改账本,这里一行不用动。
 
 **为什么每次写各连一次库**:一次回答写一行,频率是"每次提问"而不是"每毫秒";
 换连接池要多一份生命周期管理(超时、重连、线程安全),而收益在毫秒级 —— 不值。
-真到高频再说(记在 `docs/deferred.md` 第 57 条)。**这条路上的失败必须抛出去**:
+真到高频再说(目前不做)。**这条路上的失败必须抛出去**:
 降级是 ``LedgerHandler`` 的事,它吞掉并计数;在这里偷偷吞掉,"表里少了一半数据"就没人发现。
 
 **为什么 ts 由这里盖**:账本用的是 ``time.perf_counter()``(单调时钟,量间隔用的,
@@ -36,11 +36,15 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pymysql
 
+from project_rag.adapters.mysql_schema import COLLATION, TABLE_OPTIONS, align_tables
+from project_rag.observability import get_logger
 from project_rag.config import MySQLConfig
 from project_rag.ports import LedgerStore
 from project_rag.ports.ledger import LEDGER_TS
 
 # 表名白名单:与 conversation_mysql 同一套做法(表名会拼进 SQL,而它是配置来的)
+_logger = get_logger("adapters.ledger_mysql")
+
 _SAFE_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_TABLE = "latency_ledger"
 
@@ -67,7 +71,7 @@ CREATE TABLE IF NOT EXISTS {table} (
   payload JSON NOT NULL,
   KEY idx_ts (ts),
   KEY idx_request_id (request_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) {options}
 """
 
 # 一行账本要按这些字段插进去(其余进 payload)。口径:查得到 = 值得索引。
@@ -130,15 +134,19 @@ class MySQLLedgerStore(LedgerStore):
         self._table = table
 
     def init_schema(self) -> None:
-        """输入:无。行为:建表 + 补历史表缺的列(幂等)。输出:无。
+        """输入:无。行为:建表 + 补历史表缺的列 + 对齐排序规则(都幂等)。输出:无。
 
         老表(加 ``ts_offset`` 之前建的)不会因为 ``CREATE TABLE IF NOT EXISTS`` 长出这一列,
-        所以这里显式补一次 —— 幂等由 ``information_schema`` 查一下保证。
+        所以这里显式补一次 —— 幂等由 ``information_schema`` 查一下保证。排序规则同理
+        (老表只写了 ``CHARSET``,会与另一族表 JOIN 报 1267,见 ``adapters/mysql_schema.py``)。
         """
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
-                cur.execute(_DDL.format(table=self._table))
+                cur.execute(_DDL.format(table=self._table, options=TABLE_OPTIONS))
+                stale = align_tables(cur, (self._table,))
+                if stale:
+                    _logger.info("排序规则已对齐到 %s(老表):%s", COLLATION, "、".join(stale))
                 cur.execute(
                     "SELECT COUNT(*) FROM information_schema.columns "
                     "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s",

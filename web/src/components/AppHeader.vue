@@ -4,8 +4,8 @@
  *
  * 两件刻意的事:
  *
- * 1. **页签按能力渲染**(P0-6):「对话」要 `can_use_knowledge`、「报表」要
- *    `can_view_reports`、「知识库 / 账号」要 `is_admin`。运维因此只看到「报表」,
+ * 1. **页签按能力渲染**:「对话」要 `can_use_knowledge`、「报表」要
+ *    `can_view_reports`、「知识库 / 账号」要 `is_admin`。运维因此看到「对话 + 报表」,
  *    员工看到「对话 + 知识库(只读清单)」。**这不是权限** —— 后端每条路由各自有
  *    `require_reports` / `require_knowledge` / `require_admin`,前端藏起来只是不给点
  *    一个必然 403 的按钮;

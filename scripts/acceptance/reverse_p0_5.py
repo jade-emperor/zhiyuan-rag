@@ -119,7 +119,7 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-7  出参漏抄页码（库里/引用上都有，HTTP 出参里没有 → 前端只能显示「页码未知」）",
         target=ROOT / "src" / "project_rag" / "api" / "app.py",
-        old="            page=citation.page,\n",
+        old="            page=item.page,\n",
         new="",
         needle="引用该带子块的页码",
         script="check_m5_api.py",  # 这一坏法只有接口那层看得见(domain 层它是对的)

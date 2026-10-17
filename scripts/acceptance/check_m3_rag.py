@@ -2481,13 +2481,14 @@ def _() -> str:
         "装饰器是什么",
         faq_store=_EmptyFaqStore(),
         matcher=_NoMatcher(),
-        knowledge=lambda history: stream_rag(
+        knowledge=lambda history, timing: stream_rag(
             "装饰器是什么",
             embedder=embedder,
             store=store,
             llm=llm,
             options=RetrievalOptions(k=3, max_context=1),
             history=history,
+            timing=timing,
         ),
         faq_threshold=0.85,
     )

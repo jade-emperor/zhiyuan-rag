@@ -119,11 +119,18 @@ def restore_stale_patches() -> list[str]:
         if not backup.is_file():
             continue
         relative = backup.relative_to(_PATCH_BACKUP)
-        # 只认镜像布局,而且只认**这几个**顶层目录(``src/`` 是产品代码,``config/`` 是配置 ——
-        # 阈值那条反向用例改的就是 ``config/config.yaml``)。
-        # ``reverse_p0_3`` / ``reverse_p0_5`` 用的是拍平的旧布局,它们自己管自己的还原,
-        # 这里不碰(免得把 `pdf_files.py` 之类写到仓库根上去)。
-        if relative.parts[0] not in ("src", "config"):
+        # 只认镜像布局,而且只认**这几个**顶层目录。``reverse_p0_3`` / ``reverse_p0_5``
+        # 用的是拍平的旧布局(备份直接躺在根下,如 `pdf_files.py`),它们自己管自己的还原,
+        # 这里不碰 —— 名单之外的 parts[0] 不是目录名,天然被排除。
+        #
+        # ``web/`` 是第三次事故加进来的:反向用例把 `DocumentCard.vue` 的
+        # `props.doc.state` 改回 `props.doc.status`,那一刻外层 SIGTERM 把进程杀了,
+        # 补丁留在工作区 —— 而它**不在**这份名单里,所以自愈机制扫不到它,
+        # 下一轮 `check_m7_2_live_kb` 与 `check_m7_frontend` 双双变红
+        # (前者说"卡片没拿 state 查标签表",后者说"产物与源码不同源"),
+        # 看起来像前端代码坏了,其实是**一个没还原的补丁**。
+        # `data/` / `demo/` / `scripts/` 同理:反向用例也改它们。
+        if relative.parts[0] not in ("src", "config", "web", "data", "demo", "scripts"):
             continue
         original = _PATCH_BACKUP.parents[1] / relative
         if not original.is_file():

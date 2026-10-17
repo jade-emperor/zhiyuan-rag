@@ -2,9 +2,9 @@
  * 后端出参的 TypeScript 形状 —— 与 `src/project_rag/api/schemas.py` 一一对应。
  *
  * **为什么不从 OpenAPI 生成**:生成要跑一次代码生成、产物也要入库,而这一层现在只有
- * 十来个模型。真正需要它的时候是「接口数量 × 团队人数」变大以后(见 docs/frontend.md §5)。
- * 在那之前,这里的类型是**手写的镜像**,靠 `check_m7_frontend.py` 的契约盯着
- * 「字段名与 schemas.py 一致」—— 手写不等于可以漂。
+ * 十来个模型。真正需要它的时候是「接口数量 × 团队人数」变大以后。
+ * 在那之前,这里的类型是**手写的镜像**,靠一条契约盯着「字段名与 schemas.py 一致」——
+ * 手写不等于可以漂。
  */
 
 /** 三个角色(与 `domain/auth.py` 的 USER_ROLES 一一对应)。**前端不比较角色字符串** ——
@@ -109,13 +109,19 @@ export interface Citation {
   preview: string
   score: number
   rerank_score: number | null
-  /** None = 不知道(md/txt 或 P0-5 之前入库的老块)—— 显示「页码未知」,不许拿 0/1 顶。 */
+  /** None = 不知道(md/txt 没有页码,早期入库的老块也可能没有)—— 显示「页码未知」,不许拿 0/1 顶。 */
   page: number | null
 }
 
 export interface HistoryTurn {
   question: string
   answer: string
+  /**
+   * 当轮的引用卡片(快照:序号 / 来源 / 页码 / 分数 / 预览)。
+   *
+   * 老账(那时还没存引用)给空数组 —— 界面按"这一轮的出处没留下"处理,而不是假装没有出处。
+   */
+  citations: Citation[]
 }
 
 export interface HistoryOut {
@@ -206,7 +212,7 @@ export interface DocumentRecord {
   /** **向量库里**实际的块数(与 `chunks` 不是一个数:相等才是"对得上")。 */
   indexed_chunks: number
   /**
-   * 这份文档有没有被收窄过(P0-6)。**谁看得见是另一回事** —— 清单已经按可见范围过滤过,
+   * 这份文档有没有被收窄过。**谁看得见是另一回事** —— 清单已经按可见范围过滤过,
    * 员工看到的每一行他都能看;这个字段只用来标一句"这是限定的"。
    */
   restricted: boolean
@@ -283,23 +289,39 @@ export interface SlowRow {
   total_ms: number
 }
 
-/** `GET /api/v1/reports/metrics` —— 一个时间窗的延迟汇总。 */
-export interface MetricsOut {
-  window: string
+/**
+ * 一个冷热分层里"用户拿到了什么"的计数。`rows` 是这一层的分母,要一起读。
+ *
+ * 冷启动与热启动各一份,**没有合计栏** —— 两层的比率不可加,要加总必须自己写下来。
+ */
+export interface BehaviorCounts {
   rows: number
-  cold_rows: number
-  warm_rows: number
   refused: number
   truncated: number
   aborted: number
   faq_hits: number
   rag_answers: number
+}
+
+/**
+ * `GET /api/v1/reports/metrics` —— 一个时间窗的延迟汇总。
+ *
+ * `rows`/`cold_rows`/`warm_rows` 是"这一窗收了几次请求"(一次请求一行账);
+ * 行为口径在 `warm`/`cold` 里 —— 冷启动不混进拒答率与通道计数。
+ */
+export interface MetricsOut {
+  window: string
+  rows: number
+  cold_rows: number
+  warm_rows: number
+  warm: BehaviorCounts
+  cold: BehaviorCounts
   segments: SegmentStats[]
   slowest: SlowRow[]
 }
 
 /**
- * 消耗报表里的一个模型 + **一个时段**(P0-7)。
+ * 消耗报表里的一个模型 + **一个时段**。
  *
  * 同一个模型最多两行:`peak`(高峰)/ `off_peak`(空闲)—— provider 的空闲时段打折,
  * 单价差 2 倍,所以不能合成一行。
@@ -405,6 +427,35 @@ export interface GroupsOut {
  * `restricted=false` 且两个名单都空 = **没有规则 = 人人可见**(默认状态)。
  * 两个名单都空地 PUT 回去 = 取消限制(不是"谁都看不到")。
  */
+/**
+ * 一份文档在**某一个组**眼里的样子(组侧授权页的三态):
+ *
+ * - `open`    —— 没有规则 = **人人可见**(本组本来就能看;这里禁不掉它 —— 要禁得先收窄文档);
+ * - `allowed` —— 有规则,而且本组在名单里;
+ * - `denied`  —— 有规则,但本组不在名单里。
+ */
+export type GroupDocumentVisibility = 'open' | 'allowed' | 'denied'
+
+export interface GroupDocument {
+  document_id: string
+  filename: string
+  visibility: GroupDocumentVisibility
+  /** 除本组外还授权给了几个对象。取消本组时它是 0 ⇒ 这份文档会回到人人可见。 */
+  other_subjects: number
+}
+
+/** `GET/PUT /api/v1/admin/groups/{id}/documents` 的出参(PUT 会带"改了什么")。 */
+export interface GroupDocumentsOut {
+  group_id: string
+  name: string
+  documents: GroupDocument[]
+  granted: string[]
+  revoked: string[]
+  /** 取消授权后名单变空、**回到了人人可见**的那几份(最该被管理员看见的一栏)。 */
+  opened: string[]
+  notice: string
+}
+
 export interface DocumentAclOut {
   document_id: string
   restricted: boolean

@@ -44,6 +44,7 @@ class Case:
     old: str
     new: str
     needle: str  # 期望红的检查名片段(必须唯一命中)
+    requires_mysql: bool = False  # 这条坏版本要真 MySQL 才验得了(CI 里没有 → 按用例跳过)
 
 
 CASES: tuple[Case, ...] = (
@@ -106,10 +107,10 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-8  recent 忽略 limit（「最近 N 轮」变成「全部轮」,窗口在存储层就破了一半）",
         target=ADAPTERS / "conversation_mysql.py",
-        old="""                    f"SELECT question, answer FROM {self._table} "
+        old="""                    f"SELECT question, answer, citations FROM {self._table} "
                     "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
                     (sid, limit),""",
-        new="""                    f"SELECT question, answer FROM {self._table} "
+        new="""                    f"SELECT question, answer, citations FROM {self._table} "
                     "WHERE session_id = %s ORDER BY id DESC",
                     (sid,),""",
         needle="recent 的 limit 只取最近几轮",
@@ -122,6 +123,44 @@ CASES: tuple[Case, ...] = (
         new="""                cur.execute(
                     f"SELECT 1 FROM {self._table} WHERE session_id = %s AND id NOT IN (\"""",
         needle="record(keep=N) 把该会话裁到最近 N 轮",
+    ),
+    Case(
+        title="RT-10 建表尾巴只写 CHARSET 不写 COLLATE（两族表 JOIN 报 1267,会话列表整页读不出来）",
+        target=ADAPTERS / "mysql_schema.py",
+        old=(
+            'TABLE_OPTIONS = f"ENGINE=InnoDB DEFAULT CHARSET={CHARSET}'
+            ' COLLATE={COLLATION}"'
+        ),
+        new='TABLE_OPTIONS = f"ENGINE=InnoDB DEFAULT CHARSET={CHARSET}"',
+        needle="口径：所有 CREATE TABLE 的尾巴",
+        requires_mysql=True,
+    ),
+    Case(
+        title="RT-11 align_tables 不干活（老表还是两族,JOIN 照样 1267）",
+        target=ADAPTERS / "mysql_schema.py",
+        old="""    names = [name for name in tables if _SAFE_TABLE.match(name)]""",
+        new="""    return ()
+    names = [name for name in tables if _SAFE_TABLE.match(name)]""",
+        needle="真实链路：老表(只写了 CHARSET)",
+        requires_mysql=True,
+    ),
+    Case(
+        title="RT-12 落库时不存引用（切回旧会话:正文里的 [1] 还在,卡片没了）",
+        target=ADAPTERS / "conversation_mysql.py",
+        old="""    if not citations:
+        return None""",
+        new="""    return None
+    if not citations:
+        return None""",
+        needle="真实链路：引用快照随这一轮落库",
+        requires_mysql=True,
+    ),
+    Case(
+        title="RT-13 记历史时不拍快照（recent 读回来的引用永远是空的）",
+        target=APP / "answer_question.py",
+        old="""            citations=snapshot_citations(citations),""",
+        new="""            citations=(),""",
+        needle="记历史时带上引用",
     ),
 )
 
@@ -140,6 +179,32 @@ def run(needle: str) -> tuple[bool, str]:
     return "[FAIL]" in hits[0], hits[0]
 
 
+def _mysql_reachable() -> bool:
+    """输入:无。行为:试连一次 MySQL(5 秒超时)。输出:连得上为真。
+
+    需要真库的那几条坏版本在**没有库的环境里只能跳过** —— 让它们去跑会得到 SKIP,
+    而 SKIP 在反向测试里读作"检查是摆设",那是**误导性结论**(真实情况是"没测")。
+    """
+    try:
+        import pymysql
+
+        from project_rag.config import get_settings
+
+        cfg = get_settings().mysql
+        conn = pymysql.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password.get_secret_value(),
+            database=cfg.database,
+            connect_timeout=5,
+        )
+        conn.close()
+        return True
+    except Exception:  # noqa: BLE001 - 连不上就是"这台机器没有库",不是契约失败
+        return False
+
+
 def main() -> int:
     """输入:无。行为:逐个改坏→跑契约→还原,统计哪几条没红。输出:退出码。"""
     only = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
@@ -148,10 +213,18 @@ def main() -> int:
         print(f"⚠️  上次被打断时留下的坏源码,已自动还原:{stale}\n")
 
     originals = {case.target: case.target.read_text(encoding="utf-8") for case in CASES}
+    has_mysql = _mysql_reachable()
+    if not has_mysql:
+        print("⚠️  连不上 MySQL:需要真库的那几条坏版本**按用例跳过**(CI 里本来就没有库)\n")
     bad = 0
+    skipped = 0
     try:
         for case in CASES:
             if only and not any(case.title.startswith(tag) for tag in only):
+                continue
+            if case.requires_mysql and not has_mysql:
+                skipped += 1
+                print(f"○ 跳过(需要真 MySQL)  {case.title}")
                 continue
             original = originals[case.target]
             hits = original.count(case.old)
@@ -173,7 +246,8 @@ def main() -> int:
             if target.read_text(encoding="utf-8") != original:
                 target.write_text(original, encoding="utf-8")
     print("─" * 68)
-    print("全部反向测试都红了" if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    tail = f";{skipped} 条跳过(需要真 MySQL)" if skipped else ""
+    print("全部反向测试都红了" + tail if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
     return 1 if bad else 0
 
 

@@ -11,12 +11,14 @@ from .documents import (
 )
 from .models import (
     FUSION_MODES,
+    PREVIEW_CHARS,
     RETRIEVAL_MODES,
     Channel,
     ChatMessage,
     Chunk,
     ChunkGroup,
     Citation,
+    CitationSnapshot,
     ConversationTurn,
     Document,
     Embedding,
@@ -35,6 +37,7 @@ from .models import (
     RetrievedChunk,
     Role,
     SparseVector,
+    snapshot_citations,
 )
 from .pages import PageSpans, page_of
 from .rewrite import (
@@ -69,8 +72,11 @@ __all__ = [
     "ChatMessage",
     "Chunk",
     "ChunkGroup",
+    "PREVIEW_CHARS",
     "Citation",
+    "CitationSnapshot",
     "ConversationTurn",
+    "snapshot_citations",
     "Document",
     "Embedding",
     "FaqAnswer",

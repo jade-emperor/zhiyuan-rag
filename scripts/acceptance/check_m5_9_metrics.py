@@ -5,16 +5,17 @@
 
     uv run python scripts/acceptance/check_m5_9_metrics.py
 
-**为什么要有这一份**：账本已经能记了（`check_m5_5_latency.py` 26 条钉着字段与口径），
-但"一次回答一行"回答不了"这周 p95 多少"。加聚合就多出一层**容易骗人的东西** ——
+**为什么要有这一份**：账本已经能记了（`check_m5_5_latency.py` 钉着字段与口径），
+但"一次请求一行"回答不了"这周 p95 多少"。加聚合就多出一层**容易骗人的东西** ——
 上一轮就是拿 28 条样本读 p95，把冷启动噪声当成了"系统很慢"。所以这里的重点不是"能算出来"，
 而是**算出来的数字在什么条件下才有意义**：
 
 1. **分位数用最近秩、不插值**：样本少时插值会给出比任何一次真实观测都好看的数；
 2. **样本不够就不给数**：``p95`` 要 ``n ≥ 20``、``p99`` 要 ``n ≥ 100``，不够一律 ``None``；
 3. **``-``（没量到）不参与统计，也不折算成 0**：折成 0 会把 p50 拉低，而且看不出来；
-4. **分段只在"热"行上算**：冷启动那几行被模型加载主导（rerank 中位 668ms / p95 5383ms 的形状），
-   混进来 p95 就变成"冷启动有多慢"；冷热条数单独报，最慢榜**含冷**（用户真实等到的）；
+4. **冷热各一套数**：分段分位数只算热行；**拒答率、截断率、中断率、通道计数也只数热行**，
+   冷启动（被模型加载主导的那些行）单独一套 —— 混进去会让"这一版答得怎么样"随
+   "这周重启过几次"漂。最慢榜仍然**含冷**（那是用户真实等到的），带 ``cold`` 标记；
 5. **老数据缺 ``cold`` 字段按热算**：那是加字段之前的行，当作热至少不会让它们凭空消失。
 
 落表那半边钉三件事：**只转交带 ``ledger`` 的记录**（不是所有日志都进表）、
@@ -124,15 +125,18 @@ def _missing_excluded() -> str:
     return "15 行里 5 行 '-'：n=10、p50=100.0、max=100.0（没量到 ≠ 0）"
 
 
-@check("口径 冷热分层：冷行不进分段统计，但进比率分母与最慢榜")
+@check("口径 冷热分层：冷启动不进分段统计，也**不进拒答率与通道计数**（单独一套数）")
 def _cold_warm_layering() -> str:
     from project_rag.application.metrics import summarize
 
-    warm = _rows("rerank_ms", [10.0, 20.0], cold="false", total_ms="30.0")
+    warm = _rows("rerank_ms", [10.0, 20.0], cold="false", total_ms="30.0", channel="rag")
+    warm[0]["refused"] = "true"  # 热行里有一次拒答,它才是该被数进拒答率的那一条
     cold = [
-        _row(request_id="cold1", cold="true", builds="2", rerank_ms="5000.0", total_ms="9000.0"),
+        # 冷启动那一层里故意放三种通道:FAQ 直答、知识库、以及"没定通道"(-)
+        _row(request_id="cold1", cold="true", builds="2", rerank_ms="5000.0", total_ms="9000.0",
+             channel="-"),
         _row(request_id="cold2", cold="true", builds="1", rerank_ms="4000.0", refused="true",
-             total_ms="8000.0"),
+             total_ms="8000.0", channel="faq"),
     ]
     summary = summarize(warm + cold, window="t")
     seg = _seg(summary, "rerank_ms")
@@ -145,15 +149,34 @@ def _cold_warm_layering() -> str:
             f"分段只该算热行：n 应 2、max 应 20.0，实际 n={seg.n} max={seg.maximum}"
             f"（max=5000 说明冷行混进了分段统计 —— 那正是 p95 变味的成因）"
         )
-    if summary.refused != 1:
-        raise AssertionError(f"比率的分母是全部行（含冷），拒答该数到 1，实际 {summary.refused}")
-    if summary.faq_hits != 0 or summary.rag_answers != 4:
-        raise AssertionError("通道计数该按 channel 字段统计")
+    # 这一条是本轮改的口径：冷启动里那次拒答（cold2）**不许**算进拒答率 ——
+    # 用户那次等的是模型加载,把它算成"这一版答得怎么样"会让成绩随重启次数漂。
+    if summary.warm.refused != 1 or summary.warm.rows != 2:
+        raise AssertionError(
+            f"热行的拒答该是 1/2，实际 {summary.warm.refused}/{summary.warm.rows}"
+        )
+    if summary.cold.refused != 1 or summary.cold.rows != 2:
+        raise AssertionError(
+            f"冷启动的拒答该单独数：该 1/2，实际 {summary.cold.refused}/{summary.cold.rows}"
+            f"（若为 0，说明冷启动那一套数被藏起来了）"
+        )
+    if (summary.warm.faq_hits, summary.warm.rag_answers) != (0, 2):
+        raise AssertionError(
+            f"热行的通道计数该是 FAQ 0 / 知识库 2，实际 "
+            f"{summary.warm.faq_hits}/{summary.warm.rag_answers}"
+        )
+    if (summary.cold.faq_hits, summary.cold.rag_answers) != (1, 0):
+        raise AssertionError(
+            f"冷启动的通道计数该单独数：FAQ 1 / 知识库 0，实际 "
+            f"{summary.cold.faq_hits}/{summary.cold.rag_answers}"
+        )
+    if summary.warm.other_channels != 0 or summary.cold.other_channels != 1:
+        raise AssertionError("未定通道的行数该按各自那一层算")
     if [item.request_id for item in summary.slowest][:2] != ["cold1", "cold2"]:
         raise AssertionError(
             f"最慢榜该含冷启动（用户真实等到的），实际 {[i.request_id for i in summary.slowest]}"
         )
-    return "4 行（冷 2 / 热 2）：分段 n=2 max=20.0；拒答 1；最慢榜前两名是两条冷启动"
+    return "4 请求（冷 2 / 热 2）：热行拒答 1/2、冷启动拒答 1/2 各自成一套；最慢榜含冷"
 
 
 @check("口径 老数据：缺 cold 字段的行按「热」算（不让它们凭空消失）")
@@ -278,9 +301,15 @@ def _api_shape() -> str:
     if ok.status_code != 200:
         raise AssertionError(f"/api/v1/reports/metrics 该 200，实际 {ok.status_code}：{ok.text[:200]}")
     body = ok.json()
-    for key in ("window", "rows", "cold_rows", "warm_rows", "refused", "segments", "slowest"):
+    for key in ("window", "rows", "cold_rows", "warm_rows", "warm", "cold", "segments", "slowest"):
         if key not in body:
             raise AssertionError(f"响应缺字段 {key}：{sorted(body)}")
+    for layer in ("warm", "cold"):
+        for key in ("rows", "refused", "truncated", "aborted", "faq_hits", "rag_answers"):
+            if key not in body[layer]:
+                raise AssertionError(f"{layer} 层缺字段 {key}：{sorted(body[layer])}")
+    if body["warm"]["rows"] + body["cold"]["rows"] != body["rows"]:
+        raise AssertionError(f"分层条数加不出总数：{body['warm']} + {body['cold']} ≠ {body['rows']}")
     if body["window"] != "1h" or body["rows"] != 2:
         raise AssertionError(f"窗口/行数不对：{body['window']} / {body['rows']}")
     if ledger.since is None:

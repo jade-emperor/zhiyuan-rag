@@ -38,7 +38,9 @@ provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它�
 口径（改口径 = 改契约）::
 
     检索分段     retrieve() 内部六处打点：embed / vector / bm25 / fuse / collapse / rerank
-                 （后五个是段耗时,六段之和 ≈ retrieve_ms;没装重排器时 rerank_ms 为 -）
+                 （六段**各自是自己的时长**;vector 与 bm25 那两路**并行**跑,
+                 所以重叠时六段之和**可以大于** retrieve_ms,但绝不会小于它;
+                 没装重排器时 rerank_ms 为 -）
     ttft_ms     从流开始到**第一帧非空 token** —— 用户看到第一个字的时刻
     gen_ms      第一帧 token → 最后一帧 token 的墙钟（不含 TTFT;不足两帧给 -,不给 0）
     tps         tokens / gen_ms;不足两帧给 -（单帧算不出速率,不编数）
@@ -75,9 +77,10 @@ provider 在流末尾回报的那一份用量,报表拿它乘单价算钱。它�
     4. **中断也要留账**。客户端断开时生成器被 close(),走 GeneratorExit 分支:
        「慢到用户跑掉」的请求恰恰最该看;顺手把 close() 传给上游,让它照旧做
        「这一轮不入库」的清理（M5.3b 的语义不许被这层破坏）。
-    5. **一次回答的账是一对嵌套 span**:``label=qa``（路由 + FAQ 匹配 + …）在外,
-       ``label=rag``（检索 + 首字 + 吐字）在内,各一条。合成一条就得让内层把打点
-       回传给外层,那是给日志改协议,不值当。
+    5. **一次请求只有一条账**。``qa`` 那一层开账,并把**同一个** ``timing`` 交给知识库通道,
+       检索/生成的打点记在同一行上（``stream_rag`` 拿到别人的 ``timing`` 就不再自己
+       ``emit``、也不再包一层 ``timed``）。**两个各开一条的后果不是"多一行日志"**:
+       报表的请求量、拒答率、通道计数会全部翻倍,而翻倍在报表上只表现为"量比想象的大"。
 """
 
 from __future__ import annotations
@@ -92,7 +95,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from _harness import check, report, record
-from _fakes import FakeEmbedder, FakeFaqStore, FakeMatcher, FakeVectorStore, PacedFakeLLM
+from _fakes import (
+    FakeEmbedder,
+    FakeFaqStore,
+    FakeKeywordIndex,
+    FakeMatcher,
+    FakeVectorStore,
+    PacedFakeLLM,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "project_rag"
@@ -259,7 +269,12 @@ def _faq_entry():
     )
 
 
-def _rag_stream(llm, *, hits=None, store=None, options=None, thinking=None):
+def _rag_stream(llm, *, hits=None, store=None, options=None, thinking=None, timing=None):
+    """输入:假 LLM + 可选的假向量库/旋钮/档位/账本。行为:调一次 stream_rag。输出:帧流。
+
+    ``timing`` 由合流入口交下来时**原样转交** —— 组合根就是这么做的
+    (``knowledge_callable``),少了这一步一次请求会落两行账。
+    """
     from project_rag.domain import RetrievalOptions
 
     return _stream_rag()(
@@ -270,6 +285,7 @@ def _rag_stream(llm, *, hits=None, store=None, options=None, thinking=None):
         keyword_index=None,
         options=options or RetrievalOptions(k=3, max_context=2),
         thinking=thinking,
+        timing=timing,
     )
 
 
@@ -586,7 +602,7 @@ def _() -> str:
 
     qa = _drain(
         _question_stream(
-            knowledge=lambda history: iter(
+            knowledge=lambda history, timing: iter(
                 [
                     _qa_event()(kind="sources", citations=()),
                     _qa_event()(kind="token", text="甲"),
@@ -647,7 +663,7 @@ def _() -> str:
 
 @check("纪律 不吞异常：上游抛错时账照记（aborted=true），异常原样上抛")
 def _() -> str:
-    def boom(history):
+    def boom(history, timing):
         yield _qa_event()(kind="token", text="半句")
         raise RuntimeError("上游炸了")
 
@@ -666,7 +682,7 @@ def _() -> str:
 
 
 # ── 5. 各条链路的账 ───────────────────────────────────────────────────────────
-@check("检索分段：五段之和 ≈ retrieve_ms；没装重排器时 rerank_ms 是 '-'（不是 0.0）")
+@check("检索分段：五段分别量到，且和 ≥ retrieve_ms；没装重排器时 rerank_ms 是 '-'（不是 0.0）")
 def _() -> str:
     with _capture() as catcher:
         _drain(_rag_stream(PacedFakeLLM(KB_PARTS, first_delay=0.01)))
@@ -683,11 +699,105 @@ def _() -> str:
         raise AssertionError(f"这几个分段字段没量到：{missing}")
     legs_sum = sum(value for value in values.values() if value is not None)
     total = _num(fields, "retrieve_ms")
-    if total is None or not 0 <= total - legs_sum < 2:
+    # 这一段的**关键字那一路是关着的**,所以两路没有重叠,和就该≈墙钟(差在返回与截断那一下)。
+    # 两路都在跑的时候和会**大于**墙钟(重叠) —— 那条恒等式由下一条检查单独钉
+    # (「两路召回并行」),这里只管"有没有哪一段没量到、有没有哪段把别人的时间算进来"。
+    if total is None or not -2 <= total - legs_sum < 2:
         raise AssertionError(
-            f"分段之和应 ≈ retrieve_ms（差在返回与截断那一下），实际 段和={legs_sum} retrieve={total}"
+            f"分段之和应 ≈ retrieve_ms（这一段没有并行,所以是≈而不是≤）,"
+            f"实际 段和={legs_sum} retrieve={total}"
         )
     return f"五段和={legs_sum:.1f}ms ≈ retrieve={total:.1f}ms；没装重排 → rerank_ms='-'"
+
+
+@check("两路召回并行：墙钟 ≈ max(两路) 而不是相加，融合段不吸「等另一路」的时间")
+def _() -> str:
+    """作者报「就做两路召回并行化」之后的契约。两个场景各钉一件事：
+
+    1. **两路一样慢**(各 0.4s)—— 并行 → 墙钟 ≈ 0.4s,串行 → 0.8s。判据取
+       ``墙钟 < 0.7 × (两段之和)``,两侧各留 150ms 余量,不受机器负载影响;
+    2. **一路快一路慢**(0.4s / 0.1s)—— ``bm25_ms`` 必须是**它自己的** 0.1s(不是 0、
+       不是负数、更不是"从上一个打点到它"的 0.3s),而 ``fuse_ms`` 必须**不**把
+       "等稠密那一路"的 0.3s 吸进来。这一条盯的是稀疏那一路先结束时最容易犯的错:
+       融合段的起点取成了"先结束的那一路",于是账上写着"融合 300ms",而融合其实什么
+       都没干 —— 下一个人会去优化一个不存在的问题。
+    """
+    from project_rag.domain import RetrievalOptions
+
+    retrieve = _require("project_rag.application", ("retrieve",)).retrieve
+
+    def run(vector_delay: float, keyword_delay: float):
+        timing = _stream_timing()("probe")
+        started = time.perf_counter()
+        hits = retrieve(
+            "装饰器有什么用",
+            embedder=FakeEmbedder(),
+            store=FakeVectorStore([_kb_hit()], delay=vector_delay),
+            keyword_index=FakeKeywordIndex([_kb_hit("bagu_kb")], delay=keyword_delay),
+            options=RetrievalOptions(k=3, max_context=2),
+            timing=timing,
+        )
+        return timing.values(), (time.perf_counter() - started) * 1000.0, len(hits)
+
+    fields, wall, found = run(0.4, 0.4)
+    vector, keyword = _num(fields, "vector_ms"), _num(fields, "bm25_ms")
+    if vector is None or keyword is None:
+        raise AssertionError(f"两路都跑了,两格都该有值,实际 vector={vector} bm25={keyword}")
+    if not 300 <= vector <= 900 or not 300 <= keyword <= 900:
+        raise AssertionError(f"两段该各≈400ms（假端口各睡 0.4s），实际 {vector} / {keyword}")
+    if wall > 0.7 * (vector + keyword):
+        raise AssertionError(
+            f"两路该并行:墙钟 {wall:.1f}ms 应 < 0.7×(两段之和 {vector + keyword:.1f}ms)≈"
+            f"{(vector + keyword) * 0.7:.1f}ms —— 墙钟≈两段之和说明它们又串起来了"
+        )
+    if not found:
+        raise AssertionError("并行召回把命中弄丢了(引用数 0)")
+
+    fields, wall, _ = run(0.4, 0.1)
+    vector, keyword = _num(fields, "vector_ms"), _num(fields, "bm25_ms")
+    fuse = _num(fields, "fuse_ms")
+    if keyword is None or not 60 <= keyword <= 400:
+        raise AssertionError(
+            f"bm25_ms 该报**关键字那一路自己**的 ≈100ms（假端口睡 0.1s），实际 {keyword} "
+            "—— 负数或 300ms 量级的都是「用相邻打点之差」算出来的"
+        )
+    if fuse is None or fuse > 100:
+        raise AssertionError(
+            f"融合段该只有它自己的工作(≈0ms),实际 {fuse}ms —— 说明它的起点取成了"
+            "「先结束的那一路」,把等另一路的 300ms 吸进来了"
+        )
+    return (
+        f"两路各 0.4s → 墙钟 {wall:.0f}ms < 和 0.8s；0.4/0.1 → bm25={keyword:.0f}ms 且 fuse={fuse:.1f}ms"
+    )
+
+
+@check("只开关键字那一路：bm25_ms 报的是它自己的时长（并行之前这一格是 '-'，量到了却说没量到）")
+def _() -> str:
+    """口径修正的钉子：``vector_weight=0`` 时稠密那一路压根不跑,于是"相邻两打点之差"
+    缺了起点,``bm25_ms`` 一直是 ``-`` —— 而那一路明明跑了、也明明量到了时间。
+    改成各路自报之后它该有值,同时 ``vector_ms`` 仍是 ``-``（那一路确实没跑）。"""
+    from project_rag.domain import RetrievalOptions
+
+    retrieve = _require("project_rag.application", ("retrieve",)).retrieve
+    timing = _stream_timing()("probe")
+    retrieve(
+        "装饰器有什么用",
+        embedder=FakeEmbedder(),
+        store=FakeVectorStore([_kb_hit()]),
+        keyword_index=FakeKeywordIndex([_kb_hit("bagu_kb")], delay=0.1),
+        options=RetrievalOptions(k=3, max_context=2, vector_weight=0.0),
+        timing=timing,
+    )
+    fields = timing.values()
+    keyword, vector = _num(fields, "bm25_ms"), fields["vector_ms"]
+    if keyword is None or not 60 <= keyword <= 400:
+        raise AssertionError(
+            f"只跑关键字那一路时 bm25_ms 该是 ≈100ms 的真读数，实际 {fields['bm25_ms']!r}"
+            "—— 那一格是 '-' 的话,「关键字那一路慢不慢」就永远查不出来"
+        )
+    if vector != "-":
+        raise AssertionError(f"稠密那一路没跑,vector_ms 该是 '-'（不是 0.0），实际 {vector!r}")
+    return f"只开关键字 → bm25_ms={keyword:.0f}ms、vector_ms='-'"
 
 
 @check("链路 拒答：一条 rag 账，refused=true、tokens=1、tps='-'（没调模型就不该有首字/速率）")
@@ -709,7 +819,7 @@ def _() -> str:
 def _() -> str:
     seen: list[int] = []
 
-    def knowledge(history):
+    def knowledge(history, timing):
         seen.append(1)
         return iter(())
 
@@ -730,25 +840,45 @@ def _() -> str:
     return f"channel=faq faq_ms={faq:.1f} ttft={ttft:.1f}"
 
 
-@check("链路 合流走知识库：嵌套两条 span（内层 rag 先收尾、外层 qa），tokens 一致")
+@check("链路 合流走知识库：**一条**账（label=qa），检索/首字的分段都落在同一行上")
 def _() -> str:
     llm = PacedFakeLLM(KB_PARTS, first_delay=0.01)
     with _capture() as catcher:
-        _drain(_question_stream(knowledge=lambda history: _rag_stream(llm)))
-    if len(catcher.lines) != 2:
-        raise AssertionError(f"应恰好两条账（rag 内层 + qa 外层），实际 {catcher.lines}")
-    inner, outer = (_parse(line) for line in catcher.lines)
-    if inner["label"] != "rag" or outer["label"] != "qa":
-        raise AssertionError(f"内层应是 rag、外层应是 qa，实际 {inner['label']} / {outer['label']}")
-    if outer["channel"] != "rag":
-        raise AssertionError(f"外层通道应是 rag，实际 {outer['channel']}")
-    if _int(inner, "tokens") != _int(outer, "tokens"):
-        raise AssertionError(f"两层数的是同一条流，tokens 应相同：{inner['tokens']} vs {outer['tokens']}")
-    if _num(outer, "sources_ms") is None:
-        raise AssertionError("外层应量到 sources（检索完的时刻）")
-    if _num(outer, "retrieve_ms") is not None:
-        raise AssertionError("外层不直接做检索，retrieve_ms 不该有值（那是内层的活）")
-    return "两条嵌套 span：rag 内层 + qa 外层"
+        events = _drain(_question_stream(knowledge=lambda history, timing: _rag_stream(llm, timing=timing)))
+    if len(catcher.lines) != 1:
+        raise AssertionError(
+            f"一次请求只能有一条账（多了就是请求量翻倍），实际 {len(catcher.lines)} 条：{catcher.lines}"
+        )
+    fields = _parse(catcher.lines[0])
+    if fields["label"] != "qa" or fields["channel"] != "rag":
+        raise AssertionError(f"应是 label=qa channel=rag，实际 {fields['label']} / {fields['channel']}")
+    # 内层的打点必须真的落在这一行上 —— 「合成一条」最坏的做法是外层只留个总时长,
+    # 那样报表还在,只是"检索花了多久"永远查不出来
+    for name in ("faq_ms", "retrieve_ms", "sources_ms", "llm_ttft_ms"):
+        if _num(fields, name) is None:
+            raise AssertionError(f"合流走知识库时 {name} 该有值（它记在同一行上），实际 {fields[name]}")
+    frames = sum(1 for event in events if event.kind == "token" and event.text)
+    if _int(fields, "tokens") != frames:
+        raise AssertionError(
+            f"tokens 该等于正文帧数 {frames}（多包一层 timed 会数两遍），实际 {fields['tokens']}"
+        )
+    return f"一条 qa 账：faq→检索→首字的分段齐全，tokens={frames}"
+
+
+@check("链路 帧数只数一遍：合流那一行的 tokens 等于正文帧数（同一个账本被观察两次就翻倍）")
+def _() -> str:
+    llm = PacedFakeLLM(KB_PARTS, first_delay=0.01)
+    with _capture() as catcher:
+        events = _drain(
+            _question_stream(knowledge=lambda history, timing: _rag_stream(llm, timing=timing))
+        )
+    fields = _only(catcher)
+    frames = sum(1 for event in events if event.kind == "token" and event.text)
+    if _int(fields, "tokens") != frames:
+        raise AssertionError(
+            f"tokens 该等于正文帧数 {frames}，实际 {fields['tokens']} —— 同一个 timing 被包了两层 timed 就会数两遍"
+        )
+    return f"一个正文帧记一个 token（{frames}）"
 
 
 @check("链路 非流式入口：answer_question 收拢后照样有账（收拢器不改计时语义）")
@@ -759,18 +889,17 @@ def _() -> str:
             "装饰器有什么用",
             faq_store=FakeFaqStore([_faq_entry()]),
             matcher=FakeMatcher(None),
-            knowledge=lambda history: _rag_stream(llm),
+            knowledge=lambda history, timing: _rag_stream(llm, timing=timing),
             faq_threshold=0.85,
         )
     if result.answer != "".join(KB_PARTS):
         raise AssertionError(f"答案不对，实际 {result.answer!r}")
-    labels = [_parse(line)["label"] for line in catcher.lines]
-    if labels != ["rag", "qa"]:
-        raise AssertionError(f"非流式也该有两条账（rag → qa），实际 {labels}")
-    outer = _parse(catcher.lines[1])
-    if outer["aborted"] != "false" or _int(outer, "tokens") != len(KB_PARTS):
-        raise AssertionError(f"收拢完应是正常收尾 + 数到全部 token，实际 {outer}")
-    return "answer_question 也有两条账"
+    if len(catcher.lines) != 1:
+        raise AssertionError(f"非流式也只该有一条账，实际 {[l.split()[0] for l in catcher.lines]}")
+    fields = _parse(catcher.lines[0])
+    if fields["label"] != "qa" or fields["aborted"] != "false" or _int(fields, "tokens") != len(KB_PARTS):
+        raise AssertionError(f"收拢完应是 label=qa + 正常收尾 + 数到全部 token，实际 {fields}")
+    return "answer_question 也只有一条账"
 
 
 @check("链路 思考入账：思考帧进 think_tokens / llm_think_ms，**一个字都不许混进答案与 tokens**")
@@ -830,7 +959,7 @@ def _() -> str:
         raise AssertionError(f"answer_rag(thinking='high') 该写进账里（它是 stream_rag 的收拢器），实际 {collapsed!r}")
 
     with _capture() as catcher:
-        _drain(_question_stream(thinking="max", knowledge=lambda history: _rag_stream(PacedFakeLLM(KB_PARTS))))
+        _drain(_question_stream(thinking="max", knowledge=lambda history, timing: _rag_stream(PacedFakeLLM(KB_PARTS), timing=timing)))
     outer = _parse(catcher.lines[-1])
     if outer["label"] != "qa" or outer["thinking"] != "max":
         raise AssertionError(f"合流外层也要带上档位（FAQ 命中时账里只有这一条），实际 {outer}")

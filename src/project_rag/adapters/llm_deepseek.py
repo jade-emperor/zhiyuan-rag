@@ -213,7 +213,7 @@ class DeepSeekLLM(LLMClient):
         ④ 思考帧的 ``content`` 是空串,正文帧的 ``additional_kwargs`` 里没有 reasoning ——
            两个字段不会同时有值,但也不该假设它一定不会(见上)。
 
-        **用量(含缓存命中数)挂在收尾帧上**(P0-7):它可能在任意一帧(带 finish_reason 的那帧、
+        **用量(含缓存命中数)挂在收尾帧上**:它可能在任意一帧(带 finish_reason 的那帧、
         或它后面那个只有用量的空帧),所以逐帧看一眼、后到的覆盖先到的 —— 最后那个才是完整的一次调用。
         """
         reason: str | None = None

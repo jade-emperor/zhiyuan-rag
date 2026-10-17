@@ -5,7 +5,7 @@
 (嵌入 + 两路召回 + 融合 + 折叠父块 + 重排)、③模型首字(TTFT)、④模型吐字速度(tps)。
 不分开量就只能猜,而排查延迟时「猜」是最贵的做法:改一个旋钮、跑一遍、还是慢。
 
-三个口径写死在这里(**改口径 = 改契约**,`check_m5_5_latency.py` 钉住):
+三个口径写死在这里(**改口径 = 改契约**):
 
 - ``ttft_ms``:从流开始到**第一帧非空 token** —— 用户看到第一个字的时刻;
 - ``gen_ms`` :第一帧 token 到最后一帧 token 的墙钟(**不含** TTFT);
@@ -22,7 +22,7 @@
 它是 ``-`` ⟺ 压根没调 provider(FAQ 命中、检索为空拒答)。
 
 ``tokens`` 数的是**非空 token 帧的个数**。DeepSeek 的 SSE 一个 chunk 通常就是一个 token,
-所以这是个够用的近似;要精确值得引 tokenizer(那是另一件事,见 `deferred.md`)。
+所以这是个够用的近似;要精确值得引 tokenizer(那是另一件事,目前不做)。
 ``think_tokens`` 同理数思考帧 —— **思考帧绝不计入 ``tokens``**:混进去会让「答案多少字」
 凭空变大,还会让 TTFT 提前到思考开始那一刻,而那正是这个指标要回答的问题。
 
@@ -88,14 +88,14 @@ _MIN_GEN_MS = 1.0
 # 这几个打点问的是「**检索**那一段花了多久」,所以开了查询改写之后,它们的起点是
 # **改写结束的时刻**,不是开账时刻:一次 LLM 改写能花掉一秒多,把它算进 `retrieve_ms`,
 # 这个数就再也回答不了"检索本身有没有变慢"。改写自己花了多久由 `rewrite_ms` 单独报。
-# 没改写时这些点压根不存在,起点自然还是开账时刻 —— 口径与以前逐字一致。
+# 没改写时这些点压根不存在,起点自然还是开账时刻。
 _AFTER_REWRITE = ("embed", "retrieve")
 
 # ── 冷启动证据 ───────────────────────────────────────────────────────────────
 # 组合根里那四个 `@lru_cache` 重资源工厂(嵌入 / 重排 / 向量库 / BM25 索引)**每次真正构造**
 # 时调一次 `note_build()`。为什么需要它:账本原来分不清「这一轮慢」是慢在服务本身还是慢在
 # 「这一轮顺手把 2G 的模型加载了」。实测过这个形状 —— 28 条样本里 rerank 中位 668ms
-# 而 p95 **5383ms**(8 倍),不分层的话 p95 全是冷启动的噪声,P0-1 省下的 400ms 会被淹掉。
+# 而 p95 **5383ms**(8 倍),不分层的话 p95 全是冷启动的噪声,别处省下的那点时间会被淹掉。
 # 判据用「本次请求期间构造过重资源」而不是「进程启动后第几个请求」:预热(warmup)会把
 # 冷启动挪到启动阶段,那时计数器已经涨过了,所以第一个真实请求就是 warm —— 与我们想要的
 # 语义一致(该请求确实没有为用户付加载时间)。
@@ -154,7 +154,10 @@ class StreamTiming:
     - ``"retrieve"``:整个检索返回(``stream_rag`` 里 ``retrieve()`` 的下一步);
     - ``"embed"`` / ``"vector"`` / ``"bm25"`` / ``"fuse"`` / ``"collapse"`` / ``"rerank"``:
       检索内部的六段(查询嵌入 → 向量检索 → 关键字那一路 → 融合 → 折叠父块 → 重排),
-      由 ``retrieve()`` 打 —— 它们让「检索 1.8s 到底花在哪」不用猜;
+      由 ``retrieve()`` 打 —— 它们让「检索 1.8s 到底花在哪」不用猜。
+      ``"vector"``/``"bm25"`` 这两路**并行**跑,所以那两格的分段值由各路 ``span()`` 自报
+      (相邻打点之差在这里量不出各自时长,见 ``span``);两条打点仍在召回段结束时落下,
+      它们只负责让后面几段的差值接得上;
     - ``"llm_start"``:提示词已拼好、准备调 provider(``llm_ttft_ms`` 与 ``llm_think_ms`` 的**起点**)。
     """
 
@@ -171,6 +174,9 @@ class StreamTiming:
     builds0: int = field(default_factory=build_count)
     started: float = field(default_factory=time.perf_counter)
     marks: dict[str, float] = field(default_factory=dict)
+    # 各路**自己报**的段耗时(毫秒)。只有并行跑的那两路需要它:相邻打点之差量不出
+    # "谁花了多久"(见 ``span``)。空着就退回打点之差 —— 单路那几条老路一字不变。
+    spans: dict[str, float] = field(default_factory=dict)
     first_token: float | None = None
     last_token: float | None = None
     tokens: int = 0
@@ -192,8 +198,23 @@ class StreamTiming:
     _logged: bool = False
 
     def mark(self, name: str) -> None:
-        """输入:打点名。行为:记下**第一次**到达该点的时刻(重复来不改它)。输出:无。"""
+        """输入:打点名。行为:记下**第一次**到达该点的时刻(重复来不改它)。输出:无。
+
+        **线程安全**这件事只说一遍:时刻先取好,落库是 ``dict.setdefault`` 一次原子调用
+        (CPython 的 dict 操作不会被线程切换打断),所以 ``answer_rag`` 那两路子线程
+        各报各的名字不会互相踩;同名以先到的为准 —— 与串行时"只认第一次"是同一个口径。
+        """
         self.marks.setdefault(name, time.perf_counter())
+
+    def span(self, name: str, ms: float) -> None:
+        """输入:段名 + 这一段的耗时(毫秒)。行为:记下**第一次**报来的值(重复来不改)。输出:无。
+
+        为什么要有它:``vector`` 与 ``bm25`` 两路**并行**跑(见 ``answer_rag._gather``),
+        相邻两个打点之差在这里量不出各自的时长 —— 先结束的那一路会被算成负数;而不管怎么
+        摆那两个点,融合那一段都会把"等另一路"的时间吸进去。改由**各路自己报自己的时长**,
+        ``values()`` 优先取这里的值,取不到才退回打点之差。
+        """
+        self.spans.setdefault(name, ms)
 
     def token(self, text: str) -> None:
         """输入:一帧 token 的文本。
@@ -248,12 +269,12 @@ class StreamTiming:
         """输入:provider 回报的一次用量(模型名 + 三个 token 数)。行为:记下来。输出:无。
 
         **收的是三个基本类型,不是一个 ``LlmUsage`` 对象**:账本是纯计时的,
-        它只 import 标准库(那条分层法律有契约盯着 —— ``check_m5_5_latency.py``)。
+        它只 import 标准库(那条分层法律有契约盯着)。
         让 ``application`` 那一层把领域对象拆开交进来,账本因此不认识 domain。
         
 
-        **只在"真的调了模型"的那一层调它**(见 ``application/answer_rag.py``):一次合流请求
-        会产生两行账(外层 ``qa`` + 内层 ``rag``),用量只记在内层 —— 两行都记就是双倍计入金额,
+        **只在"真的调了模型"的那一层调它**(见 ``application/answer_rag.py``):
+        一次请求只落一行账,用量就记在那一行上;同一轮记两遍就是双倍计入金额,
         而那种错在报表上看起来只是"花得有点多"。
 
         重复调用时**后来的覆盖先前的**:provider 是在流末尾给的这一个数,
@@ -366,6 +387,17 @@ class StreamTiming:
             return None
         return (second - first) * 1000.0
 
+    def _segment(self, name: str, start: str, end: str) -> float | None:
+        """输入:段名 + 该段两端的打点名。
+
+        行为:段耗时 —— **自己报过就用报的**(``span()``,并行的那两路),没报过才用打点之差。
+        输出:毫秒;两边都缺给 None。
+        """
+        reported = self.spans.get(name)
+        if reported is not None:
+            return reported
+        return self._gap(start, end)
+
     def values(self) -> dict[str, str]:
         """输入:无。行为:把账本渲染成 ``{字段名: 文本值}``(顺序即 ``_FIELDS``)。输出:字典。
 
@@ -375,8 +407,10 @@ class StreamTiming:
         到该打点(``retrieve_ms`` 是检索总时长;``embed_ms`` 是检索的第一件事,所以累计=本段时长);
         ``embed_ms``/``retrieve_ms`` 有一个例外:开了查询改写时它们从**改写结束**算起
         (见 ``_AFTER_REWRITE``),``rewrite_ms`` 单独报改写那段;
-        ``vector_ms``/``bm25_ms``/``fuse_ms``/``collapse_ms``/``rerank_ms`` 是**相邻两个打点之差**
-        (段耗时,六段之和 ≈ ``retrieve_ms``);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
+        ``vector_ms``/``bm25_ms`` 是**这两路各自报的自己的时长**(两路并行跑,会重叠,
+        所以六段之和**可以大于** ``retrieve_ms``;自己没报时退回相邻打点之差);
+        ``fuse_ms``/``collapse_ms``/``rerank_ms`` 是**相邻两个打点之差**
+        (段耗时,这三段串行,和 ≈ ``retrieve_ms`` 减去两路召回那一段);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
         ``llm_ttft_ms`` 是 ``llm_start`` 到第一帧 token;``think_tokens``/``tokens`` 是帧数;
         ``llm_model``/``llm_input_tokens``/``llm_cached_input_tokens``/``llm_output_tokens`` 是
         **provider 回报的计费口径**(没调模型或没回报时是 ``-``,报表按它们算钱,
@@ -397,8 +431,8 @@ class StreamTiming:
             "sources_ms": _ms(self._offset("sources")),
             "retrieve_ms": _ms(self._offset("retrieve")),
             "embed_ms": _ms(self._offset("embed")),
-            "vector_ms": _ms(self._gap("embed", "vector")),
-            "bm25_ms": _ms(self._gap("vector", "bm25")),
+            "vector_ms": _ms(self._segment("vector", "embed", "vector")),
+            "bm25_ms": _ms(self._segment("bm25", "vector", "bm25")),
             "fuse_ms": _ms(self._gap("bm25", "fuse")),
             "collapse_ms": _ms(self._gap("fuse", "collapse")),
             "rerank_ms": _ms(self._gap("collapse", "rerank")),

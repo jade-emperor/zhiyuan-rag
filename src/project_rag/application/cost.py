@@ -369,9 +369,9 @@ def _called_llm(row: Mapping[str, str]) -> bool:
     第一帧思考的时刻(``llm_think_ms``)、模型名、或 token 数 —— 任一有值就算调过。
     FAQ 命中、检索为空直接拒答、寒暄这三条路压根不调模型,这几格全是 ``-``。
 
-    **为什么不用 ``channel == "rag"``**:一次合流请求会产生两行账(外层 ``qa`` 与内层
-    ``rag``,见 ``application/answer_question.py``),两行的 channel 都是 rag ——
-    用 channel 判会把调用次数数成两倍,而金额就是 ×2 的错。token 只记在内层那一行上,
+    **为什么不用 ``channel == "rag"``**:2026-10 之前记的账里,一次合流请求是**两行**
+    (合流入口一行 + 知识库通道一行),两行的 channel 都是 rag —— 用 channel 判会把那些老账
+    的调用次数数成两倍,而金额就是 ×2 的错。用量只记在真调 provider 的那一行上,
     这里判的也正是"这一行有没有真的在调模型"。
     """
     if any(

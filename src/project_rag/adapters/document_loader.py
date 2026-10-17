@@ -212,7 +212,7 @@ def load_documents(path: Path) -> LoadedCorpus:
         if source is None:
             skipped.append(relative)
             continue
-        # P0-5:**有页码能力的源就用它**(结构判据,不用 isinstance):
+        # **有页码能力的源就用它**(结构判据,不用 isinstance):
         # `read_with_pages` 不是端口成员(只有 PDF 有页码),所以这里不该写死类型。
         # 拿到的 (正文, 区间表) 与 read() 的正文逐字符一致,适配器那边有契约钉着。
         pages: tuple[tuple[int, int, int], ...] = ()

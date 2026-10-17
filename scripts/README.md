@@ -16,8 +16,8 @@
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 22 套契约 + 21 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：30 套契约 + 21 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 22 套契约 + 23 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：31 套契约 + 23 份反向（要中间件 + 语料 + key）
 ```
 
 > **这四个数（22 / 30 / 21 / 21）同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
@@ -72,7 +72,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 30 份检查 + 21 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 31 份检查 + 23 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标
@@ -150,11 +150,12 @@ uv run python scripts/tools/reset_data.py --yes    # 备份（mysqldump + 待删
 
 ```bash
 uv run python scripts/acceptance/check_m5_qa.py          # 33 通过 / 0 失败 / 0 跳过（6.1 路由）
-uv run python scripts/acceptance/check_m5_history.py     # 32 通过 / 0 失败 / 0 跳过（6.2 会话历史）
+uv run python scripts/acceptance/check_m5_history.py     # 40 通过 / 0 失败 / 0 跳过（6.2 会话历史 + 建表排序规则口径 + 引用快照）
 uv run python scripts/acceptance/check_m5_stream.py      # 37 通过 / 0 失败 / 0 跳过（6.2：截断可见 + 流式入口 + 思考开关/思考与正文分家）
 uv run python scripts/acceptance/check_m5_api.py         # 26 通过 / 0 失败 / 0 跳过（6.3：M5 那九条路由 + 命名空间 + 事件循环不被占住 + 起服务姿势，无需容器）
 uv run python scripts/acceptance/reverse_m5_api.py       # 反向测试：3 条全红（漏带 /api/v1 前缀的新端点 / 静态挂载漏掉 html=True / 删掉路由装饰器）
-uv run python scripts/acceptance/check_m5_5_latency.py   # 27 通过 / 0 失败 / 0 跳过（M5.5/M5.8：TTFT/tps/检索六段/思考三字段/改写一段，不联网、无需容器）
+uv run python scripts/acceptance/check_m5_5_latency.py   # 30 通过 / 0 失败 / 0 跳过（M5.5/M5.8：TTFT/tps/检索六段/两路召回并行/思考三字段/改写一段，不联网、无需容器）
+uv run python scripts/acceptance/reverse_m5_5_latency.py # 反向测试：4 条全红（一次请求只有一条账 / 帧数只数一遍 / 两路又串起来 / 分段退回打点之差）
 uv run python scripts/acceptance/reverse_m5_8.py         # 反向测试：7 条全红（临时改 src/，finally 里还原；--only RT-1 可单选）
 #   ⚠️ check_m5_stream 里有 3 次极小真调（各一个问题、上限 16/32 token）：钉「provider 把
 #      finish_reason 放在哪个字段」「thinking=off 真的不思考（0 个 reasoning 帧）」以及
@@ -202,6 +203,34 @@ docker run --rm --gpus all -v "$PWD":/work -w /work --entrypoint python \
 
 设计理由与真机读数见 `docs/STATUS.md` §10.19；判定口径的已知冲突（"宽泛领域词 + 有哪些"
 算 0 类还是 1 类）也记在那里 —— **没动数据**。
+
+### 改写的 A/B：开与不开，四指标 + 代价（M4.6）
+
+**一条命令跑完四步**（builder×2 + RAGAS×2），两臂之间**只有改写这一个变量**：
+
+```bash
+bash scripts/tools/eval_rewrite_ab.sh all      # 全部（约 1 小时；也可以分步跑）
+bash scripts/tools/eval_rewrite_ab.sh report   # 只出对比表，不花钱
+```
+
+| 步骤 | 命令 | 产物 |
+|---|---|---|
+| ① 造评估集 | `build_eval_set_mix.py [--generate-vague]` | `data/eval/eval_set_mix_v1.json`（4 类 × 30 条） |
+| ② 两臂建数据集 | `build_eval_dataset.py --name mix_v1_{norw,rw} [--rewrite]` | `datasets/mix_v1_{norw,rw}_{dataset,raw}.json` |
+| ③ 两臂评估 | `run_ragas_eval.py --tag mix_v1_{norw,rw}` | `ragas_runs/run_*_mix_v1_{norw,rw}.{summary,rows,groups}.csv` |
+| ④ 对比 | `compare_rewrite_ab.py` | `data/eval/rewrite_ab_report.md` |
+
+**两臂的差别就是 `RAG_REWRITE__ENABLED` 与 `--rewrite`**；检索旋钮、语料、模型、提示词、
+评估集全部相同 —— 报告里「差的是改写」这句话靠这一点成立。
+
+**评估集为什么按"四类问法"造**：``direct`` / ``vague`` / ``subquery`` / ``denoise``
+分别对应四个改写策略，一份评估集就能把四路都测到；四类抽的是**互不相交**的小节，
+参考答案**全部是知识库原文**（只有 "假设答案" 那一类的**问题**由 DeepSeek 生成，落盘冻结）。
+
+**验收**：`check_m4_rewrite_ab.py`（LOCAL_ONLY，产物在 `data/` 下）+
+`reverse_m4_rewrite_ab.py`（5 条反向：两臂标志、基线不许有改写字段、评估集确定性、
+报告数字对账、适配器溯源）。报告里每个数都能从两份 `rows.csv` 重算出来 ——
+**手抄一个好看的数进去会当场红**。
 
 ## 多格式入库（装载 / 分派 / 命名）
 
@@ -294,19 +323,30 @@ uv run project-rag doctor --forget-missing             # 清缺块行（登记 p
 
 ```bash
 uv run python scripts/acceptance/check_m5_9_metrics.py      # 10 通过 / 0 失败（除真 MySQL 往返外不需容器）
-uv run python scripts/acceptance/reverse_m5_9.py            # 反向测试：6 条全红（改 metrics.py 与 ledger_sink.py，finally 还原）
+uv run python scripts/acceptance/reverse_m5_9.py            # 反向测试：7 条全红（改 metrics.py 与 ledger_sink.py，finally 还原）
 uv run project-rag metrics --window 24h                     # 人看的报表：分段 p50/p95/p99 + 比率 + 最慢几条
 ```
 
 **权威 = `check_m5_9_metrics.py` 的 docstring**。账本字段本身（31 个）仍由
 `check_m5_5_latency.py` 钉住；这里钉的是**聚合口径**，重点是"数字在什么条件下才有意义"：
 最近秩不插值、样本不够就不给数（p95 要 20 条、p99 要 100 条）、`-` 不折算成 0、
-**分段只算热行**（冷启动被模型加载主导，混进来 p95 就变成"冷启动有多慢"）。
+**冷热各一套数**：分段只算热行，拒答率/截断率/中断率/通道计数**也只数热行**
+（冷启动被模型加载主导；混进来 p95 就变成"冷启动有多慢"，而比率会随"这周重启过几次"漂），
+冷启动那一套单独报（含它自己的分母）—— 藏着和混着一样糟。
 冷/热由 `note_build()` 判定 —— 四个重资源工厂与 BM25 索引**重建处**各打一次点，
 所以预热过的进程第一个真实请求就是热的。
 
 落表链路：`StreamTiming.emit()` → logging handler（认 `extra={"ledger": …}`）→ `LedgerStore` 端口 →
 `adapters/ledger_mysql.py`。**三条入口（CLI / HTTP / WS）自动覆盖**，因为出口只有一处。
+
+**一次请求只有一条账**：账本由合流入口（`stream_question`）开，知识库通道拿到的是**同一个**
+`timing`（`KnowledgeChannel` 的第二个参数），检索/生成的打点记在同一行上。
+两个各开一条的后果不是"多一行日志"—— 报表的请求量、拒答率、通道计数会**全部翻倍**，
+而翻倍在报表上只表现为"量比想象的大"（见 `reverse_m5_5_latency.py` 的用例，前两条就是它）。
+
+**两路召回并行**：`retrieve()` 里稠密与关键字那两路互不依赖，现在是叠着跑的（关键字那一路在
+子线程），所以 `vector_ms` / `bm25_ms` 那两格由**各路自己报自己的时长**（`StreamTiming.span()`）——
+用"相邻打点之差"在并行下会算出负数、或者把"等另一路"的时间算进融合段（见 `docs/STATUS.md` §10.26）。
 
 ## 部署契约（compose / Dockerfile / 依赖档位）
 
@@ -339,13 +379,13 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 |---|---|
 | **前端每个控件的数据从哪来** | `check_m7_frontend.py` 的「能力不写死在前端」+ `web/src/api/endpoints.ts` |
 | 为什么产物入库、为什么 hash 路由 | `check_m7_frontend.py`「产物与源码同源」+「hash 路由 + 相对 base」两条契约 |
-| 契约（M7.1 聊天页） | `check_m7_frontend.py` **17 条**（静态 9 + 行为 8）；反向 `reverse_m7_frontend.py` **10 条** |
+| 契约（M7.1 聊天页） | `check_m7_frontend.py` **18 条**（静态 9 + 行为 9，其中一条盯「存储层坏掉时说人话」）；反向 `reverse_m7_frontend.py` **13 条** |
 | 契约（M7.2 知识库页） | `check_m7_2_kb.py` **12 条**（预览接口行为 7 + 前端静态 5）；反向 `reverse_m7_2_kb.py` **9 条** |
 | 契约（M3 索引 + 稀疏向量） | `check_m3_sparse.py` **16 条**（索引类型由配置决定 3 + 稀疏列边界 3 + BM25 编码口径 6 + 接线 4，全部用桩客户端，零容器）；`check_m3_sparse_milvus.py` **3 条**（真 Milvus：稀疏列往返 / rebuild_index 换类型 / 页码与来源过滤）；反向 `reverse_m3_sparse.py` **10 条全红** |
-| 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **11 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 5）；反向 `reverse_m7_3_metrics.py` **13 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"） |
+| 契约（M7.3 可观测看板） | `check_m7_3_metrics.py` **12 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 6，其中一条盯"冷热分层读数"）；反向 `reverse_m7_3_metrics.py` **15 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"，另有两条盯"冷热分层被画平"：拿总行数当比率分母 / 冷启动那一套数不画出来） |
 | 契约（M7.4 安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
 | 改了前端忘了构建 | 契约第 1 条就会红：产物摘要与当前源码不一致 |
-| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 17 条）+ `browser_m7_2_kb.cjs`（知识库页 12 条）+ `browser_m7_3_metrics.cjs`（可观测看板 18 条，含"样本不够要画 `—` 不是 0"这条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的 `docs/frontend.md`（不随仓库发布） |
+| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 17 条）+ `browser_m7_2_kb.cjs`（知识库页 12 条）+ `browser_m7_3_metrics.cjs`（可观测看板 22 条，含"样本不够要画 `—` 不是 0"、"冷启动那次拒答没被算进拒答率"这两条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_p0_6_access.cjs`（角色与可见范围 23 条：文档侧授权弹层、**组侧「文档权限」三态与勾选保存**、运维页签与接口状态）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的 `docs/frontend.md`（不随仓库发布） |
 
 **三个不进回归的验证件**（在同一个目录里，但**不会**被 `check_*` / `reverse_*` 的 glob 扫到）:
 

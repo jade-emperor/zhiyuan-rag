@@ -89,20 +89,29 @@ def run(args: argparse.Namespace) -> int:
         top_n=args.top,
     )
 
-    rate = (lambda n: f"{n / summary.rows:.1%}") if summary.rows else (lambda n: "-")
+    rate = (lambda n: f"{n / summary.warm.rows:.1%}") if summary.warm.rows else (lambda n: "-")
+    warm = summary.warm
     print(
-        f"窗口 {summary.window} ｜ 账本 {summary.rows} 行"
-        f"（冷 {summary.cold_rows} / 热 {summary.warm_rows}）"
+        f"窗口 {summary.window} ｜ 请求 {summary.rows}"
+        f"（冷启动 {summary.cold_rows} / 热 {summary.warm_rows}）"
     )
     print(
-        f"  拒答 {summary.refused}（{rate(summary.refused)}）"
-        f" ｜ 截断 {summary.truncated}（{rate(summary.truncated)}）"
-        f" ｜ 中断 {summary.aborted}（{rate(summary.aborted)}）"
+        f"  拒答 {warm.refused}（{rate(warm.refused)}）"
+        f" ｜ 截断 {warm.truncated}（{rate(warm.truncated)}）"
+        f" ｜ 中断 {warm.aborted}（{rate(warm.aborted)}）"
+        "   ← 只数热行"
     )
     print(
-        f"  通道：FAQ 直答 {summary.faq_hits} ｜ 知识库 {summary.rag_answers}"
-        f"（其余是未定通道/异常，共 {summary.rows - summary.faq_hits - summary.rag_answers}）"
+        f"  通道：FAQ 直答 {warm.faq_hits} ｜ 知识库 {warm.rag_answers}"
+        f"（其余是未定通道/异常，共 {warm.other_channels}）"
     )
+    if summary.cold_rows:
+        cold = summary.cold
+        print(
+            f"  冷启动 {cold.rows} 次（不计入上面的比率与通道计数）："
+            f"拒答 {cold.refused} ｜ 截断 {cold.truncated} ｜ 中断 {cold.aborted}"
+            f" ｜ FAQ 直答 {cold.faq_hits} ｜ 知识库 {cold.rag_answers}"
+        )
     if summary.rows == 0:
         print("\n这个窗口里没有账 —— 先跑一次 `project-rag qa -q \"…\"` 或打几个请求。")
         return 0
@@ -113,13 +122,13 @@ def run(args: argparse.Namespace) -> int:
             f"{seg.name:<14}{seg.n:>6}{_ms(seg.p50):>10}{_ms(seg.p95):>10}"
             f"{_ms(seg.p99):>10}{_ms(seg.maximum):>10}"
         )
-    print("\n最慢几条(**含冷启动** —— 那是用户真实等到的):")
+    print("\n最慢几条(含冷启动 —— 那是用户真实等到的):")
     for item in summary.slowest:
         cold = "冷" if item.cold else "热"
         print(f"  {item.request_id:<14}{item.channel:<6}{cold}  {item.total_ms:>9.1f} ms")
     print(
         "\np95/p99 样本不够时是 `-`（要 20 / 100 条）；样本量看 n 那一列。"
-        "冷启动那几行不计入分段统计（它们被模型加载主导），单独数在冷/热里。"
+        "冷启动单独一套数（它被模型加载主导）：不进分段统计，也不进拒答率与通道计数。"
     )
     _print_cost(args, rows)
     return 0

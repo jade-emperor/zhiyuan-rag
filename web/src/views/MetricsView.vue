@@ -1,29 +1,20 @@
 <script setup lang="ts">
 /**
- * 报表页(M7.3 的延迟 + P0-7 的消耗)。**运维与管理员可见**
- * (路由 `needs: 'reports'` + 后端 `require_reports`)。
+ * 报表页:延迟 + 消耗。**运维与管理员可见**。
  *
- * 两半读的是**同一批账本行**:`GET /api/v1/reports/metrics` 给延迟,
- * `GET /api/v1/reports/cost` 给消耗,窗口是同一个。窗口白名单与分位数的样本量门槛来自
- * `capabilities.metrics` —— 前端一处都不写死(写死的话,后端改了窗口这里会拿着一个
- * 400 的窗口名去打)。
+ * 两半读的是**同一批账本行**,窗口也是同一个。窗口白名单与分位数的样本量门槛来自
+ * `capabilities.metrics` —— 这里一处都不写死(写死的话,后端改了窗口,这个页面会拿着
+ * 一个 400 的窗口名去打)。
  *
- * **消耗那一半最容易画错的三处**(后端 `application/cost.py` 的口径):
+ * **最容易画错的三处**(画错不会报错,只会骗人):
  *
- * 1. `null` 金额 = **这个模型没配单价**,不是"花了 0 元" —— 显示「未配置单价」并指路
- *    (config.yaml 的 `cost.models`);
- * 2. `unmetered_calls > 0` = provider 没回报用量(或那一轮断了)—— 那部分**没有**算进金额,
- *    必须显眼地说出来,否则这个总数会被当成完整的账;
- * 3. 金额是"每百万 token"折算出来的,单次调用常常只有 0.000x 元 —— 显示到 6 位小数,
- *    只留两位会让一整天的账变成 0.00。
- *
- * **这张表最容易画错的三处**(后端 `application/metrics.py` 的口径,画错不会报错,只会骗人):
- *
- * 1. `null` **不是 0**:分位数样本不够时后端给 `null`(p95 要 n≥20、p99 要 n≥100),
- *    这里显示 `—` 并解释门槛 —— 折算成 0 会让人以为"很快";
- * 2. **分段只算热行,最慢榜含冷启动**:冷启动是用户真实等到的,不能从"最慢"里藏掉,
- *    也不能混进分位数(那会让 p95 变成"冷启动有多慢");
+ * 1. `null` **不是 0**:分位数样本不够时后端给 `null`(门槛见 capabilities),
+ *    这里显示 `—` 并解释原因 —— 折算成 0 会让人以为"很快";
+ * 2. **冷热各一套数**:分段分位数只算热行;拒答率、截断率、中断率、通道计数也**只数热行**,
+ *    冷启动单独列在下面一行 —— 冷启动里用户等的是模型加载,混进来会让这一版的成绩
+ *    随"这周重启过几次"漂;
  * 3. **比率一律带分子/分母**:3/4 与 300/400 都是 75%,但一个说明不了任何事。
+ *    `null` 金额 = 这个模型没配单价(不是花了 0 元);金额显示到 6 位小数。
  */
 import { computed, onMounted } from 'vue'
 
@@ -153,33 +144,39 @@ onMounted(() => {
         />
         <MetricCard
           label="拒答率"
-          :value="rate(data.refused, data.rows)"
-          :detail="`${share(data.refused, data.rows)} 条拒答(检索为空直接拒答,不调模型)`"
-          :tone="data.rows === 0 ? 'plain' : 'plain'"
+          :value="rate(data.warm.refused, data.warm.rows)"
+          :detail="`${share(data.warm.refused, data.warm.rows)} 条拒答(检索为空直接拒答,不调模型)`"
         />
         <MetricCard
           label="截断率"
-          :value="rate(data.truncated, data.rows)"
-          :detail="`${share(data.truncated, data.rows)} 条撞到 max_tokens`"
-          :tone="data.truncated > 0 ? 'warn' : 'plain'"
+          :value="rate(data.warm.truncated, data.warm.rows)"
+          :detail="`${share(data.warm.truncated, data.warm.rows)} 条撞到 max_tokens`"
+          :tone="data.warm.truncated > 0 ? 'warn' : 'plain'"
         />
         <MetricCard
           label="中断率"
-          :value="rate(data.aborted, data.rows)"
-          :detail="`${share(data.aborted, data.rows)} 条被客户端断开(用户没耐心了)`"
-          :tone="data.aborted > 0 ? 'warn' : 'plain'"
+          :value="rate(data.warm.aborted, data.warm.rows)"
+          :detail="`${share(data.warm.aborted, data.warm.rows)} 条被客户端断开(用户没耐心了)`"
+          :tone="data.warm.aborted > 0 ? 'warn' : 'plain'"
         />
         <MetricCard
           label="FAQ 命中率"
-          :value="rate(data.faq_hits, data.rows)"
-          :detail="`${share(data.faq_hits, data.rows)} 条直答(这些连模型都没调)`"
+          :value="rate(data.warm.faq_hits, data.warm.rows)"
+          :detail="`${share(data.warm.faq_hits, data.warm.rows)} 条直答(这些连模型都没调)`"
         />
         <MetricCard
           label="知识库回答"
-          :value="String(data.rag_answers)"
-          detail="走 RAG 通道并给出答案的条数"
+          :value="String(data.warm.rag_answers)"
+          detail="热行里走知识库通道并给出答案的条数"
         />
       </section>
+
+      <p v-if="data.cold_rows > 0" class="faint cold-note">
+        上面六项都<strong>只数热行</strong>。冷启动 {{ data.cold_rows }} 次不计入它们
+        (那几次用户等的是模型加载):拒答 {{ data.cold.refused }} ·
+        截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·
+        FAQ 直答 {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}。
+      </p>
 
       <section class="card block">
         <h2>消耗</h2>
@@ -218,11 +215,12 @@ onMounted(() => {
 
         <!-- 缺口六连:每一种"算不出来"都要有话说,否则那个总数会被当成完整的账 -->
         <p v-if="cost && cost.unmetered_calls > 0" class="alert warn">
-          有 <strong>{{ cost.unmetered_calls }}</strong> 次调用没量到 token —— 这部分**没有算进金额**。
+          有 <strong>{{ cost.unmetered_calls }}</strong> 次调用没量到 token ——
+          这部分<strong>没有算进金额</strong>。
         </p>
         <p v-if="cost && cost.cache_unknown_calls > 0" class="alert warn">
           有 <strong>{{ cost.cache_unknown_calls }}</strong> 次没回报缓存命中数,
-          整段输入按<strong>未命中价</strong>计 —— 这是**上界**,实际可能更低。
+          整段输入按<strong>未命中价</strong>计 —— 这是<strong>上界</strong>,实际可能更低。
         </p>
         <p v-if="cost && cost.period_unknown_calls > 0" class="alert warn">
           有 <strong>{{ cost.period_unknown_calls }}</strong> 次读不到发生时间,
@@ -302,10 +300,10 @@ onMounted(() => {
       <section class="card block">
         <h2>分段延迟</h2>
         <p class="faint">
-          单位毫秒(≥1 秒显示成秒)。**只统计热行** —— 冷启动那几行被模型加载主导,
+          单位毫秒(≥1 秒显示成秒)。只统计<strong>热行</strong> —— 冷启动那几次被模型加载主导,
           混进来 p95 就变成"冷启动有多慢"。分段顺序就是一次回答里的先后顺序。
           <code>—</code> = 样本不够(<code>p95</code> 要 n≥{{ minN.p95 }}、<code>p99</code> 要
-          n≥{{ minN.p99 }})或这一轮没量到,**不折算成 0**。
+          n≥{{ minN.p99 }})或这一轮没量到,<strong>不折算成 0</strong>。
         </p>
         <table>
           <thead>
@@ -347,7 +345,7 @@ onMounted(() => {
       <section class="card block">
         <h2>最慢的几条</h2>
         <p class="faint">
-          **含冷启动** —— 那是用户真实等到的;行数不够时这一榜会比上面的表更"难看",那是正常的。
+          含冷启动 —— 那是用户真实等到的;行数不够时这一榜会比上面的表更"难看",那是正常的。
         </p>
         <table>
           <thead>
@@ -413,6 +411,10 @@ h2 {
 .windows {
   display: flex;
   gap: 4px;
+}
+
+.cold-note {
+  margin-top: -6px;
 }
 
 .kpis {

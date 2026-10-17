@@ -14,7 +14,14 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 # 数据类
-from project_rag.domain import ConversationTurn, QaAnswer, QaEvent, RagAnswer
+from project_rag.domain import (
+    Citation,
+    ConversationTurn,
+    QaAnswer,
+    QaEvent,
+    RagAnswer,
+    snapshot_citations,
+)
 
 # 创建日志的方法
 from project_rag.observability import StreamTiming, get_logger
@@ -28,6 +35,13 @@ from .answer_faq import match_faq
 from .streaming import done_of, timed
 
 _logger = get_logger("application.answer_question")
+
+# 知识库通道的形状:(历史轮次, 这一轮的账本) -> 帧序列。
+#
+# **账本为什么是参数**:账本由合流入口开(它才是"一次请求"的那一层),知识库通道把
+# 检索/生成的打点记在**同一行**上。两个各开一条的话,一次请求会落两行账 ——
+# 报表的请求量、拒答率、通道计数全部翻倍,而"翻倍"在报表上看着只是"量比想象的大"。
+KnowledgeChannel = Callable[[Sequence[ConversationTurn], StreamTiming], Iterator[QaEvent]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,17 +123,30 @@ def _history(session: Session | None) -> tuple[ConversationTurn, ...]:
     return kept
 
 
-def _record(session: Session | None, question: str, answer: str) -> None:
-    """输入:会话(可为 None)、问题、答案。行为:把这一轮记下来(拒答也记)。输出:无。
+def _record(
+    session: Session | None,
+    question: str,
+    answer: str,
+    citations: Sequence[Citation] = (),
+) -> None:
+    """输入:会话(可为 None)、问题、答案、这一轮的引用。行为:把这一轮记下来(拒答也记)。输出:无。
 
     **写历史只有这一个收口**:两条通道都从这里过。放在用例层而不是命令层,
     是因为多一个入口(FastAPI)就多一次「忘了写」的机会。
+
+    **引用一起存**(``snapshot_citations``):答案正文里的 ``[1]`` 要是没有卡片可点,
+    等于没有出处 —— 而切回旧会话正是"想回看上次的出处"最常见的入口。
+    快照在这里拍,是因为**只有这一层同时握着答案和它的证据链**。
     """
     if session is None:
         return
     session.store.record(
         session.session_id,
-        ConversationTurn(question=question, answer=answer),
+        ConversationTurn(
+            question=question,
+            answer=answer,
+            citations=snapshot_citations(citations),
+        ),
         keep=session.rounds,
     )
 
@@ -129,7 +156,7 @@ def stream_question(
     *,
     faq_store: FaqStore,
     matcher: TextMatcher,
-    knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
+    knowledge: KnowledgeChannel,
     faq_threshold: float = 0.85,
     session: Session | None = None,
     thinking: str | None = None,
@@ -139,8 +166,11 @@ def stream_question(
     **账本在路由之前就开**,所以 ``ttft_ms`` 里含 FAQ 匹配那一段 —— 那正是用户在等的时间。
     FAQ 命中时 ``knowledge`` 一次都不会被调,这条账照样有:它证明「便宜通道有多便宜」。
 
+    **一次请求一条账**:知识库通道拿到的是**同一个** ``timing``,它的检索/生成打点
+    记在同一行上(见 ``KnowledgeChannel``)。
+
     ``thinking`` 同 ``stream_rag``:给日志用的静态标签,由组合根从 config 读出来交进来。
-    外层账也要带 —— **FAQ 命中时账里只有这一条**,不带的话「这一轮按哪一档跑的」就查不到了。
+    FAQ 命中时账里只有这一条,不带的话「这一轮按哪一档跑的」就查不到了。
     """
     timing = StreamTiming(label="qa", thinking=thinking)
     yield from timed(
@@ -162,7 +192,7 @@ def _question_frames(
     *,
     faq_store: FaqStore,
     matcher: TextMatcher,
-    knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
+    knowledge: KnowledgeChannel,
     faq_threshold: float = 0.85,
     session: Session | None = None,
     timing: StreamTiming,
@@ -179,6 +209,8 @@ def _question_frames(
 
     **历史落在 done 之后才写**:客户端中途断开时生成器被关闭,这一轮就不入库 ——
     半截答案进历史比没有更糟(下一轮会拿它当「上文」)。
+
+    **账本交下去、不另开**:``knowledge`` 收到的就是这一轮的 ``timing``(见 ``KnowledgeChannel``)。
 
     **这是内部的帧生产者**:公开入口是 ``stream_question``(它包了一层计时/日志);
     这里只多一件事 —— 路由一有结论就给 ``timing`` 打 ``faq`` 点。
@@ -197,7 +229,7 @@ def _question_frames(
 
     _logger.info("FAQ 通道未命中,转知识库通道: %s", query)
     done: QaEvent | None = None
-    for event in knowledge(_history(session)):
+    for event in knowledge(_history(session), timing):
         if event.kind == "done":
             done = event  # 换成自己那一帧再发,不直接转发
             continue
@@ -207,7 +239,7 @@ def _question_frames(
 
     if done.refused:
         _logger.info("知识库通道拒答(没有检索到相关资料): %s", query)
-    _record(session, query, done.answer)
+    _record(session, query, done.answer, done.citations)
     yield QaEvent(
         kind="done",
         answer=done.answer,
@@ -223,7 +255,7 @@ def answer_question(
     *,
     faq_store: FaqStore,
     matcher: TextMatcher,
-    knowledge: Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]],
+    knowledge: KnowledgeChannel,
     faq_threshold: float = 0.85,
     session: Session | None = None,
     thinking: str | None = None,

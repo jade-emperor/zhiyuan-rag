@@ -24,14 +24,14 @@ K_MAX = 50
 MAX_CONTEXT_MAX = 20
 RRF_K_MAX = 1000
 # 报表的「最慢榜取几条」上限。**必须与 capabilities 报给前端的 top_max 同源** ——
-# 否则前端的滑条能拖到一个后端 422 的值(M7.1 那条 limits 契约的同一条规矩)。
+# 否则前端的滑条能拖到一个后端 422 的值(与 limits 同一条规矩)。
 TOP_MAX = 50
 
 
 class QueryRequest(BaseModel):
     """问答请求(HTTP body 与 WebSocket 的一条消息共用)。
 
-    M7.1 起**检索旋钮也在这里**:前端右侧那个参数面板的每个控件都得有个 HTTP 落点,
+    **检索旋钮也在这里**:前端右侧那个参数面板的每个控件都得有个 HTTP 落点,
     否则"界面上能调"就是假的。规则只有一条 —— **请求里给了就用请求的,没给就用配置文件里的**
     (默认值仍然只有一处真值来源:``config.yaml``)。
     """
@@ -45,7 +45,7 @@ class QueryRequest(BaseModel):
         default=None, ge=1, le=K_MAX, description="每一路各召回多少条;默认取配置"
     )
 
-    # ── 检索旋钮(M7.1) ───────────────────────────────────────────────────────
+    # ── 检索旋钮 ──────────────────────────────────────────────────────────────
     mode: Literal["vector", "keyword", "hybrid"] | None = Field(
         default=None, description="检索方式;hybrid = 两路都跑(None = 配置默认)"
     )
@@ -75,7 +75,7 @@ class QueryRequest(BaseModel):
         * ``mode`` 与权重不能同时给 —— ``mode=keyword`` 配上 ``vector_weight=0.9``
           是两个互相打架的指令,"谁赢"得写进文档才猜得出来,不如当场 422;
         * 两路权重不能同时 ≤ 0 —— 那是一次"什么都不检索"的请求,结果看起来就是
-          "知识库里没有",而真实原因是参数写错了。参数错必须当场可见(法律 32)。
+          "知识库里没有",而真实原因是参数写错了。参数错必须当场可见。
         """
         if self.mode is not None and (
             self.bm25_weight is not None or self.vector_weight is not None
@@ -96,8 +96,8 @@ class QueryRequest(BaseModel):
 class CitationOut(BaseModel):
     """引用清单里的一条(给人核对答案出处)。
 
-    ``page`` 是 P0-5 加的:PDF 的引用要能直接告诉用户"翻到第几页"。
-    **None = 不知道**(md/txt 没有页码概念,或者是 P0-5 之前入库的老块),
+    ``page`` 是给 PDF 用的:引用要能直接告诉用户"翻到第几页"。
+    **None = 不知道**(md/txt 没有页码概念,早期入库的老块也可能没有),
     前端按 ``null`` 显示"页码未知" —— 不许拿 0 或 1 顶上,那是在编。
     """
 
@@ -116,7 +116,7 @@ class QueryResponse(BaseModel):
     ``channel`` 比 ``domain.Channel`` 多两个值,都是**这一层的前置拦截**:
 
     * ``"greeting"`` —— 寒暄,直接回话术,不查库;
-    * ``"throttled"`` —— 触发限流,回一句"稍后再试"的兜底话术(M7.4)。
+    * ``"throttled"`` —— 触发限流,回一句"稍后再试"的兜底话术。
 
     它们既不是 FAQ 通道也不是知识库通道,混进那两种前端就没法区分
     ("这句话为什么没有引用"与"这句话为什么长得像错误")。
@@ -136,8 +136,15 @@ class SessionOut(BaseModel):
 
 
 class HistoryTurnOut(BaseModel):
+    """历史里的一轮:**问题 + 答案 + 当轮的引用卡片**。
+
+    ``citations`` 是**快照**(序号/来源/页码/分数/120 字预览),不是"再去向量库查一次":
+    语料后来重灌或删了,旧会话仍然显示得出来;老账(那时还没存引用)给空清单。
+    """
+
     question: str
     answer: str
+    citations: list[CitationOut] = []
 
 
 class HistoryOut(BaseModel):
@@ -158,7 +165,7 @@ class SourcesOut(BaseModel):
     sources: list[str]
 
 
-# ── 观测报表(P0-2) ──────────────────────────────────────────────────────────
+# ── 观测报表 ─────────────────────────────────────────────────────────────────
 # 形状与 `application/metrics.py` 的 dataclass 一一对应,**口径不在这一层**:
 # 这一层只负责把已经算好的东西序列化出去(所以这里没有 min_n / 分位数算法)。
 class SegmentOut(BaseModel):
@@ -181,23 +188,81 @@ class SlowRowOut(BaseModel):
     total_ms: float
 
 
-class MetricsOut(BaseModel):
-    """一个时间窗的延迟汇总。所有比率的分子都在字段里,分母是 ``rows``。"""
+class BehaviorOut(BaseModel):
+    """**一个冷热分层**里"用户拿到了什么"的计数。``rows`` 是这一层的分母,要一起读。
 
-    window: str
+    冷启动与热启动各一份(``MetricsOut.warm`` / ``MetricsOut.cold``),**没有合计栏**:
+    两层的比率不可加,要加总必须自己写下来。
+    """
+
     rows: int
-    cold_rows: int
-    warm_rows: int
     refused: int
     truncated: int
     aborted: int
     faq_hits: int
     rag_answers: int
+
+
+class GroupDocumentOut(BaseModel):
+    """组侧授权页的一行:这份文档,这个组能不能看。
+
+    ``visibility`` 三态(口径见 ``application/access.py``):
+
+    * ``open``    —— 没有规则 = **人人可见**(本组本来就能看;要禁掉它得先收窄这份文档);
+    * ``allowed`` —— 有规则,而且本组在名单里;
+    * ``denied``  —— 有规则,但本组不在名单里。
+
+    ``other_subjects`` = 除本组外还授权给了几个对象。取消本组时它要是 0,
+    这份文档会**回到人人可见** —— 那是最容易吓人一跳的一次变化,所以单列出来。
+    """
+
+    document_id: str
+    filename: str
+    visibility: str
+    other_subjects: int = 0
+
+
+class GroupDocumentsOut(BaseModel):
+    """``GET/PUT /api/v1/admin/groups/{group_id}/documents`` 的出参。"""
+
+    group_id: str
+    name: str
+    documents: list[GroupDocumentOut]
+    # 只有 PUT 会带:如实说这次改了什么(加了几份 / 撤了几份 / 哪几份回到了人人可见)
+    granted: list[str] = []
+    revoked: list[str] = []
+    opened: list[str] = []
+    notice: str = ""
+
+
+class SetGroupDocumentsRequest(BaseModel):
+    """``PUT`` 的入参:**这个组该能看的那些文档**(整份名单,声明式)。
+
+    ``open``(人人可见)的文档出现在这里等于没写 —— 它本来就人人可见;
+    不在这里的 ``open`` 文档**不会**被禁掉(那要动别人的可见性,得用文档侧的授权)。
+    """
+
+    allowed: list[str] = []
+
+
+class MetricsOut(BaseModel):
+    """一个时间窗的延迟汇总:冷、热**各一套**计数,分段分位数只用热行。
+
+    ``rows`` / ``cold_rows`` / ``warm_rows`` 是"这一窗收了几次请求"(一次请求一行账),
+    行为口径在 ``warm`` / ``cold`` 两个对象里 —— 冷启动不混进拒答率与通道计数。
+    """
+
+    window: str
+    rows: int
+    cold_rows: int
+    warm_rows: int
+    warm: BehaviorOut
+    cold: BehaviorOut
     segments: list[SegmentOut]
     slowest: list[SlowRowOut]
 
 
-# ── 消耗报表(P0-7) ───────────────────────────────────────────────────────────
+# ── 消耗报表 ─────────────────────────────────────────────────────────────────
 # 与 ``application/cost.py`` 的 dataclass 一一对应,口径不在这一层。
 class CostLineOut(BaseModel):
     """一个模型 + **一个时段**的消耗。
@@ -267,7 +332,7 @@ class CostOut(BaseModel):
     holiday_years: list[int]
 
 
-# ── 认证(P0-3a) ──────────────────────────────────────────────────────────────
+# ── 认证 ─────────────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     """登录请求。**没有注册接口** —— 建号走 `project-rag user add`(见 cli/commands/user.py)。"""
 
@@ -307,7 +372,7 @@ class MeOut(BaseModel):
     can_manage: bool
 
 
-# ── 文档治理(P0-3b) ──────────────────────────────────────────────────────────
+# ── 文档治理 ─────────────────────────────────────────────────────────────────
 class DocumentOut(BaseModel):
     """清单上的一行:**登记表说的** + **磁盘上的** + **库里实际有的**。
 
@@ -333,7 +398,7 @@ class DocumentOut(BaseModel):
     # **按库内实际块数算**:登记表说 processed 不算数 —— 那正是"显示已入库却搜不到"的成因。
     searchable: bool
     indexed_chunks: int
-    # 这份文档有没有被收窄过(P0-6)。**谁看得见是另一回事**:清单已经按可见范围过滤过,
+    # 这份文档有没有被收窄过。**谁看得见是另一回事**:清单已经按可见范围过滤过,
     # 员工看到的每一行他都能看;这个字段只用来在界面上标一句"这是限定的"。
     restricted: bool = False
 
@@ -380,7 +445,7 @@ class ChunkPreviewOut(BaseModel):
     """预览里的一段 —— **父块**(模型真正读到的那段),不是检索命中的子块。
 
     ``page`` 是这一段里第一个有页码的子块的页,``last_page`` 是最后一个:
-    两者不同说明这一段**跨页**(真语料里约 22.9% 的块跨页,口径见 P0-5);
+    两者不同说明这一段**跨页**(真语料里约 22.9% 的块跨页);
     都是 ``None`` 就是"不知道"(md/txt)。**不许拿 0 顶**。
     """
 
@@ -447,7 +512,7 @@ class CapabilitiesOut(BaseModel):
 
 
 class ModelOut(BaseModel):
-    """一个可选模型。**M7.1 只有一个**:下拉框是"预留接口",不是"能切"。"""
+    """一个可选模型。**目前只有一个**:下拉框是"预留接口",不是"能切"。"""
 
     id: str
     label: str
@@ -460,7 +525,7 @@ class ModelSettingsOut(BaseModel):
     为什么不做成可调的:``temperature`` / ``thinking`` 现在是**启动期配置**,
     它们进延迟账的口径(``thinking`` 那一列)与"这次请求用什么"必须一致;
     开放 per-request 会让账本里那一列说不清是哪一档。前端如实显示,
-    想改走 ``config.yaml``(触发条件见 ``docs/frontend.md`` §5)。
+    想改走 ``config.yaml`` 才要动这一层。
     """
 
     temperature: float
@@ -514,7 +579,7 @@ class SessionsOut(BaseModel):
     sessions: list[SessionSummaryOut]
 
 
-# ── 账号、分组与文档可见范围(P0-6) ────────────────────────────────────────────
+# ── 账号、分组与文档可见范围 ──────────────────────────────────────────────────
 # 三条口径先写在这里,免得读接口的人以为它们是"随便定的":
 #
 # 1. **密码只进不出**:任何出参里都没有密码或它的哈希,``user add`` 那一份也不回显;

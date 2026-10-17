@@ -9,6 +9,7 @@
 少算一半、双倍计入、把"没量到"当 0、把"没配单价"当免费。改的是:
 
 * ``application/cost.py`` —— 口径本身(哪些行算调用、单价缺失、四舍五入、**时段三条件**);
+* ``application/answer_rag.py`` —— 账本的归属(一次请求只落一行:内层拿到别人的账本就别再开一条);
 * ``adapters/llm_deepseek.py`` —— 采集(用量形状、模型名、开关接线);
 * ``adapters/ledger_mysql.py`` —— 墙上时间戳(带不带时区);
 * ``api/app.py`` —— 出参(`all_priced` / `unpriced_models` 如实)与权限;
@@ -99,7 +100,28 @@ CASES: tuple[Case, ...] = (
         needle="算钱 先汇总再乘",
     ),
     Case(
-        title="RT-5  用外层 qa 行判『调没调模型』（一次请求算两次钱）",
+        title="RT-5  知识库通道又自己开了一条账（一次请求两行 → 成本检查也该挡住）",
+        target=APP / "answer_rag.py",
+        old="""    if timing is not None:
+        yield from _rag_frames(
+            query,
+            embedder=embedder,
+            store=store,
+            llm=llm,
+            keyword_index=keyword_index,
+            reranker=reranker,
+            options=options,
+            history=history,
+            timing=timing,
+            rewriter=rewriter,
+        )
+        return
+    own = StreamTiming(label="rag", channel="rag", thinking=thinking)""",
+        new="""    own = StreamTiming(label="rag", channel="rag", thinking=thinking)""",
+        needle="缺口 不双计",
+    ),
+    Case(
+        title="RT-5b 判『调没调模型』改用两条路径都有的 ttft_ms（缺口计数全错）",
         target=APP / "cost.py",
         old="""    if any(
         _number(row, key) is not None
@@ -109,7 +131,7 @@ CASES: tuple[Case, ...] = (
         _number(row, key) is not None
         for key in ("ttft_ms", "llm_think_ms", "llm_input_tokens", "llm_output_tokens")
     ):""",
-        needle="缺口 不双计",
+        needle="缺口 没量到 token",
     ),
     Case(
         title="RT-12 老账本(有调用、没 token)被报成『未配单价的模型 -』",

@@ -72,15 +72,16 @@ Open `http://127.0.0.1:18080/` (307 → `/static/app/`) for the SPA: **chat** fo
 | Frontend | Vue 3 + TS SPA (chat / knowledge base / reports / accounts views; tabs rendered from the capabilities reported by `/auth/me`), hash router, artifact committed so the Python side and the image need no Node |
 | Desktop | `project-rag-desktop`: a native window (pywebview) around the same artifact — local mode serves it over loopback HTTP, `--remote URL` opens the backend-hosted copy |
 | Index knobs | `milvus.index.type` = `FLAT` (exact, default) or `IVF_FLAT` (+`nlist`/`nprobe`); switching rebuilds the index in place (`project-rag collections --reindex --yes`). Measured: at 3.9k chunks both are 5.5 ms with recall 1.000; at 20k synthetic vectors IVF_FLAT is 3.8× faster. `keyword.backend=milvus` moves BM25 into the collection as sparse vectors (schema-level: needs a re-ingest) |
+| Query rewriting | Optional step between an FAQ miss and vector retrieval: a fine-tuned 4-way classifier (`chinese-roberta-wwm-ext` + LoRA, `tools/lora/`) picks *direct / hypothetical answer (HyDE) / subquery decomposition / denoise*, then one LLM call turns the user's wording into the sentence(s) actually sent to retrieval. **Off by default** (`rewrite.enabled`); it rewrites retrieval only, never the answer, and any failure falls back to the original query. Measured on a 120-query ablation (paired, judge `deepseek-flash`, local BGE-M3): **context recall +0.0621** (95% CI [+0.017, +0.114]) and four-metric mean +0.0440 against a **+0.0141 noise floor** measured on the rows where rewriting changed nothing — at **+1.45 s** and **+0.294 CNY per 1000 queries** |
 | Ops | One log line with **31 fields** per request (TTFT, six retrieval segments, the rewrite segment, cold/warm, refusal/truncation), ledger in MySQL, healthcheck, non-root container |
-| Engineering | **30 executable contracts + 21 reverse-test runners** (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
+| Engineering | **31 executable contracts + 22 reverse-test runners** (each contract is proven to fail when the code is broken), AST-enforced layering, `pyright` clean |
 
 ## Repository layout
 
 ```text
 src/project_rag/     domain / ports / adapters / application / observability / cli / api
 web/                 Vue 3 + Vite frontend (build output goes into src/project_rag/api/static/app/)
-scripts/acceptance/  30 contracts + 21 reverse runners + fake ports (published: it's how we verify)
+scripts/acceptance/  31 contracts + 22 reverse runners + fake ports (published: it's how we verify)
                      (not shipped: scripts/tools/ — the author's offline tools, they run on data/ and local tables)
 demo/                self-written bagu-style interview Q&A for the 5-minute demo (no third-party content)
 config/config.yaml   every knob (retrieval, models, device, thresholds, rate limits)
@@ -93,7 +94,7 @@ CHANGELOG.md         Keep a Changelog + semver
 ## Verification
 
 ```bash
-./scripts/dev.sh ci        # pyright + 22 contracts + 21 reverse runners, no containers needed (~20 min)
+./scripts/dev.sh ci        # pyright + 22 contracts + 22 reverse runners, no containers needed (~20 min)
 ./scripts/dev.sh all       # + the checks that need real middleware / corpus / a real provider key
 ```
 

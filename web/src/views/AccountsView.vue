@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 账号与权限页(P0-6,**仅管理员**)。两件事:账号、分组(一类员工)。
+ * 账号与权限页(**仅管理员**)。两件事:账号、分组(一类员工)。
  *
  * **文档权限不在这里** —— 它在知识库页每张卡片的「权限」按钮上。理由:授权时人盯着的
  * 是"哪一份文档",把文档列表再抄一遍到这个页面上,两边迟早对不上(而且管理员要来回跳)。
@@ -9,12 +9,12 @@
  *
  * 1. **删自己 / 删最后一个管理员**由后端拦(400 + 中文原因),这里**原样显示那句话** ——
  *    前端也检查一遍的话,就又多了一份"谁不能被删"的真源;
- * 2. **改密码是给"本人忘了密码"用的**:改完不吊销他手上的令牌(那是另一件事,
- *    见 API.md 的说明);
+ * 2. **改密码是给"本人忘了密码"用的**:改完不吊销他手上的令牌(吊销是另一件事);
  * 3. **组成员的保存是整份覆盖**:勾完点保存 = "这个组就是这些人"。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 
+import GroupDocumentsDialog from '../components/GroupDocumentsDialog.vue'
 import { authState } from '../stores/auth'
 import {
   accountsState,
@@ -41,13 +41,15 @@ const newGroup = ref('')
 /** 正在编辑成员的组(整份名单的草稿)。 */
 const editingGroup = ref<GroupOut | null>(null)
 const memberDraft = ref<string[]>([])
+/** 正在配"这个组能看哪些文档"的组(null = 没开弹层)。 */
+const documentsFor = ref<GroupOut | null>(null)
 /** 正在改密码的账号(user_id)与新密码。 */
 const passwordFor = ref('')
 const passwordDraft = ref('')
 
 const roles = computed(() => [
   { value: 'employee', label: '员工(检索与问答)' },
-  { value: 'ops', label: '运维(只看报表)' },
+  { value: 'ops', label: '运维(问答 + 报表)' },
   { value: 'admin', label: '管理员(全部)' },
 ])
 
@@ -130,8 +132,8 @@ function userNameOf(userId: string): string {
     <section class="card block">
       <h2>账号</h2>
       <p class="faint">
-        三种角色:<strong>员工</strong>(检索与问答)、<strong>运维</strong>(只看报表:延迟 + 消耗,
-        看不到语料内容)、<strong>管理员</strong>(全部 + 建号删号授权)。
+        三种角色:<strong>员工</strong>(检索与问答)、<strong>运维</strong>(检索与问答 + 报表:延迟 + 消耗,
+        但管不了文档与账号)、<strong>管理员</strong>(全部 + 建号删号授权)。
         <br />
         <strong>不能删自己的账号,也不能删掉最后一个管理员</strong> ——
         删了自己这枚令牌立刻失效(你会被踢出去),而管理员删光了就没人能再建号了。
@@ -147,10 +149,7 @@ function userNameOf(userId: string): string {
         </thead>
         <tbody>
           <tr v-for="user in accounts.users" :key="user.user_id">
-            <td>
-              <code>{{ user.username }}</code>
-              <span v-if="isSelf(user.user_id)" class="tag soft">这是你</span>
-            </td>
+            <td><code>{{ user.username }}</code></td>
             <td>
               <span class="tag" :class="user.is_admin ? 'info' : 'soft'">
                 {{ roles.find((item) => item.value === user.role)?.label ?? user.role }}
@@ -169,7 +168,7 @@ function userNameOf(userId: string): string {
               <button
                 class="ghost danger"
                 type="button"
-                :title="isSelf(user.user_id) ? '不能删自己的账号(后端也会拦)' : ''"
+                :title="isSelf(user.user_id) ? '不能删自己的账号' : ''"
                 @click="deleteUser(user)"
               >
                 删除
@@ -212,7 +211,11 @@ function userNameOf(userId: string): string {
         组用来做<strong>文档授权</strong>:一份文档可以授权给"某个人"或"某一类人"。
         同一个人可以属于多个组,权限取<strong>并集</strong>(任一命中即可见)。
         <br />
-        删组会**连带清掉授权给这个组的所有规则** —— 否则将来建一个同名的新组会凭空继承旧权限。
+        删组会<strong>连带清掉授权给这个组的所有规则</strong> ——
+        否则将来建一个同名的新组会凭空继承旧权限。
+        <br />
+        「文档权限」按<strong>组</strong>配这个组能看哪些文档（与「知识库」页每份文档上的
+        「权限」按钮是同一张规则表的两个方向）。
       </p>
       <table>
         <thead>
@@ -233,6 +236,7 @@ function userNameOf(userId: string): string {
             </td>
             <td class="num actions">
               <button class="ghost" type="button" @click="startEditMembers(group)">改成员</button>
+              <button class="ghost" type="button" @click="documentsFor = group">文档权限</button>
               <button class="ghost danger" type="button" @click="deleteGroup(group)">删除</button>
             </td>
           </tr>
@@ -268,6 +272,12 @@ function userNameOf(userId: string): string {
         </button>
       </div>
     </section>
+    <GroupDocumentsDialog
+      v-if="documentsFor !== null"
+      :group-id="documentsFor.group_id"
+      :group-name="documentsFor.name"
+      @close="documentsFor = null"
+    />
   </div>
 </template>
 

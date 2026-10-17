@@ -118,18 +118,18 @@ CASES: tuple[Case, ...] = (
         needle="落地 删文档：连带清掉它的可见范围规则",
     ),
     Case(
-        title="RT-10 运维被放行用知识库(只读范围从报表扩大到语料)",
-        target=API / "auth.py",
-        old="        if user is not None and not user.can_use_knowledge:",
-        new="        if False:",
-        needle="落地 运维：知识库各接口全 403",
+        title="RT-10 运维从知识库能力表里被拿掉(作者要求他能问答)",
+        target=ROOT / "src" / "project_rag" / "domain" / "auth.py",
+        old='KNOWLEDGE_ROLES: tuple[UserRole, ...] = ("employee", "ops", "admin")',
+        new='KNOWLEDGE_ROLES: tuple[UserRole, ...] = ("employee", "admin")',
+        needle="落地 运维：**能问答能看报表**",
     ),
     Case(
         title="RT-11 报表退回『只有管理员』(运维这个角色就没有意义了)",
         target=API / "auth.py",
         old="        if user is not None and not user.can_view_reports:",
         new="        if user is not None and not user.is_admin:",
-        needle="落地 运维：知识库各接口全 403",
+        needle="落地 运维：**能问答能看报表**",
     ),
     Case(
         title="RT-12 删号守卫去掉『不能删自己』",
@@ -159,6 +159,28 @@ CASES: tuple[Case, ...] = (
         new="            can_view_reports=True,",
         needle="角色：报表是运维与管理员的",
         script="check_p0_3_auth.py",
+    ),
+    Case(
+        title="RT-17 组侧授权把「人人可见」的文档也当成一次授权（顺手改了别人的可见性）",
+        target=APP / "access.py",
+        old="""        if row.visibility == "open":
+            if row.document_id in wanted:
+                already_open.append(row.document_id)
+            continue""",
+        new="""        if row.visibility == "open":
+            if row.document_id in wanted:
+                grant.append(row.document_id)
+            continue""",
+        needle="组侧授权：三态列得对",
+    ),
+    Case(
+        title="RT-18 名单空了不点名（取消一个组之后整份文档悄悄对所有人可见）",
+        target=APP / "access.py",
+        old="""            if row.other_subjects == 0:
+                will_open.append(row.document_id)""",
+        new="""            if row.other_subjects < 0:
+                will_open.append(row.document_id)""",
+        needle="组侧授权：三态列得对",
     ),
     Case(
         title="RT-16 路由守卫不按能力拦(页签藏了,输入 URL 仍然进得去)",

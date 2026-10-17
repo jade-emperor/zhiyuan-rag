@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 文档权限弹层(P0-6):这份文档给**谁**看。
+ * 文档权限弹层:这份文档给**谁**看。
  *
  * 三条口径写在这里,因为它们直接决定界面上那几句话:
  *
@@ -111,8 +111,9 @@ async function save(): Promise<void> {
 
       <template v-if="!loading">
         <p class="faint">
-          **怎么读**:两个名单都空 = 人人可见;勾了人 / 组之后,<strong>只有</strong>他们能检索到、
-          看到、预览这份文档 —— 员工搜索时它不会出现在结果里。
+          <strong>怎么读</strong>:两个名单都空 = 人人可见;勾了人 / 组之后,
+          <strong>只有</strong>他们能检索到、看到、预览这份文档 ——
+          员工搜索时它不会出现在结果里。
         </p>
 
         <section>

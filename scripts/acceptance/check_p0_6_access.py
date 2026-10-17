@@ -13,7 +13,8 @@
 
 * **角色是闭集** `("employee", "ops", "admin")`;能力判断只在 `domain/auth.py` 的三张表里,
   调用点不比较角色字符串;
-* **运维(ops)**:能看报表(延迟 + 消耗),**不能**用知识库、不能管账号;
+* **运维(ops)**:能问答 + 能看报表(延迟 + 消耗),**但管不了文档与账号**(作者要求:
+  他既要回答"这套系统跑得好不好",也要能自己问一句验一验);
 * **可见范围只用来收窄** —— 没配规则的文档人人可见;配了规则的,名单里的人 +
   名单里的组(并集)+ 管理员可见;**空规则 = 不禁**(不是"全禁");
 * **删号两条守卫**:不能删自己、不能删最后一个管理员;
@@ -28,9 +29,21 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from _harness import check, report
+
+ROOT = Path(__file__).resolve().parents[2]
+WEB_SRC = ROOT / "web" / "src"
+
+
+def _web(relative: str) -> str:
+    """输入:相对 ``web/src/`` 的路径。行为:读它。输出:正文(不在就报错,不静默给空串)。"""
+    path = WEB_SRC / relative
+    if not path.is_file():
+        raise AssertionError(f"前端源码不在 {path} —— 这个界面还没落地?")
+    return path.read_text(encoding="utf-8")
 
 
 # ── 假件:认证存储(含删号)与可见范围存储 ────────────────────────────────────
@@ -323,8 +336,8 @@ def _roles_closed_set() -> str:
         raise AssertionError(f"角色闭集变了:{USER_ROLES}")
     if REPORT_ROLES != ("ops", "admin"):
         raise AssertionError(f"能看报表的该是运维 + 管理员:{REPORT_ROLES}")
-    if KNOWLEDGE_ROLES != ("employee", "admin"):
-        raise AssertionError(f"能用知识库的该是员工 + 管理员:{KNOWLEDGE_ROLES}")
+    if KNOWLEDGE_ROLES != ("employee", "ops", "admin"):
+        raise AssertionError(f"能用知识库的该是员工 + 运维 + 管理员:{KNOWLEDGE_ROLES}")
     if MANAGE_ROLES != ("admin",):
         raise AssertionError(f"能管理的只有管理员:{MANAGE_ROLES}")
     for table in (REPORT_ROLES, KNOWLEDGE_ROLES, MANAGE_ROLES):
@@ -341,7 +354,7 @@ def _role_truth_table() -> str:
     expected = {
         # 角色: (能看报表, 能用知识库, 能管理, 不受可见范围限制)
         "employee": (False, True, False, False),
-        "ops": (True, False, False, False),
+        "ops": (True, True, False, False),
         "admin": (True, True, True, True),
     }
     got = {}
@@ -357,7 +370,7 @@ def _role_truth_table() -> str:
         raise AssertionError(f"能力真值表不符:\n  期望 {expected}\n  实际 {got}")
     if not User(user_id="u", username="u", role="ops").is_ops:
         raise AssertionError("is_ops 该为真")
-    return "employee(问答) / ops(只看报表) / admin(全能) —— 12 个格子逐一对过"
+    return "employee(问答) / ops(问答 + 报表) / admin(全能) —— 12 个格子逐一对过"
 
 
 # ══ 2. 可见范围的口径(纯函数) ═══════════════════════════════════════════════
@@ -570,8 +583,13 @@ def _create_account_via_http() -> str:
     if body["role"] != "ops":
         raise AssertionError(f"角色该照请求写:{body}")
     me = client.get("/api/v1/auth/me", headers=_headers(client, "newops", "pw-abcdef")).json()
-    if (me["role"], me["can_view_reports"], me["can_use_knowledge"]) != ("ops", True, False):
-        raise AssertionError(f"新建的运维能力不对:{me}")
+    if (me["role"], me["can_view_reports"], me["can_use_knowledge"], me["can_manage"]) != (
+        "ops",
+        True,
+        True,
+        False,
+    ):
+        raise AssertionError(f"新建的运维能力不对(能问答能报表、不能管理):{me}")
     users = client.get("/api/v1/admin/users", headers=admin).json()["users"]
     if sum(1 for user in users if user["username"] == "newops") != 1:
         raise AssertionError(f"新账号该出现在列表里:{users}")
@@ -987,54 +1005,234 @@ def _preview_hidden_is_404() -> str:
     return "员工 404 / 管理员 200;两条 404 只差调用方给的那个 ID"
 
 
-@check("落地 运维：知识库各接口全 403，报表明细照常")
+@check("组侧授权：三态列得对；整份名单增删自如；名单空了会回到人人可见并点名")
+def _group_documents() -> str:
+    """**作者要的"每组能看哪个文档、不能看哪个文档"**(从组这一侧配)。
+
+    语义没变(规则仍然只用来收窄),变的是视角与入口:管理员盯着一个组,
+    一次把"这个组能看哪些文档"配完 —— 而不是逐份文档点开看名单。
+
+    这条钉四件事:
+
+    1. **三态**:``open``(没规则=人人可见)/``allowed``(名单里有本组)/``denied``(有规则但没本组);
+    2. **整份名单是声明式**:勾上的补进名单、取消的移出名单,一次 PUT 生效;
+    3. **人人可见的文档动不了**:把它勾进来不改任何东西(``granted`` 里不出现),
+       要"只有本组能看"得走文档侧可见范围 —— 界面另有显式的「收窄」按钮;
+    4. **名单空了 = 回到人人可见**,而且出参 ``opened`` **点名**是哪几份 ——
+       这是"取消一个组"能造成的最意外的后果,不许静默发生。
+    """
+    from fastapi.testclient import TestClient
+
+    from _fakes import FakeConversationStore, FakeFaqStore, FakeMatcher, FakeVectorStore
+    from project_rag.adapters.document_loader import DiskFile
+    from project_rag.api.app import create_app
+    from project_rag.cli.deps import Deps
+    from project_rag.domain.documents import DocRecord
+
+    auth = _FakeAuthStore()
+    access = _FakeAccess()
+    made = _seed(auth, access)  # 建 admin/ops/emp/emp2 + 「销售」组(emp 在里面)
+
+    class _Docs:
+        def init_schema(self) -> None: ...
+        def add(self, record) -> None: ...
+        def upsert(self, record) -> None: ...
+        def list_all(self):
+            return [
+                DocRecord(document_id=doc, source="uploads", filename=doc, status="processed",
+                          chunks=1, size_bytes=1, created_at="2025-01-01T00:00:00")
+                for doc in ("公开.md", "机密.md", "报价单.md")
+            ]
+        def get(self, document_id): return None
+        def set_status(self, *a, **k): ...
+        def remove(self, document_id): return 0
+
+    fields = {
+        "auth_store_factory": lambda: auth,
+        "access_store_factory": lambda: access,
+        "document_store_factory": _Docs,
+        "faq_store_factory": lambda: FakeFaqStore([]),
+        "matcher_factory": lambda: FakeMatcher(),
+        "conversation_store_factory": lambda: FakeConversationStore(),
+        "vector_store_factory": lambda: FakeVectorStore([]),
+        "disk_files_factory": lambda: (),
+    }
+    client = TestClient(create_app(Deps(**fields)))
+    admin = _headers(client, "admin")
+    emp = _headers(client, "emp")
+    sales = next(g for g in access.list_groups() if g.name == "销售")
+    finance = access.create_group("财务")
+    # 机密.md 只给财务;报价单.md 给销售 + emp(个人)
+    access.set_document_subjects("机密.md", user_ids=[], group_ids=[finance.group_id])
+    access.set_document_subjects(
+        "报价单.md", user_ids=[made["emp"].user_id], group_ids=[sales.group_id]
+    )
+
+    rows = client.get(f"/api/v1/admin/groups/{sales.group_id}/documents", headers=admin)
+    if rows.status_code != 200:
+        raise AssertionError(f"读组侧授权该 200,实际 {rows.status_code}:{rows.text[:200]}")
+    body = rows.json()
+    seen = {row["document_id"]: row["visibility"] for row in body["documents"]}
+    if seen != {"公开.md": "open", "机密.md": "denied", "报价单.md": "allowed"}:
+        raise AssertionError(f"三态不对:{seen}")
+    quote = next(r for r in body["documents"] if r["document_id"] == "报价单.md")
+    if quote["other_subjects"] != 1:
+        raise AssertionError(f"报价单除本组外还授权了 1 个人,该报 1:{quote}")
+
+    # ① 勾上机密.md(denied → allowed);② 取消报价单.md(名单里有 emp 个人 → 不会回到公开)
+    updated = client.put(
+        f"/api/v1/admin/groups/{sales.group_id}/documents",
+        headers=admin,
+        json={"allowed": ["机密.md"]},
+    )
+    if updated.status_code != 200:
+        raise AssertionError(f"改组授权该 200,实际 {updated.status_code}:{updated.text[:200]}")
+    result = updated.json()
+    if result["granted"] != ["机密.md"] or result["revoked"] != ["报价单.md"]:
+        raise AssertionError(f"增删没如实回报:{result}")
+    if result["opened"] or "回到人人可见" in result["notice"]:
+        raise AssertionError(f"报价单还有 emp 个人授权,不该回到人人可见:{result}")
+    after = {row["document_id"]: row["visibility"] for row in result["documents"]}
+    if after != {"公开.md": "open", "机密.md": "allowed", "报价单.md": "denied"}:
+        raise AssertionError(f"改完三态不对:{after}")
+
+    # ③ 把"人人可见"的文档勾进来:不改变任何东西(它本来就人人可见),也不在 granted 里
+    same = client.put(
+        f"/api/v1/admin/groups/{sales.group_id}/documents",
+        headers=admin,
+        json={"allowed": ["公开.md"]},
+    ).json()
+    if same["granted"]:
+        raise AssertionError(f"人人可见的文档不该被『授权』(那是收窄别人的可见性):{same}")
+    if same["documents"][0]["visibility"] != "open":
+        raise AssertionError(f"人人可见的文档被动了:{same['documents']}")
+
+    # ④ 名单空了 → 回到人人可见,而且**点名**
+    access.set_document_subjects("报价单.md", user_ids=[], group_ids=[sales.group_id])
+    emptied = client.put(
+        f"/api/v1/admin/groups/{sales.group_id}/documents",
+        headers=admin,
+        json={"allowed": []},
+    ).json()
+    if emptied["opened"] != ["报价单.md"] or "人人可见" not in emptied["notice"]:
+        raise AssertionError(f"名单空了该回到人人可见并点名:{emptied}")
+
+    # 边界:未知文档 400、未知组 404、非管理员 403
+    bad_doc = client.put(
+        f"/api/v1/admin/groups/{sales.group_id}/documents",
+        headers=admin,
+        json={"allowed": ["不存在的.md"]},
+    )
+    if bad_doc.status_code != 400:
+        raise AssertionError(f"名单里有不存在的文档该 400,实际 {bad_doc.status_code}")
+    missing = client.get("/api/v1/admin/groups/g-404/documents", headers=admin)
+    if missing.status_code != 404:
+        raise AssertionError(f"没有这个组该 404,实际 {missing.status_code}")
+    if client.get(
+        f"/api/v1/admin/groups/{sales.group_id}/documents", headers=emp
+    ).status_code != 403:
+        raise AssertionError("员工不该能读组侧授权(那是管理动作)")
+    return "三态正确;整份名单增删如实回报;公开文档动不了;名单空了点名『回到人人可见』;400/404/403 三边界"
+
+
+@check("界面：组侧授权入口在「账号与权限」页，且把两条边界写在脸上")
+def _group_documents_ui() -> str:
+    """后端有了不等于界面上有 —— 而"每组的文档权限"这件事,**入口本身**就是需求的一部分。
+
+    静态钉四件事(读源码,不需要浏览器):① 组那行有「文档权限」按钮、且挂了弹层;
+    ② 弹层用的是组侧那两个接口;③ 两条边界写在界面上(**人人可见的动不了**、
+    **取消后名单空了会回到人人可见**);④ 类型与后端字段同名(手写的镜像不许漂)。
+    """
+    view = _web("views/AccountsView.vue")
+    if "文档权限" not in view or "GroupDocumentsDialog" not in view:
+        raise AssertionError("「账号与权限」页的组那行没有「文档权限」入口(或没挂弹层)")
+    dialog = _web("components/GroupDocumentsDialog.vue")
+    for call in ("adminGroupDocuments", "adminSetGroupDocuments"):
+        if call not in dialog:
+            raise AssertionError(f"弹层没调 {call}(读三态 / 整份名单保存)")
+    for phrase in ("人人可见", "收窄成只有本组可见", "取消后这份会回到人人可见"):
+        if phrase not in dialog:
+            raise AssertionError(f"弹层没把「{phrase}」这条边界写在界面上")
+    types = _web("api/types.ts")
+    for field in ("GroupDocumentVisibility", "other_subjects", "opened"):
+        if field not in types:
+            raise AssertionError(f"前端类型里缺 {field}(与后端出参同名才不容易漂)")
+    return "入口 + 两个接口 + 两条边界 + 类型都对得上"
+
+
+@check("落地 运维：**能问答能看报表**,但管理动作与授权全 403")
 def _ops_scope() -> str:
+    """作者要求:运维除了看报表,也要能问答。
+
+    所以这条从"知识库全 403"翻过来:``require_knowledge`` 那一档(提问 / 会话 / 来源 /
+    预览)对运维放行,而 ``require_admin`` 那一档(建号、分组、授权、删文档、上传)照旧 403 ——
+    **能提问不等于能改语料**。两边都要断言:只测放行会漏掉"顺手把管理也开了"。
+    """
     client, store, _ = _client()
     _seed(store)
     ops = _headers(client, "ops")
-    blocked = {
+    allowed = {
         "sources": client.get("/api/v1/sources", headers=ops),
-        "documents": client.get("/api/v1/documents", headers=ops),
-        "preview": client.get("/api/v1/documents/x.md/chunks", headers=ops),
-        "sessions": client.get("/api/v1/sessions", headers=ops),
-        "history": client.get("/api/v1/history/任意", headers=ops),
         "create_session": client.post("/api/v1/create_session", headers=ops),
+        "preview": client.get("/api/v1/documents/x.md/chunks", headers=ops),
     }
-    wrong = {name: response.status_code for name, response in blocked.items() if response.status_code != 403}
+    wrong = {name: r.status_code for name, r in allowed.items() if r.status_code not in (200, 404)}
     if wrong:
-        raise AssertionError(f"运维在知识库接口上该全 403,实际 {wrong}")
-    query = client.post("/api/v1/query", headers=ops, json={"query": "装饰器"})
-    if query.status_code != 403:
-        raise AssertionError(f"运维不该能提问,实际 {query.status_code}")
+        raise AssertionError(f"运维该能用知识库(来源/会话/预览),实际 {wrong}")
+    # 提问:这个假世界只装了 FAQ 那一半(没有 embedder),所以拿**寒暄**这条前置拦截来验
+    # "角色门放行了" —— 被角色挡住时是 403,而 200 说明请求已经进到用例层
+    query = client.post("/api/v1/query", headers=ops, json={"query": "你好"})
+    if query.status_code != 200 or query.json()["channel"] != "greeting":
+        raise AssertionError(f"运维该能提问,实际 {query.status_code}:{query.text[:120]}")
+    # 自己的会话读得回来 —— 注意别拿"别人的会话"去断言:那条 403 是**归属**那道门,
+    # 与角色无关(拿它当角色证据会把两件事混成一件)
+    sid = allowed["create_session"].json()["session_id"]
+    own = client.get(f"/api/v1/history/{sid}", headers=ops)
+    if own.status_code != 200:
+        raise AssertionError(f"运维读自己刚建的会话该 200,实际 {own.status_code}:{own.text[:120]}")
+    # 管理动作仍然只有管理员:上传/删除/建号/分组/文档授权
+    manage = {
+        "delete": client.delete("/api/v1/documents/x.md", headers=ops),
+        "users": client.get("/api/v1/admin/users", headers=ops),
+        "groups": client.get("/api/v1/admin/groups", headers=ops),
+        "acl": client.get("/api/v1/admin/documents/x.md/acl", headers=ops),
+    }
+    leaked = {name: r.status_code for name, r in manage.items() if r.status_code != 403}
+    if leaked:
+        raise AssertionError(f"运维不该能管文档/账号/授权,实际 {leaked}")
     for path in ("/api/v1/reports/metrics?window=24h", "/api/v1/reports/cost?window=24h"):
         code = client.get(path, headers=ops).status_code
         if code != 200:
             raise AssertionError(f"运维该能看 {path},实际 {code}")
     if client.get("/api/v1/reports/cost?window=24h", headers=_headers(client, "emp")).status_code != 403:
         raise AssertionError("员工不该能看消耗报表")
-    return "6 个知识库接口 + 提问全 403;两个报表放行(员工看报表仍 403)"
+    return "问答/会话/来源/预览 200;删除/建号/分组/授权 403;两个报表 200(员工看报表仍 403)"
 
 
-@check("落地 运维：WebSocket 连接被拒（令牌有效但角色不对，不给他反复撞墙）")
-def _ops_websocket_blocked() -> str:
-    from starlette.websockets import WebSocketDisconnect
-
+@check("落地 运维：WebSocket 也能连（与 HTTP 同一条口径：运维能问答）")
+def _ops_websocket_allowed() -> str:
+    """WS 那条路以前单独写过"运维只能看报表"的门;它与 HTTP 同源(``require_knowledge``),
+    所以角色改成能问答之后,这两条必须一起动 —— 只改 HTTP 会得到"网页能问、流式不能问"。
+    """
     client, store, _ = _client()
     _seed(store)
     token = client.post(
         "/api/v1/auth/login", json={"username": "ops", "password": "pw-123456"}
     ).json()["token"]
-    try:
-        with client.websocket_connect(f"/api/v1/stream?token={token}") as socket:
+    frames = []
+    with client.websocket_connect(f"/api/v1/stream?token={token}") as socket:
+        socket.send_json({"query": "你好"})
+        while True:
             frame = socket.receive_json()
-            if frame.get("type") != "error" or "运维" not in frame.get("detail", ""):
-                raise AssertionError(f"该先回一帧说明原因的 error,实际 {frame}")
-            socket.receive_json()  # 服务端接着 close(1008)
-    except WebSocketDisconnect as exc:
-        if exc.code != 1008:
-            raise AssertionError(f"该用 1008(策略拒绝)关掉,实际 {exc.code}")
-        return "error 帧说明角色不符 + 1008 关闭"
-    raise AssertionError("运维的 WS 连接不该被接受")
+            frames.append(frame)
+            if frame.get("type") == "done":
+                break
+            if frame.get("type") == "error":
+                raise AssertionError(f"运维的 WS 连接被拒了:{frame}")
+    done = frames[-1]
+    if done.get("channel") != "greeting" or not done.get("answer"):
+        raise AssertionError(f"运维该能提问(寒暄先答一句),实际 {done}")
+    return f"运维的 WS 连接被接受:{len(frames)} 帧,收尾 channel={done['channel']}"
 
 
 @check("落地 无认证模式：不注入 auth/access 时一切照常（老契约仍有效的原因）")

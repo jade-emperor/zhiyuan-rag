@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 知识库管理页(M7.2)。**只对管理员可见**(路由守卫 + 后端各自 `require_admin`)。
+ * 知识库管理页。**只对管理员可见**(路由守卫 + 后端各自 `require_admin`)。
  *
- * P0-6 起每张卡片多一个「权限」按钮:给这份文档选**某个人**或**某一类人**(组)。
+ * 每张卡片有一个「权限」按钮:给这份文档选**某个人**或**某一类人**(组)。
  * 没配规则的文档人人可见,配了就只给名单里的人 + 管理员。
  *
  * 数据来源一眼看清:清单 `GET /api/v1/documents`、上传 `POST /api/v1/documents?filename=…`、
@@ -34,7 +34,7 @@ import {
 
 const docs = documentsState()
 
-/** 正在改权限的那份文档(P0-6)。一次只开一个弹层。 */
+/** 正在改权限的那份文档。一次只开一个弹层。 */
 const aclFor = ref('')
 
 const active = computed(

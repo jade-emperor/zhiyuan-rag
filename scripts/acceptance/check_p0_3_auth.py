@@ -268,9 +268,13 @@ def _admin_only() -> str:
     }:
         raise AssertionError(f"/me 该如实报角色与三个能力,实际 {me}")
     watcher_me = client.get("/api/v1/auth/me", headers=watcher).json()
-    if (watcher_me["can_view_reports"], watcher_me["can_use_knowledge"]) != (True, False):
-        raise AssertionError(f"运维的能力该是『能看报表、不能用知识库』,实际 {watcher_me}")
-    return "报表:管理员 200 / 运维 200 / 员工 403 / 无令牌 401;/me 三个能力如实"
+    if (watcher_me["can_view_reports"], watcher_me["can_use_knowledge"]) != (True, True):
+        raise AssertionError(f"运维的能力该是『能看报表 + 能问答』,实际 {watcher_me}")
+    if watcher_me["can_manage"]:
+        raise AssertionError(f"运维不该能管理(上传/删文档/建号/授权),实际 {watcher_me}")
+    # 行为那一半(能不能提问 / 能不能管)在 check_p0_6_access 里验 —— 那个假世界装了
+    # 知识库那半边;这里只有认证这一半,拿 /me 的能力布尔值当判据就够(前端也只读它)
+    return "报表:管理员/运维 200、员工 403;/me 三个能力如实(运维=问答 + 报表,不能管理)"
 
 
 @check("无认证模式：不注入 auth_store 时老接口照常（check_m5_api 那 25 条仍有效的原因）")

@@ -2,7 +2,7 @@
 /**
  * 引用清单里的一条。
  *
- * 页码的显示口径来自 P0-5:**`page === null` 就是"不知道"** ——
+ * 页码的显示口径:**`page === null` 就是"不知道"** ——
  * md/txt 没有页码概念,老数据也没有。这里显示「页码未知」,**不许拿 0 或 1 顶上**:
  * 编一个页号比没有页号糟得多(用户会照着一个错的页码去翻)。
  */
@@ -22,7 +22,7 @@ function score(value: number | null): string {
       <div class="meta">
         <span class="tag soft">{{ citation.source }}</span>
         <span v-if="citation.page !== null" class="tag ok">第 {{ citation.page }} 页</span>
-        <span v-else class="tag soft" title="md/txt 没有页码概念;P0-5 之前入库的块也没有">
+        <span v-else class="tag soft" title="md/txt 没有页码;早期入库的块也可能没有">
           页码未知
         </span>
         <span class="faint">{{ citation.doc_id }}</span>

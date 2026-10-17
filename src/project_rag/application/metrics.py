@@ -4,15 +4,19 @@
 **口径写死在这里(改口径 = 改契约,`check_m5_9_metrics.py` 钉住)**:
 
 1. **分位数用最近秩**(nearest-rank):排序后取第 ``ceil(q × n)`` 个,**不做插值**。
-   样本少时插值会给出"比任何一次真实观测都好看"的数字,而这个项目已经吃过一次
-   「指标名字会骗人」的亏(§5 第 24 条);
+   样本少时插值会给出"比任何一次真实观测都好看"的数字 —— 这个项目已经吃过一次
+   「指标名字会骗人」的亏;
 2. **样本不够就不给数**:``p95`` 要 ``n ≥ 20``、``p99`` 要 ``n ≥ 100``,不够一律 ``None``
    (渲染成 ``-``)。n=28 就报 p95 正是上一轮踩的坑 —— 数字有,含义没有;
-3. **分段只在「热」的行上算**:冷启动那几行被模型加载主导(rerank 中位 668ms、p95 5383ms
-   就是这个形状),混进来 p95 就变成"冷启动有多慢"。冷热条数各自单独报,最慢榜**含冷**
-   (那是用户真实感受到的);
+3. **冷启动与热启动分开数,而且是"两套数"**:冷启动那几行被模型加载主导
+   (rerank 中位 668ms、p95 5383ms 就是这个形状),它既不该混进分段分位数,
+   也不该混进**拒答率、截断率、通道计数** —— 一次冷启动里用户等的是模型加载,
+   把它算成"这一版答得怎么样",会让这一版的成绩随"这周重启过几次"漂。
+   所以 ``warm`` / ``cold`` 各是一整套计数(含各自的分母),**没有"合计"那一栏**:
+   想加总必须自己写下"把两层加成一层"这句话,而不是顺手用一个不带层名的字段;
 4. **``-``(没量到)一律不参与统计,不折算成 0**:折成 0 会把 p50 拉低,而且从数字上看不出来;
-5. **比率的分母是窗口内全部行**(含冷、含中断):拒答率/截断率该按用户实际拿到的东西算;
+5. **最慢榜含冷启动**(带 ``cold`` 标记):那是用户真实等到的 —— 榜首不该因为
+   "它不是热行"就把一条 9 秒的等待藏起来;
 6. **老数据的 ``cold`` 字段缺失时按「热」算**:那些行是加这个字段之前记的,
    当作热至少不会把它们从统计里剔掉(剔掉会让窗口前半段的样本凭空消失)。
 """
@@ -72,20 +76,54 @@ class SlowRow:
 
 
 @dataclass(frozen=True, slots=True)
-class MetricsSummary:
-    """一个时间窗的汇总。所有比率的分子都能在字段里找到,分母是 ``rows``。"""
+class BehaviorCounts:
+    """**一个冷热分层**里"用户拿到了什么"的计数。``rows`` 是这一层的分母,必须一起读。
 
-    window: str
+    没有"合计"字段是刻意的:冷启动与热启动的比率不可加(分母不是同一件事),
+    要加总就得先写下一句"我在把两层合成一层",而不是顺手拿一个不带层名的数。
+    """
+
     rows: int
-    cold_rows: int
-    warm_rows: int
     refused: int
     truncated: int
     aborted: int
     faq_hits: int
     rag_answers: int
+
+    @property
+    def other_channels(self) -> int:
+        """输入:无。行为:既不是 FAQ 直答也不是知识库的行数(未定通道/异常)。输出:条数。"""
+        return self.rows - self.faq_hits - self.rag_answers
+
+
+@dataclass(frozen=True, slots=True)
+class MetricsSummary:
+    """一个时间窗的汇总:**冷、热各一套**(理由见模块 docstring 第 3 条)。
+
+    ``rows`` / ``cold_rows`` / ``warm_rows`` 是"这个窗口收了几次请求"的三个读数,
+    由两层自己的 ``rows`` 推出来 —— 不另存一份,就不会和分层计数对不上。
+    """
+
+    window: str
+    warm: BehaviorCounts
+    cold: BehaviorCounts
     segments: tuple[SegmentStats, ...]
     slowest: tuple[SlowRow, ...]
+
+    @property
+    def rows(self) -> int:
+        """输入:无。行为:窗口内的请求总数。输出:条数。"""
+        return self.warm.rows + self.cold.rows
+
+    @property
+    def cold_rows(self) -> int:
+        """输入:无。行为:冷启动的请求数。输出:条数。"""
+        return self.cold.rows
+
+    @property
+    def warm_rows(self) -> int:
+        """输入:无。行为:热请求数。输出:条数。"""
+        return self.warm.rows
 
 
 def _num(row: Mapping[str, str], key: str) -> float | None:
@@ -126,6 +164,18 @@ def _segment(rows: Sequence[Mapping[str, str]], name: str) -> SegmentStats:
     )
 
 
+def _behavior(rows: Sequence[Mapping[str, str]]) -> BehaviorCounts:
+    """输入:同一个冷热分层里的行。行为:数「用户拿到了什么」。输出:这一层的计数(含分母)。"""
+    return BehaviorCounts(
+        rows=len(rows),
+        refused=sum(1 for row in rows if _flag(row, "refused")),
+        truncated=sum(1 for row in rows if _flag(row, "truncated")),
+        aborted=sum(1 for row in rows if _flag(row, "aborted")),
+        faq_hits=sum(1 for row in rows if row.get("channel") == "faq"),
+        rag_answers=sum(1 for row in rows if row.get("channel") == "rag"),
+    )
+
+
 def summarize(
     rows: Sequence[Mapping[str, str]],
     *,
@@ -135,11 +185,11 @@ def summarize(
 ) -> MetricsSummary:
     """输入:一个时间窗内的账本行 + 窗口标签 + 要统计的分段 + 最慢榜条数。
 
-    行为:算分段分布(**只用品热行**)、算比率(分母=全部行)、取最慢若干条(含冷)。
+    行为:按冷热分两层,各自算计数;分段分位数**只用热行**;最慢榜两层都收(带 ``cold`` 标记)。
     输出:``MetricsSummary``。空窗返回全 0/None 的汇总(而不是抛错 —— 报表要能打开)。
     """
     warm = [row for row in rows if not _flag(row, "cold")]
-    cold_rows = sum(1 for row in rows if _flag(row, "cold"))
+    cold = [row for row in rows if _flag(row, "cold")]
 
     slow_candidates = [
         SlowRow(
@@ -155,14 +205,8 @@ def summarize(
 
     return MetricsSummary(
         window=window,
-        rows=len(rows),
-        cold_rows=cold_rows,
-        warm_rows=len(warm),
-        refused=sum(1 for row in rows if _flag(row, "refused")),
-        truncated=sum(1 for row in rows if _flag(row, "truncated")),
-        aborted=sum(1 for row in rows if _flag(row, "aborted")),
-        faq_hits=sum(1 for row in rows if row.get("channel") == "faq"),
-        rag_answers=sum(1 for row in rows if row.get("channel") == "rag"),
+        warm=_behavior(warm),
+        cold=_behavior(cold),
         segments=tuple(_segment(warm, name) for name in segments),
         slowest=tuple(slow_candidates[:top_n]),
     )

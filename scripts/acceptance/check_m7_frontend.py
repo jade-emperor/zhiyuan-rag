@@ -38,6 +38,8 @@
        静默降级成"不重排"是看不见的谎。
     5. **无认证模式下列会话给空表**（不是"列出所有人的"）：没有账号时"这是谁的会话"
        没有答案，而"没有答案就都给"是最坏的一种实现。
+    6. **存储层读不到时给 503 + 人话**：裸的 500 只会显示 "Internal Server Error" ——
+       用户读到的结论是"会话都没了"，而原因（某种 SQL 错）一个字都没露。
 
 前端部分是**静态契约**（读源码与构建产物），后端部分是**行为契约**（TestClient + 假件）。
 不需要容器 / 模型 / 网络，也不跑 `npm` —— 只有"产物比源码新"那一条会比较 mtime。
@@ -492,7 +494,7 @@ def _() -> str:
 @check("角色分流：页签按能力渲染（对话/知识库/报表/账号），路由按能力拦")
 def _() -> str:
     """P0-6:导航不再按"是不是管理员"分两档,而是按**能力**分四档 ——
-    运维只看到「报表」,员工看到「对话 + 知识库」,管理员全都看到。
+    运维看到「对话 + 报表」(他也要能问答),员工看到「对话 + 知识库」,管理员全都看到。
 
     这几条断言盯的是"三件事必须同时成立",漏一件就会出现
     "藏了页签但路由放行"(点 URL 能进)或"拦了路由但页签还在"(点了必然 403):
@@ -707,7 +709,7 @@ def _() -> str:
     return f"400 话术可执行；rerank=false 构造 0 次 / true 构造 1 次（配置默认={shown}）"
 
 
-@check("sessions：无认证给空表、认证按账号过滤、没装目录 → 503（不拿空表冒充「没有会话」）")
+@check("sessions：无认证给空表、认证按账号过滤、没装目录 → 503、**存储层坏掉给人话**")
 def _() -> str:
     anonymous = _World(auth=False, catalog=False).client().get("/api/v1/sessions")
     assert anonymous.status_code == 200 and anonymous.json() == {"sessions": []}, anonymous.text
@@ -733,7 +735,24 @@ def _() -> str:
     assert world.catalog.calls[0][0] == "u-admin", world.catalog.calls
     fields = set(admin_rows[0])
     assert fields == {"session_id", "title", "rounds", "created_at", "updated_at"}, fields
-    return f"空表/503/过滤三态都在；字段 {sorted(fields)}"
+
+    # 存储层坏掉时要说人话:这条路径以前把 MySQL 的异常直接抛给 FastAPI,前端拿到的是
+    # 一句 "Internal Server Error" —— 用户看到的是"会话都没了",而真正的原因(作者那次是
+    # 两族排序规则 JOIN 报 1267)一个字都没露出来
+    broken = _World(auth=True)
+    broken_token = broken.token("admin")
+
+    def _boom(user_id: str, *, limit: int):  # noqa: ANN202 - 假件
+        raise RuntimeError("(1267, \"Illegal mix of collations\")")
+
+    broken.catalog.list_for = _boom  # type: ignore[method-assign]
+    failed = broken.client().get(
+        "/api/v1/sessions", headers={"Authorization": f"Bearer {broken_token}"}
+    )
+    assert failed.status_code == 503, failed.text
+    detail = failed.json()["detail"]
+    assert "读不到会话目录" in detail and "1267" in detail, detail
+    return f"空表/503/过滤三态都在;存储层坏掉 → 503「{detail[:40]}…」"
 
 
 @check("会话标题的裁法只在领域层一处：压成一行、超 40 字加省略号")

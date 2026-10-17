@@ -12,13 +12,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from project_rag.adapters.bm25_index import BM25KeywordIndex
 from project_rag.adapters.bm25_sparse import BM25SparseEncoder, MilvusSparseKeywordIndex
 from project_rag.application.cost import PeriodRule
 from project_rag.domain import ConversationTurn, QaEvent, RetrievalOptions
-from project_rag.observability import get_logger, note_build
+from project_rag.observability import StreamTiming, get_logger, note_build
 from project_rag.observability.ledger_sink import LedgerHandler, attach_ledger_sink
 from project_rag.ports import (
     AccessStore,
@@ -39,6 +39,9 @@ from project_rag.ports import (
     VectorStore,
 )
 from project_rag.ports.keyword_index import KeywordIndex
+
+if TYPE_CHECKING:  # 只为注解;知识库通道的形状由用例层定义
+    from project_rag.application.answer_question import KnowledgeChannel
 
 _logger = get_logger("cli.deps")
 
@@ -166,8 +169,8 @@ class Deps:
     # 会话历史。带了 --session 才用得到,不注入就不造(同其它工厂)。
     conversation_store_factory: Callable[[], ConversationStore] | None = None
     # 多集合视角(列出集合、删掉一个集合)。**Milvus 特有** —— 端口 VectorStore 讲的是
-    # "一个集合怎么读写",而"库里有哪几个、哪个该删"是运维动作(P0-5 加 page 列之后,
-    # 旧集合不能写、新集合要建要删,这类事必须有接口,见 cli/commands/drop.py)。
+    # "一个集合怎么读写",而"库里有哪几个、哪个该删"是运维动作(旧集合可能缺列不能写、
+    # 新集合要建要删,这类事必须有接口,见 cli/commands/drop.py)。
     # 适配器在**组合根这一层**被包成两个函数,命令层不 import pymilvus ——
     # 与「api/ 只许认识 Deps」是同一条分层法律。
     collections_factory: Callable[[], Sequence[Any]] | None = None
@@ -175,7 +178,7 @@ class Deps:
     # 会话目录(前端左侧「我有哪些会话」)。与 conversation_store_factory 是**两张不同的表**
     # (归属表 + 对话表),所以是两个工厂:只问答的入口不必认识它。
     session_catalog_factory: Callable[[], SessionCatalog] | None = None
-    # 限流计数器(M7.4)。默认 None = **不限流** —— 与其它工厂同一条口径:
+    # 限流计数器。默认 None = **不限流** —— 与其它工厂同一条口径:
     # "不注入就不造"。`build_real_deps` 永远接上(Redis 那一份),
     # 只有显式注入的验收/本机才可能是 None;契约里有一条盯着这件事。
     rate_limiter_factory: Callable[[], RateLimiter] | None = None
@@ -189,7 +192,7 @@ class Deps:
 
 
 def build_real_deps() -> Deps:
-    """真实装配:读一次 Settings,把全部工厂装好(数量别写进这句 —— 写死了会漂,见法律 4)。
+    """真实装配:读一次 Settings,把全部工厂装好(数量别写进这句 —— 写死了会漂)。
 
     输入:无
     行为:读配置,工厂只捕获 settings 不建连接,真正的连接发生在命令用到它的时候;
@@ -500,12 +503,13 @@ def _required(factory: Callable[[], _T] | None, name: str) -> Callable[[], _T]:
 
 def knowledge_callable(
     deps: Deps, query: str, options: RetrievalOptions, *, rerank: bool
-) -> Callable[[Sequence[ConversationTurn]], Iterator[QaEvent]]:
-    """把知识库通道的端口拼成**一次调用的零参函数**(不调用它就什么都不构造)。
+) -> KnowledgeChannel:
+    """把知识库通道的端口拼成**一次调用的函数**(不调用它就什么都不构造)。
 
     输入:依赖集合、问题、检索旋钮、要不要重排
     行为:返回一个闭包;闭包被调用时才去调那几个惰性工厂(向量库/嵌入/BM25/重排)
-    输出:(历史轮次) -> 帧序列 —— 历史由用例层读出来再交进来,组合根不碰会话存储
+    输出:(历史轮次, 这一轮的账本) -> 帧序列 —— 历史由用例层读出来再交进来,
+          账本同理(见 ``application.answer_question.KnowledgeChannel``),组合根不碰会话存储
 
     为什么要有它:合流入口(``qa`` 命令、FastAPI)都从这里拿「知识库通道」——
     怎么拼只写一处,省得某条入口漏传了 source 或检索旋钮(三条增强检索路径都漏传过
@@ -514,7 +518,7 @@ def knowledge_callable(
     ``qa`` 命中 FAQ 时这个闭包一次都不会被调用,嵌入/重排模型也就不会被加载。
     """
 
-    def call(history: Sequence[ConversationTurn]) -> Iterator[QaEvent]:
+    def call(history: Sequence[ConversationTurn], timing: StreamTiming) -> Iterator[QaEvent]:
         from project_rag.application import stream_rag
 
         return stream_rag(
@@ -531,6 +535,9 @@ def knowledge_callable(
             options=options,
             history=history,
             thinking=deps.thinking,
+            # 账本**交下去**:合流入口已经开了这一轮的账,检索/生成的打点记在同一行上,
+            # 否则一次请求会落两行账(报表的请求量因此翻倍)。
+            timing=timing,
             # 查询改写正好落在这一步之前:这个闭包**只在 FAQ 未命中时**被调用,
             # 所以「FAQ 未命中 → 改写 → 向量检索」是结构上的顺序,
             # 不靠调用方记得先改写(而 FAQ 命中那条路一次都不会碰到它)。
@@ -558,6 +565,47 @@ def ensure_access_schema(deps: Deps) -> str | None:
         return None
     try:
         deps.access_store_factory().init_schema()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def ensure_documents_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保登记表存在(**幂等**)。输出:失败原因;成功给 None。
+
+    **为什么在启动时建**:这张表此前**没有任何生产入口去建它**(只有验收脚本与工具碰过
+    ``init_schema``)—— 空库起来以后"上传/清单"直接 500,而 500 的那句话是 PyMySQL 的
+    ``Table 'rag.documents' doesn't exist``,除了开发者没人看得懂。顺带它也把老表的排序规则
+    扳回来(见 ``adapters/mysql_schema.py``:那张表与可见范围表按 ``document_id`` 相关)。
+
+    与另外两个 ``ensure_*`` 同一条政策:失败只记警告,不拦启动。
+    """
+    if deps.document_store_factory is None:  # 注入式部署(验收/假件):不碰真库
+        return None
+    try:
+        deps.document_store_factory().init_schema()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def ensure_auth_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保认证那三张表存在(**幂等**)。输出:失败原因;成功给 None。
+
+    **为什么在启动时建**(原来只由 ``project-rag user add`` 建):
+
+    ① ``session_owner`` 是**会话列表要 JOIN 的那张表**,它的排序规则也得跟着扳到当前口径 ——
+       老库里它只写了 ``CHARSET``,与 ``conversations`` JOIN 直接报 1267,表现是"整页会话读不出来"
+       (见 ``adapters/mysql_schema.py``)。这条自愈写在 ``init_schema`` 里,而那个入口以前只有
+       ``user add`` 会走 —— 也就是说,**恰恰是"已经有账号、只想看会话"的那种部署修不到**;
+    ② 空库启动时登录页不再是"500 直到你想起跑一条 CLI 命令"。
+
+    与 ``ensure_access_schema`` 同一条政策:失败只记警告、不拦启动(真正读不到时接口回 503)。
+    """
+    if deps.auth_store_factory is None:  # 注入式部署(验收/假件):不碰真库
+        return None
+    try:
+        deps.auth_store_factory().init_schema()
     except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
         return f"{type(e).__name__}: {e}"
     return None

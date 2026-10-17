@@ -26,10 +26,14 @@ class ConversationStore(Protocol):
     """一段会话的问答历史。"""
 
     def record(self, session_id: str, turn: ConversationTurn, *, keep: int) -> None:
-        """输入:会话 ID、这一轮的问答、保留轮数。
+        """输入:会话 ID、这一轮的问答(**含当轮引用快照**)、保留轮数。
 
         行为:写入这一轮,并把该会话裁剪到**最近 keep 轮**(写入与裁剪同一次事务)。
         输出:无。
+
+        ``turn.citations`` 要一起落盘:切回旧会话时要连出处一起看到 ——
+        答案正文里的 ``[1]`` 没有卡片可点,等于没有出处。存储实现可以按自己的方式存
+        (MySQL 那份存 JSON 列),但**读回来必须还是那份快照**(老数据没有它时给空元组)。
         """
         ...
 

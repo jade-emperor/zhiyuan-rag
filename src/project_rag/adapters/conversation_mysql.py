@@ -19,29 +19,84 @@ MySQL 适配器:对话历史的存取(``conversations`` 表)。
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
+from dataclasses import asdict
 
 import pymysql
 
+from project_rag.adapters.mysql_schema import COLLATION, TABLE_OPTIONS, align_tables
+from project_rag.observability import get_logger
 from project_rag.config import ConversationConfig, MySQLConfig
-from project_rag.domain import ConversationTurn
+from project_rag.domain import CitationSnapshot, ConversationTurn
 from project_rag.ports import ConversationStore
+
+_logger = get_logger("adapters.conversation_mysql")
 
 _SAFE_TABLE = re.compile(r"^[A-Za-z0-9_]+$")
 
-# 表结构。``check_m5_history.py`` 的 docstring 里是同一份契约(改这里就要同步那里)。
+# 表结构。验收脚本的 docstring 里是同一份契约(改这里就要同步那里)。
 _CREATE_TABLE = """CREATE TABLE IF NOT EXISTS {table} (
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     session_id VARCHAR(36) NOT NULL,
     question TEXT NOT NULL,
     answer TEXT NOT NULL,
+    citations JSON NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_session_id (session_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"""
+) {options}"""
 
 # VARCHAR(36) 就是 uuid4 的长度;超长会在 MySQL 严格模式下报错,这里提前给出人话
 _MAX_SESSION_CHARS = 36
+
+def _dump_citations(citations: Sequence[CitationSnapshot]) -> str | None:
+    """输入:这一轮的引用快照。行为:序列化成 JSON 文本。输出:文本;没有引用给 ``None``。
+
+    存 ``None`` 而不是 ``"[]"``:两者读回来都是空元组,但``NULL`` 更省地方,
+    而且"老行没有这一列"与"这一轮没有出处"在数据上长得一样 —— 界面本来也分不出、不需要分。
+    """
+    if not citations:
+        return None
+    return json.dumps([asdict(item) for item in citations], ensure_ascii=False)
+
+
+def _load_citations(raw: object) -> tuple[CitationSnapshot, ...]:
+    """输入:库里的 JSON 列(pymysql 可能给 str / bytes / None)。行为:翻回快照元组。输出:快照元组。
+
+    **坏数据当场炸**(与 ``auth_mysql`` 读角色同一条口径):这一列只由 ``record`` 写,
+    解不开说明有人手改过库 —— 那时静默给空元组会让"引用不见了"变成一个查不出来的谜。
+    """
+    if raw is None or raw == "":
+        return ()
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    try:
+        items = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"citations 列不是合法 JSON(有人手改过库?):{text[:120]!r}") from exc
+    try:
+        return tuple(
+            CitationSnapshot(
+                index=int(item["index"]),
+                source=str(item["source"]),
+                doc_id=str(item["doc_id"]),
+                preview=str(item["preview"]),
+                score=float(item["score"]),
+                rerank_score=(
+                    None if item.get("rerank_score") is None else float(item["rerank_score"])
+                ),
+                page=None if item.get("page") is None else int(item["page"]),
+            )
+            for item in items
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        # 形状不对只有一种来路:写入方没走 ``domain.snapshot_citations``(把整个 Citation
+        # 塞进来就会这样 —— 它的字段是 chunk/score,没有 source)。当场炸并点出来路,
+        # 别让它变成一个"引用莫名其妙不见了"的谜。
+        raise RuntimeError(
+            f"citations 列的形状不对({type(exc).__name__}: {exc});"
+            f"这一列只由 record 写,字段来自 domain.snapshot_citations —— {text[:120]!r}"
+        ) from exc
 
 
 def _require_session(session_id: str) -> str:
@@ -78,14 +133,33 @@ class MySQLConversationStore(ConversationStore):
         conn = self._connect(autocommit=True)
         try:
             with conn.cursor() as cur:
-                cur.execute(_CREATE_TABLE.format(table=self._table))
+                cur.execute(_CREATE_TABLE.format(table=self._table, options=TABLE_OPTIONS))
+                # 老表(加 citations 之前建的)不会因为 IF NOT EXISTS 长出这一列 ——
+                # 补一次,否则"切回旧会话看不到引用"会一直在,而且只在老库上表现
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s",
+                    (self._table, "citations"),
+                )
+                found = cur.fetchone()
+                if not found or not found[0]:
+                    cur.execute(f"ALTER TABLE {self._table} ADD COLUMN citations JSON NULL")
+                # 老表只写了 CHARSET(见 adapters/mysql_schema.py):与另一族表 JOIN 报 1267。
+                # 会话目录正是按 session_id JOIN 这张表 —— 那一次的表现是"整页会话读不出来"。
+                stale = align_tables(cur, (self._table,))
+                if stale:
+                    _logger.info("排序规则已对齐到 %s(老表):%s", COLLATION, "、".join(stale))
         except Exception as exc:
             raise RuntimeError(f"建表失败（{target}.{self._table}）：{exc}") from exc
         finally:
             conn.close()
 
     def record(self, session_id: str, turn: ConversationTurn, *, keep: int) -> None:
-        """输入:会话 ID、这一轮的问答、保留轮数。行为:插入 + 裁剪到最近 keep 轮(一个事务)。输出:无。"""
+        """输入:会话 ID、这一轮的问答(+引用快照)、保留轮数。行为:插入 + 裁剪到最近 keep 轮(一个事务)。输出:无。
+
+        ``citations`` 存成 JSON 列:没有引用时写 ``NULL``(不是 ``[]``),
+        这样"老行没这列/没引用"与"这一轮真的没有出处"在读回来时都得到空元组 —— 两者对界面是一回事。
+        """
         sid = _require_session(session_id)
         if keep <= 0:
             raise ValueError(f"keep 必须为正数,收到 {keep}")
@@ -94,9 +168,9 @@ class MySQLConversationStore(ConversationStore):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"INSERT INTO {self._table} (session_id, question, answer) "
-                    "VALUES (%s, %s, %s)",
-                    (sid, turn.question, turn.answer),
+                    f"INSERT INTO {self._table} (session_id, question, answer, citations) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (sid, turn.question, turn.answer, _dump_citations(turn.citations)),
                 )
                 cur.execute(
                     f"DELETE FROM {self._table} WHERE session_id = %s AND id NOT IN ("
@@ -124,7 +198,7 @@ class MySQLConversationStore(ConversationStore):
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT question, answer FROM {self._table} "
+                    f"SELECT question, answer, citations FROM {self._table} "
                     "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
                     (sid, limit),
                 )
@@ -134,7 +208,11 @@ class MySQLConversationStore(ConversationStore):
 
         # SQL 里按 id 倒序取「最近的 limit 轮」,返回前翻正 —— 端口承诺时间正序
         return tuple(
-            ConversationTurn(question=str(row[0]), answer=str(row[1]))
+            ConversationTurn(
+                question=str(row[0]),
+                answer=str(row[1]),
+                citations=_load_citations(row[2]),
+            )
             for row in reversed(rows)
         )
 

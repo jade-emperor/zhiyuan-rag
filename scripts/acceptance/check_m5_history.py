@@ -244,7 +244,7 @@ class _World:
         self.knowledge_calls = 0
         self.knowledge_history: tuple = ()
 
-    def knowledge(self, history=()):
+    def knowledge(self, history=(), timing=None):
         """假的知识库通道：记下「被调用几次」和「收到什么历史」，然后按帧协议吐一帧流。
 
         模仿真通道的交付方式(sources + token + done),而不是直接扔一个 RagAnswer ——
@@ -448,7 +448,7 @@ def _() -> str:
 
 
 # ── 1. 领域 / 端口 / 配置 / 组合根 ───────────────────────────────────────────
-@check("domain：ConversationTurn 是 frozen+slots dataclass，字段 question/answer，包入口可导入")
+@check("domain：ConversationTurn 是 frozen+slots dataclass，字段 question/answer/citations，包入口可导入")
 def _() -> str:
     import dataclasses
 
@@ -460,12 +460,19 @@ def _() -> str:
     if not getattr(Turn, "__slots__", None):
         raise AssertionError("ConversationTurn 应为 slots=True（与其它领域模型一致）")
     names = [field.name for field in dataclasses.fields(Turn)]
-    if names != ["question", "answer"]:
-        raise AssertionError(f"字段应为 ['question','answer']，实际 {names}")
-    exported = getattr(importlib.import_module("project_rag.domain"), "__all__", [])
-    if "ConversationTurn" not in exported:
-        raise AssertionError("domain/__init__.py 的 __all__ 里缺 ConversationTurn")
-    return "字段与默认值一致，且从包入口可导入"
+    if names != ["question", "answer", "citations"]:
+        raise AssertionError(f"字段应为 ['question','answer','citations']，实际 {names}")
+    # citations 必须有默认值:老调用点(以及"这一轮没有出处")都不用显式给
+    make: Any = Turn  # 动态取来的类(pyright 只看到 Any),这一条本来就只关心字段与默认值
+    built = make(question="q", answer="a")
+    if getattr(built, "citations", None) != ():
+        raise AssertionError("citations 的默认值该是空元组")
+    domain = importlib.import_module("project_rag.domain")
+    exported = getattr(domain, "__all__", [])
+    for name in ("ConversationTurn", "CitationSnapshot", "snapshot_citations", "PREVIEW_CHARS"):
+        if name not in exported:
+            raise AssertionError(f"domain/__init__.py 的 __all__ 里缺 {name}")
+    return "字段 question/answer/citations(默认空),快照类型与拍快照的函数都在包入口"
 
 
 @check("端口：ConversationStore 是 Protocol，record/recent/clear 签名按契约")
@@ -1163,6 +1170,189 @@ def _() -> str:
         _drop_table(table)
 
 
+@check("真实链路：引用快照随这一轮落库、切回旧会话读得回来（老表自动补列）")
+def _citations_roundtrip() -> str:
+    """作者报的那条:**答案里的 [1][2] 还在,引用卡片没了** —— 因为它从来没被存过。
+
+    这条盯三件事:① 引用随 ``record`` 落库、``recent`` 读回来(序号/来源/页码/分数/预览);
+    ② 预览按 ``PREVIEW_CHARS`` 截断 —— 实时那份与历史那份必须是同一个数,否则
+    "刚问完"与"切回来"长得不一样;③ **老表**(没有 ``citations`` 列)由 ``ensure_table``
+    就地补列,老行读成空元组(不是报错,也不是编一份引用出来)。
+    """
+    import uuid as _uuid
+
+    from project_rag.domain import (
+        PREVIEW_CHARS,
+        Chunk,
+        Citation,
+        ConversationTurn,
+        snapshot_citations,
+    )
+
+    table = f"conv_cit_{_uuid.uuid4().hex[:8]}"
+    old_table = f"conv_old_{_uuid.uuid4().hex[:8]}"
+    store = _store_for(table)
+    try:
+        store.ensure_table()
+        long_text = "父块正文" * 100
+        cites = (
+            Citation(
+                index=1,
+                chunk=Chunk("c1", "子块", "bagu_ai", "d1", "p1", long_text, page=7),
+                score=0.9,
+                rerank_score=0.42,
+            ),
+            Citation(
+                index=2,
+                chunk=Chunk("c2", "子块", "bagu_java", "d2", "p2", "短正文"),
+                score=0.5,
+            ),
+        )
+        store.record(
+            SESSION_A,
+            ConversationTurn(
+                question="大模型微调有哪些策略?",
+                answer="主要分两类 [1][2]。",
+                citations=snapshot_citations(cites),
+            ),
+            keep=5,
+        )
+        turns = store.recent(SESSION_A, limit=5)
+        if len(turns) != 1:
+            raise AssertionError(f"该读回 1 轮,实际 {len(turns)}")
+        got = turns[0].citations
+        if [c.index for c in got] != [1, 2]:
+            raise AssertionError(f"引用条数与序号不对:{got}")
+        first = got[0]
+        if (first.source, first.doc_id, first.page, first.score, first.rerank_score) != (
+            "bagu_ai",
+            "d1",
+            7,
+            0.9,
+            0.42,
+        ):
+            raise AssertionError(f"引用字段不对:{first}")
+        if len(first.preview) != PREVIEW_CHARS or len(got[1].preview) != len("短正文"):
+            raise AssertionError(
+                f"预览该截到 {PREVIEW_CHARS} 字(短的原样),实际 {len(first.preview)}/{len(got[1].preview)}"
+            )
+        if got[1].page is not None:
+            raise AssertionError(f"没有页码的引用读回来该是 None(不许编 0/1),实际 {got[1].page}")
+
+        # ② 老表:没有 citations 列的那种 —— ensure_table 幂等补列,老行读成空元组
+        conn = _mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"CREATE TABLE {old_table} ("
+                    "  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+                    "  session_id VARCHAR(36) NOT NULL,"
+                    "  question TEXT NOT NULL,"
+                    "  answer TEXT NOT NULL,"
+                    "  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                )
+                cur.execute(
+                    f"INSERT INTO {old_table} (session_id, question, answer)"
+                    " VALUES (%s, '老问题', '老答案')",
+                    (SESSION_A,),
+                )
+        finally:
+            conn.close()
+        old_store = _store_for(old_table)
+        old_store.ensure_table()  # 补列(幂等)
+        old_store.ensure_table()
+        old_turns = old_store.recent(SESSION_A, limit=5)
+        if len(old_turns) != 1 or old_turns[0].citations != ():
+            raise AssertionError(f"老行该读成『没有引用』,实际 {old_turns}")
+        return f"表 {table}:2 条引用(预览截到 {PREVIEW_CHARS} 字、无页码保持 None);老表补列后老行 = 无引用"
+    finally:
+        _drop_table(table)
+        _drop_table(old_table)
+
+
+@check("记历史时带上引用：快照来自这一轮的证据链，字符预算仍只数问答")
+def _record_keeps_citations_and_budget_ignores_them() -> str:
+    """两条容易踩的:
+
+    ① ``_record`` 拿到的 ``done.citations`` 必须变成 ``turn.citations`` —— 少了这一步,
+       落库的还是空的(而"切回旧会话看不到引用"就是这么来的);
+    ② 引用**不进**字符预算:``window_history`` 数的是问题 + 答案,
+       把 120 字的预览也算进去会让窗口莫名其妙地少装一轮。
+    """
+    from project_rag.application.answer_question import Session, stream_question, window_history
+    from project_rag.domain import (
+        PREVIEW_CHARS,
+        Chunk,
+        Citation,
+        ConversationTurn,
+        snapshot_citations,
+    )
+
+    store = FakeConversationStore()
+    hit = Citation(
+        index=1,
+        chunk=Chunk("c1", "子块", "bagu_ai", "d1", "p1", "父块正文" * 50, page=3),
+        score=0.9,
+    )
+    QaEvent = _require("project_rag.domain", ("QaEvent",)).QaEvent
+    answer = "装饰器是给函数加行为的语法 [1]"
+    events = list(
+        stream_question(
+            "装饰器有什么用",
+            faq_store=FakeFaqStore([]),
+            matcher=FakeMatcher(),
+            knowledge=lambda history, timing: iter(
+                [
+                    QaEvent(kind="sources", citations=(hit,)),
+                    QaEvent(kind="token", text=answer),
+                    QaEvent(kind="done", answer=answer, citations=(hit,)),
+                ]
+            ),
+            session=Session(store=store, session_id="s1"),
+        )
+    )
+    if events[-1].kind != "done":
+        raise AssertionError(f"帧协议:该以 done 收尾,实际 {events[-1]!r}")
+    if not store.records:
+        raise AssertionError("这一轮没记进历史")
+    _sid, turn, _keep = store.records[0]
+    if [c.index for c in turn.citations] != [1] or turn.citations[0].source != "bagu_ai":
+        raise AssertionError(f"记历史时没带上引用快照:{turn}")
+    if len(turn.citations[0].preview) != PREVIEW_CHARS:
+        raise AssertionError(f"存进历史的预览该截到 {PREVIEW_CHARS} 字:{turn.citations[0]}")
+
+    # 字符预算只数问答:同一段历史,带不带引用,窗口装下的轮数必须一样
+    turns = tuple(
+        ConversationTurn(
+            question=f"问{i}",
+            answer="答案" * 20,
+            citations=snapshot_citations(
+                (
+                    Citation(
+                        index=1,
+                        chunk=Chunk(f"c{i}", "子块", "s", "d", "p", "长父块" * 100),
+                        score=0.9,
+                    ),
+                )
+            ),
+        )
+        for i in range(1, 4)
+    )
+    size = len(turns[0].question) + len(turns[0].answer)
+    with_citations = window_history(turns, max_chars=size * 2)
+    without = window_history(
+        tuple(ConversationTurn(question=t.question, answer=t.answer) for t in turns),
+        max_chars=size * 2,
+    )
+    if [t.question for t in with_citations] != [t.question for t in without]:
+        raise AssertionError(
+            f"引用不该影响字符预算:带引用装了 {[t.question for t in with_citations]},"
+            f"不带装了 {[t.question for t in without]}"
+        )
+    return "record 带上引用快照(预览截断)；窗口预算只数问答(带不带引用装下的一样多)"
+
+
 @check("真实链路：账本带 token(含缓存命中)的行来回一趟 MySQL —— 消耗报表按三档×两时段算得出钱")
 def _() -> str:
     """P0-7:账本是"整行 JSON + 几列索引",token 那四个字段**只进 payload**;
@@ -1278,6 +1468,131 @@ def _() -> str:
         )
     finally:
         _drop_table(table)
+
+
+@check("口径：所有 CREATE TABLE 的尾巴都来自 mysql_schema.TABLE_OPTIONS（少写 COLLATE = 1267）")
+def _ddl_options_are_shared() -> str:
+    """**这一条盯的是"两族表"**：``DEFAULT CHARSET=utf8mb4`` **不带** ``COLLATE`` 时,
+    MySQL 8 用的是**字符集自己的**默认排序规则(``utf8mb4_0900_ai_ci``),而不是库/服务端的默认
+    (本部署钉的是 ``utf8mb4_unicode_ci``)。于是同一个库里长出两族表,一旦按字符串列 JOIN
+    就是 ``1267 Illegal mix of collations`` —— 作者那次的表现是**会话列表整页读不出来**,
+    而前端只拿到一句 "Internal Server Error"。
+
+    规则:凡是建表的地方,尾巴都写 ``{options}``(值来自 ``adapters/mysql_schema.py`` 的唯一常量)。
+    这里做的是**静态**检查(不连库):出现 ``CREATE TABLE`` 的文件里不许再出现 ``DEFAULT CHARSET``,
+    且占位符个数要对得上 —— 少一个就是漏了一处。
+    """
+    from project_rag.adapters.mysql_schema import CHARSET, COLLATION, TABLE_OPTIONS
+
+    if f"DEFAULT CHARSET={CHARSET} COLLATE={COLLATION}" not in TABLE_OPTIONS:
+        raise AssertionError(
+            f"TABLE_OPTIONS 必须同时写死 CHARSET 与 COLLATE(只写 CHARSET 就会掉进 1267):{TABLE_OPTIONS!r}"
+        )
+    owners = sorted(
+        [*SRC.rglob("*.py"), ROOT / "scripts" / "tools" / "load_faq_csv.py"]
+    )
+    checked = 0
+    for path in owners:
+        text = path.read_text(encoding="utf-8")
+        # 只数**真的建表语句**(``CREATE TABLE IF NOT EXISTS {表名}``):注释里提到这几个字不算
+        tables = text.count("CREATE TABLE IF NOT EXISTS {")
+        if not tables:
+            continue
+        checked += tables
+        if "DEFAULT CHARSET" in text:
+            raise AssertionError(
+                f"{path.relative_to(ROOT)} 里有裸的 DEFAULT CHARSET —— 尾巴必须写 {{options}}"
+                f"(值来自 adapters/mysql_schema.py)"
+            )
+        if text.count("{options}") != tables:
+            raise AssertionError(
+                f"{path.relative_to(ROOT)}:{tables} 处 CREATE TABLE,{text.count('{options}')} 处 {{options}}"
+                " —— 有不走共享口径的建表"
+            )
+    return f"{checked} 处 CREATE TABLE 全部走 {TABLE_OPTIONS.split('DEFAULT ')[1]}"
+
+
+@check("真实链路：老表(只写了 CHARSET)被 init_schema 扳成同一族，会话目录能 JOIN 出来")
+def _collation_heals_legacy_tables() -> str:
+    """**这一条复现作者报的那次故障**:``session_owner``(老 DDL,只写 CHARSET ⇒ 0900)
+    JOIN ``conversations``(写了 COLLATE ⇒ unicode)报 1267,前端整页会话读不出来。
+
+    三步:① 按老 DDL 建探针表 → 断言 JOIN **确实会炸**(前置条件;不炸说明这台 MySQL 的默认
+    变了,这条检查就失去了意义,必须报出来而不是假装通过);② 跑一次适配器的 ``init_schema``;
+    ③ 同一句 JOIN 必须给出会话。
+    """
+    import uuid as _uuid
+
+    from project_rag.adapters import MySQLConversationStore
+    from project_rag.adapters.auth_mysql import MySQLAuthStore
+    from project_rag.adapters.sessions_mysql import MySQLSessionCatalog
+    from project_rag.config import ConversationConfig, get_settings
+
+    settings = get_settings()
+    tag = _uuid.uuid4().hex[:8]
+    owners, users, tokens = f"m5_owner_{tag}", f"m5_users_{tag}", f"m5_tokens_{tag}"
+    table = f"conv_m5j_{tag}"
+    store = MySQLConversationStore(settings.mysql, ConversationConfig(table=table))
+    conn = _mysql_connect()
+    try:
+        with conn.cursor() as cur:
+            # 老样子:只写 CHARSET(这正是 session_owner 当初的 DDL)
+            cur.execute(
+                f"CREATE TABLE {owners} ("
+                "  session_id VARCHAR(64) PRIMARY KEY,"
+                "  user_id VARCHAR(32) NOT NULL,"
+                "  created_at DATETIME(3) NOT NULL"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+            )
+    finally:
+        conn.close()
+    try:
+        store.ensure_table()  # 新口径建的会话表(unicode)
+        Turn = _turn_type()
+        store.record(
+            "s-collation",
+            Turn(question="会话列表为什么读不出来", answer="因为两张表的排序规则不是一族"),
+            keep=5,
+        )
+        conn = _mysql_connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"INSERT INTO {owners} (session_id, user_id, created_at)"
+                    " VALUES ('s-collation', 'u-probe', NOW(3))"
+                )
+        finally:
+            conn.close()
+
+        catalog = MySQLSessionCatalog(
+            settings.mysql, ConversationConfig(table=table), owners_table=owners
+        )
+        try:
+            catalog.list_for("u-probe", limit=5)
+        except Exception as exc:  # noqa: BLE001 - 预期:两族表 JOIN 报 1267
+            if "1267" not in str(exc) and "Illegal mix of collations" not in str(exc):
+                raise AssertionError(f"预期 1267(排序规则不一致),实际:{exc}") from exc
+        else:
+            raise AssertionError(
+                "前置条件不成立:两族排序规则的表 JOIN 竟然成功了 —— 这台 MySQL 的默认排序规则"
+                "变了,这条检查证明不了任何事(要么改探针,要么承认它没在测那件事)"
+            )
+
+        # 修复路径:适配器的 init_schema(启动时跑的就是它)
+        MySQLAuthStore(
+            settings.mysql, users_table=users, tokens_table=tokens, owners_table=owners
+        ).init_schema()
+        rows = MySQLSessionCatalog(
+            settings.mysql, ConversationConfig(table=table), owners_table=owners
+        ).list_for("u-probe", limit=5)
+        if [row.session_id for row in rows] != ["s-collation"]:
+            raise AssertionError(f"扳回来之后该列出那一段会话,实际 {[r.session_id for r in rows]}")
+        if rows[0].rounds != 1 or "读不出来" not in rows[0].title:
+            raise AssertionError(f"轮数/标题不对:{rows[0]}")
+        return "老表 JOIN 先炸 1267,init_schema 之后同一句 JOIN 给出 1 段会话"
+    finally:
+        for name in (owners, users, tokens, table):
+            _drop_table(name)
 
 
 @check("真实链路：老账本表(没有 ts_offset 列)能被 init_schema 就地补上，老行的时段判不出来")

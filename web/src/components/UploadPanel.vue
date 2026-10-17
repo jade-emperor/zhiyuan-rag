@@ -129,8 +129,8 @@ async function submit(files: File[]): Promise<void> {
     </div>
 
     <p class="alert info small">
-      上传是**异步入库**:接口立刻返回,后台切块嵌入(539 页 PDF 在 CPU 上约 8 分钟)。
-      卡片上的状态会自动刷新;**只有「已入库」才是能被检索到的**。
+      上传是<strong>异步入库</strong>:接口立刻返回,后台切块嵌入(539 页的 PDF 在 CPU 上约 8 分钟)。
+      卡片上的状态会自动刷新;<strong>只有「已入库」才是能被检索到的</strong>。
     </p>
   </aside>
 </template>

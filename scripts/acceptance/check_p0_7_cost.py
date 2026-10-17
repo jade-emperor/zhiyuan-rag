@@ -399,13 +399,14 @@ def _no_llm_rows_ignored() -> str:
     return "三行都没调模型 → lines 空、0 次调用、0 元"
 
 
-@check("缺口 不双计：真跑一次合流请求，两行账只算一次钱（用量只记在内层）")
+@check("缺口 不双计：真跑一次合流请求，**只落一条账**、只算一次钱")
 def _no_double_count() -> str:
-    """**这一条必须用真链路**:外层 qa 那行的 ``tokens``/``ttft_ms`` 都是数值
-    (它转发了内层的 token 帧),光看字面量数据说不清"为什么它不该被计费"。
+    """**这一条必须用真链路**:用量是 provider 在流末尾回报的,光看字面量数据验不了接线。
 
-    token 用量只挂在内层 rag 那一行(见 ``application/answer_rag.py`` 的 ``timing.usage``),
-    所以判据是 ``llm_ttft_ms`` / ``llm_model`` —— 那两个字段在外层是 ``-``。
+    一次请求落两条账(合流入口一条 + 知识库通道一条)的后果不止是多一行日志 ——
+    报表的请求量翻倍,而金额那一栏会靠"只有真调 provider 的那层才有 ``llm_*``"这个
+    判据**兜住**:兜住了钱,兜不住计数。所以这里钉的是**行数**:一次请求恰好一行,
+    用量就落在那一行上。
     """
     import logging
 
@@ -439,7 +440,8 @@ def _no_double_count() -> str:
         chunk=Chunk("c1", "子块", "bagu_ai", "d1", "p1", "父块正文"), score=0.9
     )
 
-    def knowledge(history):
+    def knowledge(history, timing):
+        # 组合根的接法:把用例交下来的账本原样转交给知识库通道
         return stream_rag(
             "装饰器有什么用",
             embedder=FakeEmbedder(),
@@ -447,6 +449,7 @@ def _no_double_count() -> str:
             llm=_LLM(),
             keyword_index=None,
             options=RetrievalOptions(k=3, max_context=2),
+            timing=timing,
         )
 
     rows: list[dict] = []
@@ -472,26 +475,28 @@ def _no_double_count() -> str:
     finally:
         logger.removeHandler(handler)
 
-    if len(rows) != 2:
-        raise AssertionError(f"一次合流请求该写两条账(rag + qa),实际 {len(rows)}")
-    by_label = {row["label"]: row for row in rows}
-    inner, outer = by_label["rag"], by_label["qa"]
-    if (inner["llm_input_tokens"], inner["llm_model"]) != ("1000000", MODEL):
-        raise AssertionError(f"内层该带着用量:{inner}")
-    if (outer["llm_model"], outer["llm_ttft_ms"]) != ("-", "-"):
-        raise AssertionError(f"外层不该有模型名或 llm_ttft(它没有自己的 provider 调用):{outer}")
-    if outer["ttft_ms"] == "-":
-        raise AssertionError("前置条件不成立:外层本该量到 ttft(用户等的是它)")
+    if len(rows) != 1:
+        raise AssertionError(
+            f"一次合流请求只能写一条账(多一条就是把请求量报成了两倍),实际 {len(rows)} 条:"
+            f"{[row['label'] for row in rows]}"
+        )
+    row = rows[0]
+    if row["label"] != "qa" or row["channel"] != "rag":
+        raise AssertionError(f"该是合流那一层那一行(label=qa channel=rag),实际 {row['label']}/{row['channel']}")
+    if (row["llm_input_tokens"], row["llm_model"]) != ("1000000", MODEL):
+        raise AssertionError(f"用量该落在这唯一的一行上:{row}")
+    if row["ttft_ms"] == "-":
+        raise AssertionError("前置条件不成立:这一行本该量到 ttft(用户等的是它)")
 
     # 账本行没有 ts(不是从库里读的),所以这里不分时段:按高峰价验"只算一次"
     report_ = _report(rows, rule=_rule(windows=[]))
     if report_.metered_calls != 1:
         raise AssertionError(f"该只算 1 次模型调用,实际 {report_.metered_calls}")
     if report_.unmetered_calls != 0:
-        raise AssertionError(f"外层不该被算成『调了但没量到』,实际 {report_.unmetered_calls}")
+        raise AssertionError(f"不该有『调了但没量到』的行,实际 {report_.unmetered_calls}")
     if report_.total_cost != PEAK_MISS:
         raise AssertionError(f"金额该是 1 百万未命中输入 = {PEAK_MISS} 元,实际 {report_.total_cost}")
-    return f"真链路两条账 → 1 次调用 / {PEAK_MISS} 元(外层 ttft={outer['ttft_ms']}ms 但不计费)"
+    return f"真链路一条账 → 1 次调用 / {PEAK_MISS} 元(ttft={row['ttft_ms']}ms)"
 
 
 @check("缺口 空窗口 / 脏数据：报表要能打开，坏值当『没量到』而不是抛异常")

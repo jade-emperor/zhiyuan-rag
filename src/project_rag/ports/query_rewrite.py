@@ -42,7 +42,7 @@ class QueryRewriter(Protocol):
     def rewrite(self, query: str) -> QueryRewrite:
         """输入:用户原话。行为:判策略 → 生成检索语句。输出:``QueryRewrite``。
 
-        两条约定(``check_m8_rewrite.py`` 逐条盯着):
+        两条约定:
 
         - ``queries`` **永不为空**;失败也退回 ``(query,)``;
         - ``strategy == "direct"`` 时 ``queries`` 必须**逐字**等于原话。

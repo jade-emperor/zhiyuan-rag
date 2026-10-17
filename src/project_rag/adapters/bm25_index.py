@@ -2,7 +2,7 @@
 进程内 BM25 关键字索引(``rank_bm25`` 的 ``BM25Plus``)。
 
 **为什么关键字那一路不进 Milvus**:Milvus 2.4.4 没有内置 BM25(那是 2.5 的能力)。
-拿正在跑的 2.4.4 实测过三条边界(记在 `docs/STATUS.md` §5 第 30 条):
+拿正在跑的 2.4.4 实测过三条边界:
 稀疏向量**能存**(`SPARSE_FLOAT_VECTOR` + `SPARSE_INVERTED_INDEX` + IP 检索跑通),但
 稀疏索引**只认 IP 度量**、`Function(BM25)` 只是"建集合不报错"(插入只给 `text` 会报
 `Insert missed an field 'sparse'`)、`TEXT_MATCH` 表达式解析器不认。而且 BM25 的权重依赖
@@ -20,7 +20,7 @@
 
 代价是「语料变了」最多晚 ``ttl`` 秒被发现(config 的 ``cache.corpus_fp_ttl_s``,默认 20)。
 入库本身要几分钟,20 秒的窗口体感上不存在;要"上传完立刻可搜"就让写入方 bump 缓存键
-(升级路径记在 `docs/deferred.md` 第 56 条)。**缓存故障一律降级**:Cache 是纯加速,
+(目前没做)。**缓存故障一律降级**:Cache 是纯加速,
 读/写抛异常只记 warning,行为退回"每查询读一次指纹"——今天的样子。
 
 **索引按指纹缓存**:语料一变(或父子结构一变)就重建。这和 FAQ 匹配器是同一套做法 ——

@@ -7,7 +7,7 @@ ChatMessage 在(会话历史、上下文拼装、评估用例都要用它),所�
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -40,16 +40,68 @@ class ChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class CitationSnapshot:
+    """**当轮那张引用卡片**的快照:序号、来源、页码、两个分数、预览。
+
+    **为什么不是 ``Citation``**:``Citation`` 带着整个 ``Chunk``(含父块正文),
+    而历史要留的是"用户当时看到的那张卡片"。存快照而不是只存 ``chunk_id`` 有两条理由:
+    ① 语料后来重灌或删了,旧会话仍然显示得出来;② 回看历史不该再去向量库查一次
+    (那是一次昂贵往返,而且结果可能已经不同)。
+
+    ``page`` 与实时那份同一条口径:**None = 不知道**(md/txt 没有页码、老块也没记),
+    不许拿 0/1 顶上。
+    """
+
+    index: int
+    source: str
+    doc_id: str
+    preview: str
+    score: float
+    rerank_score: float | None = None
+    page: int | None = None
+
+
+# 引用预览留多少字。**只在这里定义一次**:实时那份(接口出参)与历史那份(落库快照)
+# 用的是同一个数 —— 两处各写一个 120,迟早一边改了另一边没改,而用户会看到
+# "同一条引用,刚问完和历史里长得不一样"。
+PREVIEW_CHARS = 120
+
+
+def snapshot_citations(citations: Sequence[Citation]) -> tuple[CitationSnapshot, ...]:
+    """输入:这一轮的引用序列。行为:按**给人看的样子**拍一份快照(截断预览)。输出:快照序列。
+
+    实时出参与落库历史都走它 —— 一处口径,两个消费者。
+    """
+    return tuple(
+        CitationSnapshot(
+            index=citation.index,
+            source=citation.chunk.source,
+            doc_id=citation.chunk.doc_id,
+            preview=citation.chunk.context_text[:PREVIEW_CHARS],
+            score=citation.score,
+            rerank_score=citation.rerank_score,
+            page=citation.page,
+        )
+        for citation in citations
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationTurn:
     """一轮问答(对话历史里的一条)。
 
     刻意不用 dict:写成 ``[{"question": ..., "answer": ...}]`` 的话,每个消费点都要自己
     校验 ``"question" in h``、自己转类型;换成领域类型之后,
     「一轮历史长什么样」由类型担保,用例与提示词层都不用再写一遍防御。
+
+    ``citations`` 是**当轮引用卡片的快照**(见 ``CitationSnapshot``):切回旧会话时要连
+    出处一起看到 —— 答案正文里的 ``[1]`` 没有卡片可点,等于没有出处。它**不进提示词**
+    (``rag_answer_prompt`` 只渲染问答),也不参与窗口的字符预算。
     """
 
     question: str
     answer: str
+    citations: tuple[CitationSnapshot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +238,7 @@ class Document:
     doc_id: str
     text: str
     source: str
-    # P0-5:``(起始, 结束, 页码)`` 区间表,**按字符偏移与 text 逐字符对齐**;
+    # ``(起始, 结束, 页码)`` 区间表,**按字符偏移与 text 逐字符对齐**;
     # 空元组 = 这份格式没有页码概念(md/txt 就是空,不是"第 0 页")。
     # 默认值让现有构造不受影响(加字段不许改调用点)。
     pages: tuple[tuple[int, int, int], ...] = ()
@@ -210,9 +262,9 @@ class Chunk:
     doc_id: str  # 必填:漏了它就等于关掉「重灌时清旧块」
     parent_id: str = ""
     parent_content: str = ""
-    # P0-5:这一块落在源文件的第几页(**从 1 开始**)。
+    # 这一块落在源文件的第几页(**从 1 开始**)。
     # None = 不知道 —— 两种来源都归到这里:这种格式没有页码概念(md/txt),或者块是
-    # P0-5 之前入库的老数据。**不许拿 0 或 -1 当"没有页码"**:那会被读成一个真实页号。
+    # 早期入库的老数据。**不许拿 0 或 -1 当"没有页码"**:那会被读成一个真实页号。
     page: int | None = None
 
     @property
@@ -304,7 +356,7 @@ class QaAnswer:
     只返回一个字符串是不够的;这里把「谁答的、凭什么」一起带上 ——
     引用清单在 RagAnswer 里已经有了,合流没有理由把它丢掉(用户要能核对答案出处)。
 
-    不变式(由 answer_question 保证,check_m5_qa.py 逐条盯着):
+    不变式(由 answer_question 保证):
 
     - ``channel == "faq"`` ⟺ ``faq_match is not None``(命中才有那条匹配);
     - ``channel == "faq"`` → ``citations == ()`` 且 ``refused is False``;
@@ -397,7 +449,7 @@ class RetrievalOptions:
     """一次检索的全部旋钮。
 
     攒成一个对象而不是排一长串关键字参数:旋钮只会越加越多(重排就是后来加的),
-    每加一个就改一遍所有调用点的签名,不划算。默认值与 config.RagConfig 对齐(有验收盯着)。
+    每加一个就改一遍所有调用点的签名,不划算。默认值与 config.RagConfig 对齐。
 
     **跑哪几路不在这里**:它由两个权重表达(≤ 0 的那一路不跑,见 ``answer_rag.retrieve``),
     多一个 ``mode`` 字段就有两个真值来源 —— 而"权重说关、模式说开"时谁赢没人猜得出来。
@@ -413,8 +465,8 @@ class RetrievalOptions:
     vector_weight: float = 0.5
     # 喂给重排器的是**父块正文**(``"parent"``,默认)还是**子块正文**(``"child"``):
     # 前者是「模型会读到的那段文字」,所以引用清单上的重排分核对得上;后者是「检索命中的那个单元」,
-    # 更短更聚焦,但那个对应关系就断了。**默认保持 parent** —— 换默认要等 `ab_retrieval.py`
-    # 的读数(见 STATUS §7 P0-4);这个旋钮现在只给 A/B 用,还没进 YAML。
+    # 更短更聚焦,但那个对应关系就断了。**默认保持 parent** —— 换默认要等 A/B 的读数;
+    # 这个旋钮现在只给 A/B 用,还没进 YAML。
     rerank_input: Literal["parent", "child"] = "parent"
 
     # 「这些文档这一次**不许**被检索到」 —— 可见范围在检索这一侧的落地(见 application/access.py)。

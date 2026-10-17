@@ -12,7 +12,7 @@
 
 约定:``split`` 只负责「切」;空块由适配器丢掉 —— 用例层不该关心会不会切出空串。
 
-**偏移(P0-5)**:``ChunkGroup.child_starts`` 是每个子块在传进来的那段正文里的起始偏移
+**偏移**:``ChunkGroup.child_starts`` 是每个子块在传进来的那段正文里的起始偏移
 (与 ``children`` 同序等长;空元组 = 这个切分器不报偏移)。要它是因为页码:
 ``page_of(document.pages, child_starts[i])``。**偏移只能由切分器给** —— 用例层拿子块文本
 回正文里 ``find`` 会在重复句子上给出看着合法的错位置(见 ``domain/models.py`` 的 ChunkGroup)。

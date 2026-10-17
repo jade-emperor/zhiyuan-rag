@@ -97,7 +97,7 @@ function currentStreaming(): ChatMessage | null {
 function handleFrame(frame: StreamFrame): void {
   const message = currentStreaming()
   if (frame.type === 'sources') {
-    // 依据先到就先显示 —— P0-2 实测:sources 帧 1.5s 到、第一个字 5s 才到,
+    // 依据先到就先显示 —— 实测:sources 帧 1.5s 到、第一个字 5s 才到,
     // 用户在等的这几秒里不该盯着空白。
     if (message && frame.citations.length > 0) message.citations = frame.citations
     return
@@ -181,10 +181,9 @@ export async function openSession(sessionId: string): Promise<void> {
       push({
         role: 'assistant',
         text: turn.answer,
-        // 历史里**没有引用**:`conversations` 表只存问答正文,不存引用清单 ——
-        // 所以切回旧会话时引用是空的。这不是丢数据,是那一层本来就没存
-        // (要保留得改表结构,见 docs/frontend.md §5)。
-        citations: [],
+        // 引用跟着答案一起回来(当轮那张卡片的快照,存在会话表里)。
+        // 老账没有这一段 → 空数组:那一轮的出处当时没留下,不编。
+        citations: turn.citations ?? [],
         channel: null,
         refused: false,
         truncated: false,
@@ -230,7 +229,7 @@ export async function send(text: string): Promise<void> {
   state.generating = true
   try {
     if (state.currentSessionId === null) {
-      // 归属在**创建那一刻**绑定(P0-3a):所以必须先建会话、再拿它的 ID 提问
+      // 归属在**创建那一刻**绑定:所以必须先建会话、再拿它的 ID 提问
       const created = await api.createSession()
       state.currentSessionId = created.session_id
     }
