@@ -11,7 +11,8 @@
  * 这一版为三栏工作台补了四件事，都是**只用现有后端**能做的：
  * 1. 每条消息记下当时的检索参数快照（重新生成 / 置信度解释要用）；
  * 2. 会话别名（重命名）存 localStorage —— 后端没有 rename 接口，界面如实标成"本机名称"；
- * 3. 点赞/点踩存本地（后端没有反馈接口），只影响当前浏览器；
+ * 3. 点赞/点踩**落到后端**（带这一轮的问题与答案快照）：刷新后按钮状态回到未选，
+ *    但记录已经在库里（同一个键是覆盖写，重复点不会让计数翻倍）；
  * 4. 「重新生成」只能重跑**最后一轮**：会话是追加式的，重跑旧轮会让历史出现两份。
  *    按钮在生成中禁用，旧轮的消息上禁用并给出原因。
  */
@@ -56,7 +57,7 @@ export interface ChatMessage {
   createdAt: number
   /** 提问时的检索参数快照；历史消息没有（旧账没存）。 */
   request: BuiltQuery | null
-  /** 本机反馈：后端没有反馈接口，刷新后不保留。 */
+  /** 这一轮反馈：写入后端；刷新页面后按钮状态回到未选（记录仍在库里）。 */
   feedback: Feedback | null
   /** 用户消息的附件快照。 */
   attachments: ChatAttachment[]
@@ -99,6 +100,8 @@ const state = reactive({
   /** 会话列表相关的错误（与问答错误分开显示：一个是"列表拉不到"，一个是"这轮答不了"）。 */
   sessionsError: '',
   notice: '',
+  /** 正在提交反馈的那条消息（按钮置灰用；空 = 没有在跑的动作）。 */
+  feedbackPending: null as number | null,
 })
 
 let counter = 0
@@ -413,10 +416,49 @@ export async function regenerateLast(): Promise<boolean> {
   }
 }
 
-export function setFeedback(messageId: number, value: Feedback): void {
-  const message = state.messages.find((item) => item.id === messageId)
-  if (message === undefined) return
-  message.feedback = message.feedback === value ? null : value
+/**
+ * 给一轮回答打分（再点同一个按钮 = 撤销）。
+ *
+ * 两个刻意的处理：
+ *
+ * 1. **乐观更新 + 失败回滚**：按钮先变，写库失败再退回原状态并把原因写进 `notice` ——
+ *    让用户对着一个转圈等 pymysql，比让他立刻看到结果更糟；
+ * 2. **问题取自这条回答前面最近的那条用户消息**：中间件里没有"这一轮"的 id，
+ *    而反馈的快照必须是**用户当时问的那句**（不是会话标题、也不是下一句）。
+ */
+export async function setFeedback(messageId: number, value: Feedback): Promise<void> {
+  const index = state.messages.findIndex((item) => item.id === messageId)
+  if (index < 0) return
+  const message = state.messages[index]
+  const sessionId = state.currentSessionId
+  if (sessionId === null) {
+    state.notice = '这段对话还没绑定会话，暂时不能反馈'
+    return
+  }
+  const question = state.messages
+    .slice(0, index)
+    .reverse()
+    .find((item) => item.role === 'user')
+  if (question === undefined) return
+
+  const previous = message.feedback
+  const next = previous === value ? null : value
+  message.feedback = next
+  state.feedbackPending = messageId
+  try {
+    await api.submitFeedback({
+      session_id: sessionId,
+      question: question.text,
+      answer: message.text,
+      rating: next ?? 'none',
+      channel: message.channel ?? '',
+    })
+  } catch (error) {
+    message.feedback = previous
+    state.notice = `反馈没记上：${(error as Error).message}`
+  } finally {
+    state.feedbackPending = null
+  }
 }
 
 export function stop(): void {

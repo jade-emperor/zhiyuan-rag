@@ -35,6 +35,7 @@ import { capabilitiesState, loadCapabilities } from './stores/capabilities'
 import AccountsView from './views/AccountsView.vue'
 import ChatView from './views/ChatView.vue'
 import FaqView from './views/FaqView.vue'
+import FeedbackView from './views/FeedbackView.vue'
 import HistoryView from './views/HistoryView.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
@@ -69,6 +70,7 @@ export const router = createRouter({
     },
     { path: '/faq', name: 'faq', component: FaqView, meta: { needs: 'manage' } },
     { path: '/reports', name: 'reports', component: MetricsView, meta: { needs: 'reports' } },
+    { path: '/feedback', name: 'feedback', component: FeedbackView, meta: { needs: 'reports' } },
     { path: '/accounts', name: 'accounts', component: AccountsView, meta: { needs: 'manage' } },
     { path: '/:rest(.*)', redirect: '/chat' },
   ],
@@ -84,6 +86,7 @@ const TITLES: Record<string, string> = {
   folder: '知识库',
   faq: 'FAQ 管理',
   reports: '报表',
+  feedback: '答案反馈',
   accounts: '账号与权限',
 }
 

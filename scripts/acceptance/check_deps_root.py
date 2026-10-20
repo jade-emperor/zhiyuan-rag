@@ -67,6 +67,8 @@ def _() -> str:
     want_factories = (
         "llm_factory",
         "faq_store_factory",
+        # 答案反馈(有帮助 / 没帮助)。默认 None = 不接(注入式验收与老契约用不上)。
+        "feedback_store_factory",
         "matcher_factory",
         "cache_factory",
         # RAG 通道的四个工厂。字段名也是契约 ——

@@ -92,6 +92,7 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `GET` | `/api/v1/history/{session_id}` | 读最近 N 轮 | Bearer+归属（管理员可读任意有归属的） |
 | `DELETE` | `/api/v1/history/{session_id}` | 清空一段会话 | Bearer+归属（管理员同上） |
 | `GET` | `/api/v1/sources` | 语料里真实有哪些来源 | Bearer |
+| `POST` | `/api/v1/feedback` | 给一轮回答打分（`up` / `down` / `none`=撤销） | Bearer+归属 |
 | `POST` | `/api/v1/auth/login` | 账号密码换令牌 | — |
 | `GET` | `/api/v1/auth/me` | 当前账号 + 三个能力布尔值 | Bearer |
 | `POST` | `/api/v1/auth/logout` | 撤销当前令牌（幂等） | Bearer（可缺） |
@@ -115,6 +116,7 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `DELETE` | `/api/v1/admin/faq/{entry_id}` | 删问答对（幂等，`deleted=0`） | admin |
 | `GET` | `/api/v1/reports/metrics` | 延迟报表 | 运维/admin |
 | `GET` | `/api/v1/reports/cost` | 消耗报表 | 运维/admin |
+| `GET` | `/api/v1/reports/feedback` | 答案反馈看板 | 运维/admin |
 | `GET` | `/api/v1/admin/users` | 账号列表 | admin |
 | `POST` | `/api/v1/admin/users` | 建号（`201`） | admin |
 | `DELETE` | `/api/v1/admin/users/{user_id}` | 删号 | admin |
@@ -485,6 +487,28 @@ ws.onmessage = (event) => {
   else if (frame.type === "error") showError(frame.detail);
 };
 ```
+
+---
+
+### 6.3 答案反馈（有帮助 / 没帮助）
+
+```
+POST /api/v1/feedback
+{"session_id": "b7f0…", "question": "怎么报销", "answer": "贴发票走财务。",
+ "rating": "up", "channel": "rag", "comment": ""}
+```
+
+| 情况 | 行为 |
+|---|---|
+| `rating` = `up` / `down` | `200` + `{id, session_id, rating, comment, deleted: 0}`。**同一轮重复提交是覆盖写**（`turn_key` 唯一）：刷新页面再点，不会多出一行，也不会让计数翻倍 |
+| `rating` = `none` | **撤销**自己刚提交的那一条：`{id: null, rating: "none", deleted: 1}`；本来没有则 `deleted: 0` |
+| 评级不在闭集 / 备注超 200 字 / 问题或答案为空 | `400`（pydantic 能挡的额外情况是 `422`） |
+| 给别人名下的会话打分 | `403`（先认证、再查归属） |
+| 没装配反馈存储 | `503` 并点名 `feedback_store_factory` |
+
+**为什么带问题与答案**：看板要能复盘 badcase —— 只留一个数字，维护者没法回答"被踩的那条
+到底答了什么"。快照是**用户点按钮那一刻**的那一轮（不是事后去翻他的全部历史），
+会话后来被清空也不影响；`channel` 记录这一轮走的是 FAQ 还是知识库。
 
 ---
 
@@ -914,6 +938,31 @@ GET /api/v1/reports/cost?window=24h
 | `unpriced_models` + `all_priced=false` | 模型没配单价 | 金额 `null`，**不是 0 元** |
 
 不花钱的路径（FAQ 直答、检索为空拒答、寒暄）不出现在消耗报表里。
+
+---
+
+### 10.3 反馈看板
+
+```
+GET /api/v1/reports/feedback?limit=50&rating=down&days=30
+```
+
+**运维与管理员**（与两份报表同一条权限线）。`rating` 只认 `up` / `down`（别的 `400`）；
+`days` 取 `0..3650`，**`0` = 全部历史**。
+
+**响应**
+
+```json
+{ "summary": { "up": 12, "down": 5, "total": 17, "negative_rate": 0.294 },
+  "entries": [ { "id": 31, "session_id": "b7f0…", "username": "zhangsan",
+                 "rating": "down", "question": "…", "answer": "…",
+                 "channel": "rag", "comment": "答错了", "created_at": "<ISO 时间>" } ],
+  "days": 30 }
+```
+
+`negative_rate` 的分母是**有反馈的轮次**，不是全部提问 —— 没点按钮的人默认"没意见"，
+把他们算进分母会得到一个永远很好看、也永远不动的数。一条反馈都没有时它是 `null`（不是 0）。
+「账号已删除」的反馈仍在（`LEFT JOIN`），`username` 给空串。
 
 ---
 

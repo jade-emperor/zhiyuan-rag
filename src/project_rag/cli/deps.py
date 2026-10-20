@@ -29,6 +29,7 @@ from project_rag.ports import (
     ConversationStore,
     Embedder,
     FaqStore,
+    FeedbackStore,
     ImageStore,
     LedgerStore,
     LLMClient,
@@ -127,6 +128,8 @@ class Deps:
     # 类型注解,一个可调用的对象(如函数):Callable[[参数类型列表], 返回类型]
     llm_factory: Callable[[], LLMClient] | None = None
     faq_store_factory: Callable[[], FaqStore] | None = None
+    # 答案反馈(「有帮助 / 没帮助」)。默认 None = 不接(注入式验收与老契约用不上)。
+    feedback_store_factory: Callable[[], FeedbackStore] | None = None
     matcher_factory: Callable[[], TextMatcher] | None = None
     cache_factory: Callable[[], Cache | None] | None = None  # 返回 None = 无缓存
     # 延迟账本的持久化(落表)。默认 None = 不落表,只记日志 —— 建表/连库失败时
@@ -233,6 +236,7 @@ def build_real_deps() -> Deps:
         BM25TextMatcher,
         MySQLConversationStore,
         MySQLFaqStore,
+        MySQLFeedbackStore,
         RedisCache,
     )
     # 重适配器一律按完整路径 import:它们不在 adapters 包入口里
@@ -384,6 +388,7 @@ def build_real_deps() -> Deps:
     return Deps(
         llm_factory=lambda: DeepSeekLLM(settings.llm),
         faq_store_factory=lambda: MySQLFaqStore(settings.mysql, settings.faq),
+        feedback_store_factory=lambda: MySQLFeedbackStore(settings.mysql),
         matcher_factory=lambda: matcher,
         cache_factory=lambda: RedisCache(settings.redis),
         ledger_store_factory=lambda: MySQLLedgerStore(settings.mysql),
@@ -668,6 +673,24 @@ def ensure_documents_schema(deps: Deps) -> str | None:
         store = deps.document_store_factory()
         store.init_schema()
     except Exception as e:  # noqa: BLE001 - 见上:建表/同步失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def ensure_feedback_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保答案反馈表存在(**幂等**)。输出:失败原因;成功给 None。
+
+    与其它 ``ensure_*`` 同一条政策:失败只记警告,不拦启动(真正读不到时接口回 503)。
+    表里带 ``turn_key`` 唯一键,重复点同一个按钮是一次覆盖写而不是多一行。
+    """
+    if deps.feedback_store_factory is None:  # 注入式部署(验收/假件):不碰真库
+        return None
+    try:
+        ensure = getattr(deps.feedback_store_factory(), "ensure_table", None)
+        if ensure is None:  # 假件:不建表,也不算失败
+            return None
+        ensure()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
         return f"{type(e).__name__}: {e}"
     return None
 

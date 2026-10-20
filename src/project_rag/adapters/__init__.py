@@ -11,6 +11,7 @@ from .chunker_recursive import ChineseRecursiveChunker
 from .conversation_mysql import MySQLConversationStore
 from .document_loader import LoadedCorpus, load_documents, supported_suffixes
 from .faq_mysql import MySQLFaqStore
+from .feedback_mysql import MySQLFeedbackStore
 from .hashing_embedder import HashingEmbedder
 from .matcher_bm25 import BM25TextMatcher
 from .memory_vector_store import InMemoryVectorStore
@@ -30,6 +31,7 @@ __all__ = [
     "MilvusVectorStore",
     "MySQLConversationStore",
     "MySQLFaqStore",
+    "MySQLFeedbackStore",
     "OfficeFileSource",
     "OssImageStore",
     "PdfFileSource",

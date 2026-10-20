@@ -579,3 +579,29 @@ export interface DeletedFaqOut {
   /** 0 = 本来就没有这条(删除是幂等的)。 */
   deleted: number
 }
+
+// ── 答案反馈 ─────────────────────────────────────────────────────────────────
+/** 看板上的一行：评级 + 被反馈的那一轮 + 谁、什么时候。 */
+export interface FeedbackEntry {
+  id: number
+  session_id: string
+  username: string
+  rating: 'up' | 'down'
+  question: string
+  answer: string
+  channel: string
+  comment: string
+  created_at: string
+}
+
+/** `GET /api/v1/reports/feedback` 的出参。`negative_rate` 一条都没有时是 `null`。 */
+export interface FeedbackListOut {
+  summary: {
+    up: number
+    down: number
+    total: number
+    negative_rate: number | null
+  }
+  entries: FeedbackEntry[]
+  days: number
+}

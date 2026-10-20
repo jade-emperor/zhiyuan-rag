@@ -142,6 +142,7 @@ async function signOut(): Promise<void> {
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'knowledge' }">知识库</RouterLink>
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'faq' }">FAQ</RouterLink>
       <RouterLink v-if="canViewReports" class="tab" :to="{ name: 'reports' }">报表</RouterLink>
+      <RouterLink v-if="canViewReports" class="tab" :to="{ name: 'feedback' }">反馈</RouterLink>
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'accounts' }">账号与权限</RouterLink>
     </nav>
 

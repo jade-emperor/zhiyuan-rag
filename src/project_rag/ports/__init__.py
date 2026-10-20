@@ -8,6 +8,7 @@ from .document_source import DocumentSource, ParsedDocument, SourceImage
 from .documents import DiskFile, DocumentStore
 from .embedder import Embedder
 from .faq import FaqAdminStore, FaqEditor, FaqStore
+from .feedback import FeedbackStore
 from .image_store import ImageStore
 from .keyword_index import KeywordIndex
 from .ledger import LedgerStore
@@ -36,6 +37,7 @@ __all__ = [
     "FaqAdminStore",
     "FaqEditor",
     "FaqStore",
+    "FeedbackStore",
     "ImageStore",
     "KeywordIndex",
     "LedgerStore",

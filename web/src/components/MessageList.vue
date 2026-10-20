@@ -457,6 +457,7 @@ onBeforeUnmount(() => {
               :can-regenerate="canRegenerate(message)"
               :regenerate-title="regenerateTitle(message)"
               :copied="copiedAnswer === message.id"
+              :feedback-busy="chat.feedbackPending === message.id"
               @copy="copyAnswer(message)"
               @regenerate="retryMessage"
               @feedback="setFeedback(message.id, $event)"

@@ -86,6 +86,10 @@ from project_rag.api.schemas import (
     PeriodTotalOut,
     CreateFaqRequest,
     CreateFolderRequest,
+    FeedbackEntryOut,
+    FeedbackListOut,
+    FeedbackOut,
+    FeedbackSummaryOut,
     CreateGroupRequest,
     CreateUserOut,
     CreateUserRequest,
@@ -141,6 +145,7 @@ from project_rag.api.schemas import (
     SetMembersRequest,
     SlowRowOut,
     SourcesOut,
+    SubmitFeedbackRequest,
     UpdateFaqRequest,
     UpdateFolderRequest,
     UserOut,
@@ -171,6 +176,13 @@ from project_rag.application.faq_admin import (
     filter_entries,
     update_entry,
 )
+from project_rag.application.feedback import (
+    WITHDRAW,
+    FeedbackError,
+    overview,
+    submit,
+    withdraw,
+)
 from project_rag.application.security import TOKEN_TTL_SECONDS
 from project_rag.application.greeting import match_greeting
 from project_rag.cli.deps import (
@@ -182,6 +194,7 @@ from project_rag.cli.deps import (
     ensure_conversation_schema,
     ensure_documents_schema,
     ensure_faq_schema,
+    ensure_feedback_schema,
     knowledge_callable,
 )
 from project_rag.config import PROJECT_ROOT, get_settings, project_path
@@ -1717,6 +1730,94 @@ def _faq_delete(deps: Deps, entry_id: int) -> DeletedFaqOut:
         raise _faq_error(exc) from exc
 
 
+# ── 答案反馈 ──────────────────────────────────────────────────────────────────
+def _feedback_store(deps: Deps) -> Any:
+    """输入:依赖。行为:取反馈存储,没装配就 503。输出:存储。
+
+    与其它 ``_optional_factory`` 同一条口径:空看板会被读成"没人反馈过",
+    与"这个部署根本没接反馈"完全是两回事。
+    """
+    store = _optional_factory(deps, "feedback_store_factory")
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="没有接上答案反馈(feedback_store_factory 为空)",
+        )
+    return store
+
+
+def _feedback_out(record: Any) -> FeedbackEntryOut:
+    """输入:领域记录。行为:转出参。输出:FeedbackEntryOut。"""
+    return FeedbackEntryOut(
+        id=record.id,
+        session_id=record.session_id,
+        username=record.username,
+        rating=record.rating,
+        question=record.question,
+        answer=record.answer,
+        channel=record.channel,
+        comment=record.comment,
+        created_at=record.created_at,
+    )
+
+
+def _submit_feedback(
+    deps: Deps, user_id: str, request: SubmitFeedbackRequest
+) -> FeedbackOut:
+    """输入:依赖、用户 ID、请求体。行为:提交 or 撤销(``rating=none``)。输出:回执。
+
+    校验放在用例层(``application/feedback.py``),这里只把 ``FeedbackError`` 翻成 400。
+    """
+    store = _feedback_store(deps)
+    try:
+        if request.rating == WITHDRAW:
+            removed = withdraw(
+                store,
+                session_id=request.session_id,
+                user_id=user_id,
+                question=request.question,
+                answer=request.answer,
+            )
+            return FeedbackOut(
+                session_id=request.session_id, rating=WITHDRAW, deleted=removed
+            )
+        record = submit(
+            store,
+            session_id=request.session_id,
+            user_id=user_id,
+            rating=request.rating,
+            question=request.question,
+            answer=request.answer,
+            channel=request.channel,
+            comment=request.comment,
+        )
+    except FeedbackError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return FeedbackOut(
+        id=record.id, session_id=record.session_id, rating=record.rating, comment=record.comment
+    )
+
+
+def _feedback_report(
+    deps: Deps, *, limit: int, rating: str | None, days: int
+) -> FeedbackListOut:
+    """输入:依赖、条数、只看哪一档、窗口天数。行为:计数 + 最近条目。输出:看板。"""
+    try:
+        board = overview(_feedback_store(deps), limit=limit, rating=rating, days=days)
+    except FeedbackError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return FeedbackListOut(
+        summary=FeedbackSummaryOut(
+            up=board.counts.up,
+            down=board.counts.down,
+            total=board.counts.total,
+            negative_rate=board.counts.negative_rate,
+        ),
+        entries=[_feedback_out(record) for record in board.entries],
+        days=days,
+    )
+
+
 def create_app(deps: Deps | None = None) -> FastAPI:
     """输入:依赖集合(不传就真实装配)。行为:建 FastAPI 应用并注册全部路由。输出:应用。
 
@@ -1751,6 +1852,10 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     faq_problem = ensure_faq_schema(deps)
     if faq_problem:
         _logger.warning("FAQ 表未就绪(建表失败):%s", faq_problem)
+    # 答案反馈表:turn_key 唯一键决定"重复点不会多一行"
+    feedback_problem = ensure_feedback_schema(deps)
+    if feedback_problem:
+        _logger.warning("反馈表未就绪(建表失败):%s", feedback_problem)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
     # 验证码:存放要**一个进程一份**(票据回到同一实例才能取出答案),所以在建应用时就实例化;
@@ -2317,6 +2422,22 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         auth.require_admin(user)
         return await _call(_faq_delete, deps, entry_id)
 
+    @app.get("/api/v1/reports/feedback", response_model=FeedbackListOut)
+    async def feedback_report(
+        limit: int = Query(default=50, ge=1, le=200),
+        rating: str | None = None,
+        days: int = Query(default=30, ge=0, le=3650),
+        user: User | None = Depends(auth.user),
+    ) -> FeedbackListOut:
+        """答案反馈看板(**运维与管理员**,与两份报表同一条权限线)。
+
+        ``rating=down`` 只看被踩的(迭代时最常看的那一屏);``days=0`` = 全部历史。
+        ``negative_rate`` 的分母是**有反馈的轮次**,不是全部提问 —— 没点按钮的人默认
+        "没意见",把他们算进分母会得到一个永远很好看、也永远不动的数。
+        """
+        auth.require_reports(user)
+        return await _call(_feedback_report, deps, limit=limit, rating=rating, days=days)
+
     # ── 账号与可见范围(管理员专用) ───────────────────────────────────────────
     @app.get("/api/v1/admin/users", response_model=UsersOut)
     async def admin_users(user: User | None = Depends(auth.user)) -> UsersOut:
@@ -2632,6 +2753,27 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         auth.require_knowledge(user)
         await auth.check_owner(session_id, user)
         return await _call(_delete_history, deps, session_id)
+
+    @app.post("/api/v1/feedback", response_model=FeedbackOut)
+    async def submit_feedback(
+        request: SubmitFeedbackRequest, user: User | None = Depends(auth.user)
+    ) -> FeedbackOut:
+        """给某一轮回答打分:**有帮助 / 没帮助 / 撤销**(``rating=none``)。
+
+        **快照随反馈一起存**(问题、答案、通道、可选一句话备注):运维台复盘 badcase 时
+        不必再按 ``session_id`` 翻会话 —— 那条路要过归属门,而且历史可能已被清空。
+        也就是:用户点按钮这个动作,主动交出了那一轮的内容。
+
+        **归属**:只能给自己名下的会话打分(``check_owner``);管理员读得到别人的会话,
+        但"替别人打分"没有意义 —— 回执里的 ``username`` 记的是**按下按钮的人**。
+
+        同一个键重复提交是一次**覆盖写**(``turn_key`` 唯一):刷新页面再点同一个按钮,
+        不会让计数翻倍。
+        """
+        auth.require_knowledge(user)
+        await auth.check_owner(request.session_id, user)
+        user_id = "" if user is None else user.user_id
+        return await _call(_submit_feedback, deps, user_id, request)
 
     @app.post("/api/v1/query", response_model=QueryResponse)
     async def query(

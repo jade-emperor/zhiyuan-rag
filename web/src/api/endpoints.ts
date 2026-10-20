@@ -33,6 +33,7 @@ import type {
   MetricsOut,
   QueryRequest,
   QueryResponse,
+  FeedbackListOut,
   SessionsOut,
   StreamFrame,
   UserOut,
@@ -354,6 +355,36 @@ export function updateFaq(
 /** 删一条(幂等:不存在的给 deleted=0,不报错)。 */
 export function deleteFaq(entryId: number): Promise<DeletedFaqOut> {
   return request<DeletedFaqOut>(`${API_PREFIX}/admin/faq/${entryId}`, { method: 'DELETE' })
+}
+
+// ── 答案反馈 ─────────────────────────────────────────────────────────────────
+/**
+ * 给一轮回答打分。`rating` 给 `none` = **撤销**刚才那一条（同一个键是覆盖写，
+ * 刷新页面再点同一个按钮不会让计数翻倍）。
+ *
+ * 快照（问题 / 答案 / 通道）随反馈一起提交：运维台复盘时不必再翻会话历史。
+ */
+export function submitFeedback(payload: {
+  session_id: string
+  question: string
+  answer: string
+  rating: 'up' | 'down' | 'none'
+  channel?: string
+  comment?: string
+}): Promise<{ id: number | null; session_id: string; rating: string; deleted: number }> {
+  return request(`${API_PREFIX}/feedback`, { method: 'POST', body: payload })
+}
+
+/** 反馈看板（**运维与管理员**，与两份报表同一条权限线）。`days=0` = 全部历史。 */
+export function feedbackReport(
+  limit = 50,
+  rating: '' | 'up' | 'down' = '',
+  days = 30,
+): Promise<FeedbackListOut> {
+  const filter = rating ? `&rating=${rating}` : ''
+  return request<FeedbackListOut>(
+    `${API_PREFIX}/reports/feedback?limit=${limit}&days=${days}${filter}`,
+  )
 }
 
 /** 非流式问答。**界面走 WebSocket**;这条留给"不要流式"的调用方与排障。 */

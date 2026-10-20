@@ -1,4 +1,5 @@
 from .auth import USER_ROLES, User, UserRole
+from .feedback import FEEDBACK_RATINGS, FeedbackCounts, FeedbackOverview, FeedbackRecord
 from .documents import (
     DOC_STATES,
     DOC_STATUSES,
@@ -68,7 +69,11 @@ __all__ = [
     "DOC_STATUSES",
     "FOLDER_DESCRIPTION_MAX",
     "FOLDER_NAME_MAX",
+    "FEEDBACK_RATINGS",
     "FUSION_MODES",
+    "FeedbackCounts",
+    "FeedbackOverview",
+    "FeedbackRecord",
     "NUM_STRATEGIES",
     "STATE_IN_FLIGHT",
     "STATE_MISMATCHES",

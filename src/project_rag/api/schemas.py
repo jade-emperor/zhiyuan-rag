@@ -879,3 +879,58 @@ class DeletedFaqOut(BaseModel):
 
     entry_id: int
     deleted: int
+
+
+# ── 答案反馈 ──────────────────────────────────────────────────────────────────
+# 快照的上限与 ``application/feedback.py`` 同源;这里再挡一次,只是为了让明显超限的
+# 请求在进线程池之前就 422,而不是拖到写库那一刻。
+class SubmitFeedbackRequest(BaseModel):
+    """提交一条反馈(``rating=none`` = 撤销自己刚才那一条)。"""
+
+    session_id: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=12000)
+    rating: str = Field(description="up / down / none")
+    channel: str = Field(default="", max_length=16)
+    comment: str = Field(default="", max_length=200)
+
+
+class FeedbackOut(BaseModel):
+    """提交结果。``deleted>0`` 表示这次是撤销;``id`` 为 ``None``。"""
+
+    id: int | None = None
+    session_id: str
+    rating: str
+    comment: str = ""
+    deleted: int = 0
+
+
+class FeedbackSummaryOut(BaseModel):
+    """窗口内的计数。比率带分子分母,``negative_rate`` 在一条都没有时是 ``None``(不是 0)。"""
+
+    up: int
+    down: int
+    total: int
+    negative_rate: float | None
+
+
+class FeedbackEntryOut(BaseModel):
+    """看板上的一行:评级 + **被反馈的那一轮**(问题、答案、通道)+ 谁、什么时候。"""
+
+    id: int
+    session_id: str
+    username: str
+    rating: str
+    question: str
+    answer: str
+    channel: str
+    comment: str
+    created_at: str
+
+
+class FeedbackListOut(BaseModel):
+    """反馈看板。``days=0`` 表示全部历史。"""
+
+    summary: FeedbackSummaryOut
+    entries: list[FeedbackEntryOut]
+    days: int

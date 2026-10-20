@@ -8,6 +8,8 @@ defineProps<{
   canRegenerate: boolean
   regenerateTitle: string
   copied: boolean
+  /** 这条的反馈正在写库：两个按钮都置灰，避免连点出几个来回。 */
+  feedbackBusy: boolean
 }>()
 
 defineEmits<{
@@ -46,6 +48,7 @@ defineEmits<{
       title="有帮助"
       aria-label="有帮助"
       :aria-pressed="message.feedback === 'up'"
+      :disabled="feedbackBusy"
       @click="$emit('feedback', 'up')"
     >
       <Icon name="thumb-up" :size="15" />
@@ -57,6 +60,7 @@ defineEmits<{
       title="没帮助"
       aria-label="没帮助"
       :aria-pressed="message.feedback === 'down'"
+      :disabled="feedbackBusy"
       @click="$emit('feedback', 'down')"
     >
       <Icon name="thumb-down" :size="15" />
