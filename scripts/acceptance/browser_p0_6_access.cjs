@@ -105,7 +105,7 @@ async function main() {
   // 组名带时间戳:假后端是**进程级**的,同一个进程里重复跑这条用例不该被"重名 400"卡住。
   const newGroup = `财务${Date.now() % 100000}`
   await page.locator('section', { hasText: '分组' }).locator('input[placeholder*="组名"]').fill(newGroup)
-  await page.getByRole('button', { name: '建组' }).click()
+  await page.getByRole('button', { name: '创建分组' }).click()
   await page.waitForFunction(
     (name) => document.body.innerText.includes(`已建组:${name}`),
     newGroup,
@@ -161,18 +161,18 @@ async function main() {
   await page.screenshot({ path: `${SHOT}_4_group_documents.png` })
   await groupDialog.getByRole('button', { name: '关闭' }).click()
   await page.waitForTimeout(400)
-  // 回知识库:下一段(文档侧授权弹层)在这一页上
+  // 回知识库:下一段(文档侧授权弹层)在「产品资料」的文档表格里
   await page.getByRole('link', { name: '知识库' }).click()
-  await page.waitForSelector('.doc', { timeout: 15000 })
+  await page.waitForSelector('.folder', { timeout: 15000 })
 
-  // ── 3. 文档可见范围:卡片标记 → 权限弹层 → 清空名单 ────────────────────
-  await page.getByRole('link', { name: '知识库' }).click()
-  await page.waitForSelector('.doc', { timeout: 15000 })
-  const quoteCard = page.locator('.doc', { hasText: '内部报价单.md' }).first()
-  const cardText = await quoteCard.innerText()
-  expect('受限文档的卡片标着「限定可见」', cardText.includes('限定可见'), cardText.replace(/\n/g, ' | ').slice(0, 120))
+  // ── 3. 文档可见范围:表格标记 → 权限弹层 → 清空名单 ──────────────────
+  await page.locator('.folder', { hasText: '产品资料' }).click()
+  await page.waitForSelector('tbody tr', { timeout: 15000 })
+  const quoteRow = page.locator('tbody tr', { hasText: '内部报价单.md' }).first()
+  const rowText = await quoteRow.innerText()
+  expect('受限文档的行标着「限定可见」', rowText.includes('限定可见'), rowText.replace(/\n/g, ' | ').slice(0, 120))
 
-  await quoteCard.getByRole('button', { name: '权限' }).click()
+  await quoteRow.getByRole('button', { name: '权限' }).click()
   await page.waitForSelector('div[aria-label="文档权限"]', { timeout: 15000 })
   const dialog = page.locator('div[aria-label="文档权限"]')
   // 等规则真的读回来:徽章从「读取中…」变成结论,否则读到的会是加载中的中间态。
@@ -205,8 +205,8 @@ async function main() {
   )
   await dialog.getByRole('button', { name: '关闭' }).click()
   await page.waitForTimeout(1200)
-  const cardAfter = await page.locator('.doc', { hasText: '内部报价单.md' }).first().innerText()
-  expect('卡片上的「限定可见」跟着消失', !cardAfter.includes('限定可见'), cardAfter.replace(/\n/g, ' | ').slice(0, 120))
+  const rowAfter = await page.locator('tbody tr', { hasText: '内部报价单.md' }).first().innerText()
+  expect('表格里的「限定可见」跟着消失', !rowAfter.includes('限定可见'), rowAfter.replace(/\n/g, ' | ').slice(0, 120))
 
   // ── 4. 运维:能问答 + 能看报表;管理动作被拦 ──────────────────
   const opsPage = await browser.newPage({ viewport: { width: 1400, height: 900 } })

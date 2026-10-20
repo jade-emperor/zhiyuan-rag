@@ -28,6 +28,7 @@ import { fileName, pageLabel, shorten } from '../utils/citations'
 import { escapeHtml } from '../utils/highlight'
 import { renderMarkdown } from '../utils/markdown'
 import ChatWelcome from './ChatWelcome.vue'
+import BrandMark from './BrandMark.vue'
 import CitationBlock from './CitationBlock.vue'
 import Icon from './Icon.vue'
 import MessageActions from './MessageActions.vue'
@@ -278,7 +279,8 @@ onMounted(() => {
   timer = window.setInterval(() => {
     now.value = Date.now()
   }, 500)
-  scrollToBottom()
+  // 空会话的欢迎页在窄屏上会比消息区高；滚到底会把标题裁掉，只在有消息时贴底。
+  if (props.messages.length > 0) scrollToBottom()
 })
 
 onBeforeUnmount(() => {
@@ -341,11 +343,11 @@ onBeforeUnmount(() => {
         <!-- AI 消息：左对齐、无气泡、接近文档阅读 -->
         <div v-else class="msg assistant">
           <div class="avatar" aria-hidden="true">
-            <Icon name="sparkles" :size="15" />
+            <BrandMark :size="26" />
           </div>
           <div class="ai-body">
             <div class="ai-head">
-              <span class="ai-name">RAG Assistant</span>
+              <span class="ai-name">知源助手</span>
               <span v-if="badge(message)" :class="badgeTone(message)">{{ badge(message) }}</span>
               <span v-if="message.regenerated" class="tag soft">已重新生成</span>
               <span v-if="stamp(message)" class="faint">{{ stamp(message) }}</span>
@@ -357,7 +359,7 @@ onBeforeUnmount(() => {
               :title="confidenceOf(message).detail"
             >
               <Icon name="alert" :size="13" />
-              AI 建议
+              建议核实
             </div>
 
             <!-- v-html 的内容只来自 renderMarkdown：全文先转义、标签白名单、链接白名单。
@@ -397,13 +399,13 @@ onBeforeUnmount(() => {
             >
               <div class="low-head">
                 <span class="low-icon"><Icon name="alert" :size="16" /></span>
-                <strong>知识库中未找到足够信息</strong>
+                <strong>当前知识库中未能找到充分依据</strong>
               </div>
               <p class="low-text">
                 {{
                   message.refused || confidenceOf(message).basis === 'refused'
-                    ? '没有可用资料。'
-                    : '匹配度偏低，建议核实。'
+                    ? '暂无可引用的资料。'
+                    : '相关度不足，建议补充资料后重试。'
                 }}
               </p>
               <div class="low-actions">
@@ -418,12 +420,12 @@ onBeforeUnmount(() => {
             </div>
 
             <p v-if="message.channel === 'throttled'" class="alert info">
-              这不是出错 —— 稍微慢一点再问。
+              请求较多，并非系统异常，请稍后重试。
             </p>
             <p v-if="message.truncated" class="alert error">
-              回答被截断。
+              回答未完整生成。
             </p>
-            <p v-if="message.stopped" class="alert info">已停止生成。</p>
+            <p v-if="message.stopped" class="alert info">已停止本次生成。</p>
             <p v-if="message.error" class="alert error">
               {{ message.error }}
               <button
@@ -522,6 +524,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 26px;
   scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+
+.messages::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .skeleton-list {
@@ -647,9 +655,6 @@ onBeforeUnmount(() => {
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .ai-body {

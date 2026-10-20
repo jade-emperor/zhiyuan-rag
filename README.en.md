@@ -1,16 +1,28 @@
-# project_rag
+# Zhiyuan Assistant · 知源助手
 
-A retrieval-augmented Q&A service over a curated FAQ table plus a document corpus: **curated FAQ
-answers first, hybrid retrieval as the fallback** — every answer carries `[1][2]` citations, streams
-token by token, and every latency segment is accounted for in one log line.
+> Knowledge with provenance. Answers with evidence.
+
+Zhiyuan Assistant is a traceable knowledge intelligence platform for enterprise documents. It turns scattered policies, product materials and operational knowledge into a searchable, citable and governed knowledge base — so every answer can be traced back to its source.
+
+### Capabilities
+
+| Capability | What it delivers |
+|---|---|
+| **Precise provenance** | Every conclusion carries a citation that returns to the exact passage; PDF images retain their source page. |
+| **Hybrid retrieval** | Semantic and keyword engines run in parallel, followed by fusion and reranking. |
+| **Permission isolation** | Role, group and document-level controls keep knowledge within its intended audience. |
+| **Multimodal understanding** | MinerU parses PDF text and images; images are content-addressed in OSS and signed on demand. |
+| **Operational insight** | Segment latency, refusal, truncation and model cost are accounted for in one place. |
 
 **Stack**: Python 3.13 · FastAPI · LangChain · Milvus 2.4 · MySQL 8 · Redis 7 · Vue 3 + Vite.
-**Architecture**: ports & adapters — `ports/` only declares capabilities, `adapters/` is the single
-place that touches third-party SDKs, `domain/` uses the standard library only. Swapping the model
-vendor, the vector store or the cache means changing one adapter file.
+**Architecture**: ports & adapters — `ports/` only declares capabilities, `adapters/` is the single place that touches third-party SDKs, `domain/` uses the standard library only. Swapping the model vendor, the vector store or the cache means changing one adapter file.
+
+The answer pipeline keeps the curated FAQ-first, retrieval-fallback strategy, `[1][2]` citations, token streaming and both HTTP / WebSocket entry points.
 
 > 中文说明（更详细）见 [`README.md`](README.md)。维护者的决策与状态文档（`docs/`）**不随本仓库发布**；
 > 本仓库里可验证的东西是 `scripts/acceptance/` 的 32 份契约 + 24 份反向测试。
+>
+> For deployment compatibility, package, CLI and image identifiers remain `project_rag` / `project-rag` / `project-rag-api`.
 
 ## Try it in 5 minutes (no model download)
 

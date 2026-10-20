@@ -65,7 +65,7 @@ async function main() {
 
   // ── 1. 桌面壳场景:本地文件 + ?backend= ────────────────────────────────
   await page.goto(SHELL_URL, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('text=RAG Assistant', { timeout: 15000 })
+  await page.waitForSelector('text=知源助手', { timeout: 15000 })
 
   const stored = await page.evaluate(() => localStorage.getItem('project-rag.backend'))
   expect('?backend= 被记下来了', stored === BACKEND, `localStorage = ${stored}`)

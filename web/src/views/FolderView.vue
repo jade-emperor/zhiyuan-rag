@@ -25,6 +25,7 @@ import MoveDocumentDialog from '../components/MoveDocumentDialog.vue'
 import PreviewDialog from '../components/PreviewDialog.vue'
 import UploadPanel from '../components/UploadPanel.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
+import { capabilitiesState } from '../stores/capabilities'
 import { humanBytes } from '../utils/format'
 import { deleteFolder, foldersState, refreshFolders } from '../stores/folders'
 import {
@@ -44,8 +45,10 @@ const route = useRoute()
 const router = useRouter()
 const docs = documentsState()
 const folders = foldersState()
+const caps = capabilitiesState()
 
 const folderId = computed(() => String(route.params.folder ?? ''))
+const uploadPanel = ref<InstanceType<typeof UploadPanel> | null>(null)
 
 const query = ref('')
 const filter = ref<StateFilter>('all')
@@ -66,6 +69,14 @@ const missing = computed(
   () => docs.error !== '' && docs.folder === null && !docs.loading && !unfiled.value,
 )
 const title = computed(() => folder.value?.name ?? (unfiled.value ? '未分类' : '目录'))
+const description = computed(() => {
+  if (folder.value?.description) return folder.value.description
+  if (unfiled.value) {
+    return '尚未归入目录的文档会集中在这里。可在此补齐资料，或移动到更合适的知识目录。'
+  }
+  return `统一管理「${title.value}」目录中的文档、索引与访问权限，让这一主题下的知识随时可用。`
+})
+const suffixList = computed(() => caps.data?.suffixes ?? [])
 const canDeleteFolder = computed(() => !unfiled.value && (folder.value?.documents ?? 1) === 0)
 
 const active = computed(
@@ -143,6 +154,10 @@ function onMove(documentId: string): void {
   moving.value = documentId
 }
 
+function openUpload(): void {
+  uploadPanel.value?.openPicker()
+}
+
 /** 弹层关掉之后重拉:挪动改了归属,目录的份数与表格里的行都得跟着变。 */
 function afterMove(): void {
   moving.value = ''
@@ -185,10 +200,14 @@ onUnmounted(() => {
       </nav>
 
       <header class="page-head">
-        <div class="page-title">
-          <h1>{{ title }}</h1>
-          <span v-if="unfiled" class="tag soft">兜底格子</span>
-          <span v-else-if="docs.folder" class="page-meta">{{ docs.folder.documents }} 份</span>
+        <div class="page-heading">
+          <p class="page-eyebrow">KNOWLEDGE CATALOG</p>
+          <div class="page-title">
+            <h1>{{ title }}</h1>
+            <span v-if="unfiled" class="tag soft">未归档</span>
+            <span v-else-if="docs.folder" class="page-meta">{{ docs.folder.documents }} 份</span>
+          </div>
+          <p class="page-desc">{{ description }}</p>
         </div>
         <div class="page-actions">
           <span v-if="docs.polling" class="faint">
@@ -220,8 +239,6 @@ onUnmounted(() => {
           </template>
         </div>
       </header>
-
-      <p v-if="docs.folder?.description" class="desc">{{ docs.folder.description }}</p>
 
       <p v-if="docs.error" class="alert error">{{ docs.error }}</p>
       <p v-if="folders.error" class="alert error">{{ folders.error }}</p>
@@ -294,15 +311,34 @@ onUnmounted(() => {
             <RouterLink :to="{ name: 'knowledge' }" class="crumb-link">回知识库</RouterLink>
           </EmptyState>
 
-          <EmptyState
+          <div
             v-else-if="docs.docs.length === 0 && !docs.loading"
-            :title="unfiled ? '未分类还没有文档' : '这个目录还没有文档'"
-            :hint="
-              unfiled
-                ? '磁盘上有、登记表没有的文件会出现在这里。用 project-rag ingest --path <文件> 入库,或在右侧上传。'
-                : '把文件拖到右侧上传,或用 project-rag ingest --folder <目录名> 灌一批进来。'
-            "
-          />
+            class="empty-panel"
+          >
+            <span class="empty-visual"><Icon name="folder" :size="26" /></span>
+            <p class="empty-kicker">{{ unfiled ? 'TO BE ORGANIZED' : 'EMPTY CATALOG' }}</p>
+            <h2>{{ unfiled ? '尚未归档的文档会出现在这里' : '这个目录还没有文档' }}</h2>
+            <p class="empty-lede">
+              {{
+                unfiled
+                  ? '磁盘上已有、但尚未登记的资料会归入此处。上传或导入后，即可在问答中被检索。'
+                  : '导入第一批资料，让这一主题下的知识可被检索、引用与追溯。'
+              }}
+            </p>
+            <ol class="empty-steps">
+              <li><span>01</span><div><strong>上传文档</strong><p>支持 {{ suffixList.join(' / ') || 'PDF / Word / Markdown' }}</p></div></li>
+              <li><span>02</span><div><strong>自动解析</strong><p>完成切分、向量化与索引</p></div></li>
+              <li><span>03</span><div><strong>开始问答</strong><p>回答自带原文引用</p></div></li>
+            </ol>
+            <div class="empty-actions">
+              <button class="primary" type="button" @click="openUpload">
+                <Icon name="plus" :size="14" /> 上传文档
+              </button>
+              <span class="faint">
+                单份不超过 {{ caps.data?.max_upload_mb ?? '—' }} MB
+              </span>
+            </div>
+          </div>
 
           <template v-else-if="!missing">
             <DocumentTable
@@ -318,10 +354,25 @@ onUnmounted(() => {
             />
             <p v-else class="faint empty-filter">没有符合当前筛选的文档。</p>
           </template>
+
+          <section v-if="!missing && docs.docs.length > 0" class="folder-note">
+            <div class="note-copy">
+              <span class="note-kicker">PARSING NOTES</span>
+              <h2>解析与引用说明</h2>
+              <p>
+                PDF 按页提取并保留页码，Office 文档按段落切分；图片会随 PDF 一并归档。
+                问答中的引用可直接回到对应原文段落。
+              </p>
+            </div>
+            <div class="note-formats">
+              <span v-for="suffix in suffixList.slice(0, 6)" :key="suffix">{{ suffix }}</span>
+              <span v-if="suffixList.length === 0">PDF / DOCX / PPTX / MD</span>
+            </div>
+          </section>
         </section>
 
         <aside class="side-pane">
-          <UploadPanel :folder="folderId" :folder-name="title" />
+          <UploadPanel ref="uploadPanel" :folder="folderId" :folder-name="title" />
 
           <section class="panel">
             <h2>目录信息</h2>
@@ -339,10 +390,19 @@ onUnmounted(() => {
                 <dd>{{ docs.folder?.created_at?.slice(0, 10) || '—' }}</dd>
               </div>
               <div v-if="!unfiled">
-                <dt>改名</dt>
+                <dt>最近更新</dt>
                 <dd>{{ docs.folder?.updated_at?.slice(0, 10) || '—' }}</dd>
               </div>
             </dl>
+          </section>
+
+          <section class="panel tips">
+            <h2>管理提示</h2>
+            <ul>
+              <li>文档更新后重新上传，保持引用与原文一致。</li>
+              <li>目录只负责组织，不承载权限；权限在文档层单独配置。</li>
+              <li>删除目录前需先移出全部文档，目录与文档互不牵连。</li>
+            </ul>
           </section>
         </aside>
       </div>
@@ -503,11 +563,171 @@ select {
   text-align: center;
 }
 
+.empty-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  min-height: 420px;
+  padding: 42px 32px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(560px 300px at 50% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%),
+    color-mix(in srgb, var(--bg) 74%, transparent);
+  text-align: center;
+}
+
+.empty-visual {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.empty-kicker {
+  margin: 8px 0 0;
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.17em;
+}
+
+.empty-panel h2 {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.empty-lede {
+  max-width: 500px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.empty-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  width: min(680px, 100%);
+  margin: 14px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+
+.empty-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+  text-align: left;
+}
+
+.empty-steps li > span {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.empty-steps strong {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.empty-steps p {
+  margin: 2px 0 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.empty-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.empty-actions button {
+  height: 36px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 296px;
   gap: 20px;
   align-items: start;
+}
+
+.folder-note {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 2px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 62%),
+    var(--bg);
+}
+
+.note-copy {
+  min-width: 0;
+}
+
+.note-kicker {
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.note-copy h2 {
+  margin: 3px 0 4px;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.note-copy p {
+  max-width: 600px;
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.note-formats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  flex: none;
+  max-width: 190px;
+}
+
+.note-formats span {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-muted);
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-family: var(--font-mono);
 }
 
 .main-pane,
@@ -529,6 +749,23 @@ select {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 8px;
+}
+
+.panel.tips {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 64%),
+    var(--bg);
+}
+
+.panel.tips ul {
+  margin: 0;
+  padding: 0 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 dl {
@@ -577,6 +814,25 @@ dd {
 @media (max-width: 768px) {
   .page-actions .faint {
     display: none;
+  }
+
+  .empty-panel {
+    min-height: 0;
+    padding: 30px 18px;
+  }
+
+  .empty-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .folder-note {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .note-formats {
+    justify-content: flex-start;
+    max-width: none;
   }
 }
 </style>

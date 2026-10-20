@@ -89,7 +89,7 @@ async function restrictToGroup(documentId: string): Promise<void> {
   try {
     await api.adminSetDocumentAcl(documentId, { user_ids: [], group_ids: [props.groupId] })
     adopt(await api.adminGroupDocuments(props.groupId))
-    notice.value = '已把这份文档收窄成只有本组能看（别人看不到了，这是文档侧的可见范围）'
+    notice.value = '已将本文档设为仅本组可见，此操作只影响文档权限，不改变目录归属。'
   } catch (err) {
     error.value = (err as Error).message
   } finally {

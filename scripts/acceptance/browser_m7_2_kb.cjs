@@ -171,13 +171,21 @@ async function main() {
   await dialog.getByRole('button', { name: '关闭' }).click()
   await dialog.waitFor({ state: 'detached', timeout: 5000 })
 
-  // 种子 PDF 是跨页的:要显示成「第 7–8 页」
+  // 种子 PDF 在「产品资料」目录里：跨页页码要显示成「第 7–8 页」
+  await backToFolders(page)
+  await page.locator('.folder', { hasText: '产品资料' }).click()
+  await page.waitForSelector('table tbody tr', { timeout: 15000 })
   await rowOf('劳动法').getByRole('button', { name: '预览' }).click()
   await dialog.waitFor({ timeout: 10000 })
   const spanTag = await dialog.locator('.block .tag.ok').first().innerText()
   expect('跨页显示成区间', spanTag.includes('–'), spanTag)
   await dialog.getByRole('button', { name: '关闭' }).click()
   await dialog.waitFor({ state: 'detached', timeout: 5000 })
+
+  // 回到上传所在目录继续删；两步确认与提示语都在这一页上
+  await backToFolders(page)
+  await page.locator('.folder', { hasText: '公司制度' }).click()
+  await page.waitForSelector('table tbody tr', { timeout: 15000 })
 
   // ── 删除:两步确认 + 如实转述 ─────────────────────────────────────────
   await row.getByRole('button', { name: '删除' }).click()

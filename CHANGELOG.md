@@ -46,59 +46,6 @@
   历史兼容、多模态前 3 张）；`check_m3_rag` / `check_p0_5_pages` / `check_m3_sparse` / `check_doc_formats` /
   `check_m7_frontend` / `check_m6_deploy` / `check_m7_4_security` 复跑通过。
 
-### 变更（MinerU 默认用 GPU，超时 3600 秒）
-- compose 的 `mineru` 服务默认申请 GPU：`gpus: all` + `MINERU_DEVICE_MODE: cuda`（两处必须成对），
-  并用 `MINERU_VIRTUAL_VRAM_SIZE: "8"` 给同卡的 app 嵌入/重排留余量；没有 GPU 时两处一起改回 CPU。
-- 服务端 `MINERU_TIMEOUT_S`、客户端 `RAG_MINERU__TIMEOUT_S`、`config` 默认值统一 **900 → 3600**；
-  app 容器在 compose 里显式覆盖为 3600，避免 `env_file` 的旧值在重建后才生效。
-- **改这些参数必须 `docker compose up -d` 重建容器，`restart` 不重读环境变量/设备**。
-  实测 RTX 5080 Laptop：3 页带图 PDF 36.6s、3 张图、显存峰值 7479 MiB（含 app 的 4476 MiB）。
-- 验收：`check_m6_deploy` 23/0/0；`reverse_m6_deploy` 34 例全红（RT-18 锚点改为 app 专属段落）。
-
-### 新增（账号自服务与主题）
-- **自助注册**：`POST /api/v1/auth/register`。图形验证码（`GET /api/v1/auth/captcha`，PNG data URI、
-  一次一票、TTL 120s）+ 自助口令策略（长度下限、字母+数字、不含登录名、非弱口令）+ 可选邀请码；
-  角色固定 `employee`，响应直接带令牌。`api.registration.enabled=false` 时 `403`，
-  前端按 `capabilities.registration` 决定显示还是隐藏注册入口。契约 `check_p0_8_account.py`（13 条）。
-- **改密**：`POST /api/v1/auth/password`。成功后**撤销该用户全部旧令牌**（其它设备下次请求 401）
-  并下发新令牌；原密码错 401，新密码不合规 400（`Authenticator.change_password`）。
-- **深浅色主题**：`stores/theme.ts` 三态（跟随系统 / 浅色 / 深色），写入 `<html data-theme>`，
-  选择持久化；`tokens.css` 同名变量覆盖，组件不感知主题；首帧之前应用，无闪白。
-- **前端工程化**：登录/注册两页共用 `ThemeToggle`；登录页密码显隐、**预填上次登录名**、**错误按字段定位**
-  （用户名/密码/确认密码各有位置，服务端判定的错误仍显示在顶部）；改密面板在顶栏（改完提示其它设备失效）；
-  **Esc 关闭顶栏浮层**（监听在卸载时摘掉）；**标题随路由变化**（`登录 · RAG Assistant` 这类，
-  多标签页里能认出来）。
-
-### 前端（全站版式与文案收敛）
-
-- **统一骨架**：新增 `PageShell` / `Surface` / `DialogShell` / `AuthShell` / `EmptyState` 五个共享组件；
-  知识库、报表、账号、登录、注册全部改用同一套页头/区块/弹层，桌面与 375px 走同一套断点。
-- **超简约文案**：删除界面上的解释性长句（检索参数说明、对账说明、上传异步说明、权限"怎么读"等），
-  只保留短标签、状态、错误与可执行命令；必要的口径移到 `title` 或数据行。
-- **视觉**：页面改为浅灰画布 + 白色细描边区块、统一 22px 页标题/13px 区块标题、表格/指标卡/表单行统一；
-  登录/注册改为左侧品牌 + 右侧单列表单，移动端收成单列；报表 KPI 在移动端两列。
-- 契约同步：`browser_m7_2_kb.cjs` / `browser_m7_3_metrics.cjs` 的登录等待从已不存在的 `Configuration`
-  文案改为 `.workspace`；`MessageList` 的重新生成提示断言同步为短文案。
-
-### 前端（对话工作台重构）
-
-- **三栏工作台**：左侧会话目录（按时间分组、搜索、本机重命名、行内删除确认）、中间消息流、
-  右侧引用原文面板，顶栏「检索设置」抽屉收纳知识库/检索方式/权重/重排/模型；1440 三栏、
-  ≤1180 两栏改浮层、≤768 侧栏抽屉 + 引用底部弹层。检索参数仍来自 `capabilities`，未新增任何能力真源。
-- **消息流**：自研 Markdown 渲染（零新增依赖：交付环境 npm registry 不可达、CI 用 `npm ci`），
-  支持标题/列表/引用/表格横向滚动/围栏代码高亮与复制；全部文本先转义，链接只放行 http(s)/mailto/站内路径；
-  行内 `[n]` 是按钮（hover 摘要、点击定位右栏），未知序号保留灰色不猜。
-- **引用溯源**：引用卡片显示序号/文件/来源/页码/相关度条；右侧面板给出元数据、命中片段与
-  父块原文，命中块高亮并自动滚到可视区；来自表格的预览画成缩略表格。
-- **置信度**：只认可解释量纲（FAQ 命中 / rerank 0~1 / 单路向量余弦），BM25/RRF 等不可跨查询比较的分数
-  只画「相对强度」并明说；中置信度出「AI 建议」徽章，低置信度/拒答出「知识库中未找到足够信息」
-  与「换个问法」「上传相关文档」两个动作，不写通用错误。
-- **输入与流式**：Textarea 自适应 ≤200px、Enter/Shift+Enter（兼容中文输入法）、管理员附件上传
-  （走知识库上传接口，消息里显示缩略图/状态）、拖拽、知识库单选、生成中「停止」；
-  WebSocket 帧驱动、首字前先显示检索状态与已有依据、生成中禁用重新生成；点赞点踩/重命名仅本机。
-- 验收：`npm run typecheck` 0 错误；`check_m7_frontend.py` / `check_m7_4_security.py` / `check_m5_api.py`
-  全绿；浏览器脚本 `scripts/acceptance/browser_m7_frontend.cjs` 覆盖 1440/375、引用定位、低置信度、
-  暗色与生成态；Markdown 安全用例（XSS/协议白名单/代码与表格）单独跑通。
 
 ### 性能（两路召回并行）
 

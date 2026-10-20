@@ -89,9 +89,12 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <AuthShell title="创建账号">
+  <AuthShell
+    title="创建账号"
+    subtitle="加入企业知识空间，让每一次检索都有据可依。"
+  >
     <p v-if="policy === null" class="faint">读取中…</p>
-    <p v-else-if="!enabled" class="alert warn">自助注册未开放，请联系管理员。</p>
+    <p v-else-if="!enabled" class="alert warn">自助注册暂未开放，请联系组织管理员。</p>
 
     <template v-else>
       <label class="field">
@@ -134,8 +137,8 @@ async function submit(): Promise<void> {
     </template>
 
     <p class="auth-foot">
-      <span>已有账号?</span>
-      <RouterLink :to="{ name: 'login' }">去登录</RouterLink>
+      <span>已有账号？</span>
+      <RouterLink :to="{ name: 'login' }">返回登录</RouterLink>
     </p>
   </AuthShell>
 </template>

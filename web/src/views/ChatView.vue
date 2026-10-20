@@ -106,7 +106,8 @@ onBeforeUnmount(() => {
       <div class="settings-overlay" :class="{ open: ui.settingsOpen }" role="dialog" aria-label="检索设置">
         <header class="settings-head">
           <div>
-            <h2>检索设置</h2>
+            <h2>检索偏好</h2>
+            <p>调整检索方式与回答依据的范围。</p>
           </div>
           <button
             class="icon-btn"
@@ -154,7 +155,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background:
+    radial-gradient(840px 360px at 70% 0%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 70%),
+    var(--bg);
   border-left: 1px solid var(--border);
 }
 
@@ -262,6 +265,12 @@ onBeforeUnmount(() => {
 
 .settings-head h2 {
   font-size: 14px;
+}
+
+.settings-head p {
+  margin: 3px 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
 }
 
 .settings-body {

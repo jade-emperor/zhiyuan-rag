@@ -78,7 +78,7 @@ const TITLES: Record<string, string> = {
 router.afterEach((to) => {
   const name = typeof to.name === 'string' ? to.name : ''
   const label = TITLES[name]
-  document.title = label === undefined ? 'RAG Assistant' : `${label} · RAG Assistant`
+  document.title = label === undefined ? '知源助手' : `${label} · 知源助手`
 })
 
 const NEEDS: Record<Need, () => boolean> = {

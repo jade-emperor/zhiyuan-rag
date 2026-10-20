@@ -46,7 +46,7 @@
  *     「换个问法」把焦点放回 `textarea[aria-label=输入问题]`；
  *  8. 暗色：顶栏主题按钮（title「切换到深色主题」）→ `data-theme=dark` → 再切回 light；
  *  9. 375×780：无横向滚动、侧栏抽屉（打开/Escape 关闭）、引用底部弹层、输入区仍可用；
- * 10. 生成中「停止」→「已停止生成」提示，且不残留生成中状态；
+ * 10. 生成中「停止」→「已停止本次生成」提示，且不残留生成中状态；
  * 11. 全程：console error / pageerror / requestfailed 为空，且**没有 alert/confirm 弹窗**。
  *
  * ── 背景：流式是 WebSocket，不是 SSE ─────────────────────────────────
@@ -671,8 +671,8 @@ async function main() {
     )
     const lowText = lowShown ? await text(page, '.low-confidence') : ''
     expect(
-      '文案逐字包含「知识库中未找到足够信息」',
-      lowText.includes('知识库中未找到足够信息'),
+      '文案逐字包含「当前知识库中未能找到充分依据」',
+      lowText.includes('当前知识库中未能找到充分依据'),
       `文案=「${lowText.replace(/\n/g, ' | ').slice(0, 80)}」`,
       'MessageList 的 .low-head strong 必须逐字是这句',
     )
@@ -864,16 +864,16 @@ async function main() {
     const stoppedAlert = await text(page, '.msg.assistant .alert.info')
     if (!clicked) {
       markUnverified(
-        '生成中「停止」→ 出现「已停止生成」提示',
+        '生成中「停止」→ 出现「已停止本次生成」提示',
         '没能在生成中点到「停止」（假后端流式太快）；手工验请用真后端',
       )
       markUnverified('停止后没有残留的生成中状态', '同上：没有真正触发停止')
     } else {
       expect(
-        '生成中「停止」→ 出现「已停止生成」提示',
-        stoppedAlert.includes('已停止生成'),
+        '生成中「停止」→ 出现「已停止本次生成」提示',
+        stoppedAlert.includes('已停止本次生成'),
         `自动点到停止=${clicked}，提示=「${stoppedAlert.replace(/\n/g, ' ')}」`,
-        'Composer 的「停止」调用 chat.stop()；MessageList 的 message.stopped 分支应显示「已停止生成 —— 上面是已经收到的部分。」',
+        'Composer 的「停止」调用 chat.stop()；MessageList 的 message.stopped 分支应显示「已停止本次生成。」',
       )
       const streamingLeft = await count(page, '.streaming-actions')
       const composerStopLeft = await count(page, '.composer .stop')

@@ -15,7 +15,7 @@ import Icon from './Icon.vue'
 const props = defineProps<{ folder: FolderRecord }>()
 const emit = defineEmits<{ open: [] }>()
 
-const description = computed(() => props.folder.description || '—')
+const description = computed(() => props.folder.description || '尚未添加目录说明')
 const updated = computed(() =>
   props.folder.last_activity ? humanTime(props.folder.last_activity) : '还没有文档',
 )
@@ -56,19 +56,23 @@ const updated = computed(() =>
 .folder {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px 14px 12px;
-  background: var(--bg);
+  gap: 9px;
+  padding: 15px 16px 13px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 2%, transparent), transparent 50%),
+    var(--bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .folder:hover,
 .folder:focus-visible {
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-xs);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
 .folder:focus-visible {
@@ -90,14 +94,14 @@ header {
 }
 
 .icon {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-xs);
-  background: var(--bg-sunken);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 h3 {

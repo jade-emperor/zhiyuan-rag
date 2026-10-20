@@ -103,13 +103,17 @@ onMounted(() => {
   <main class="page">
     <div class="page-inner">
       <header class="page-head">
-        <div class="page-title">
-          <h1>报表</h1>
-          <span class="page-meta">
-            {{ metrics.window || '—' }}
-            <template v-if="metrics.fetchedAt"> · {{ metrics.fetchedAt }}</template>
-            <template v-if="metrics.loading"> · 读取中…</template>
-          </span>
+        <div class="page-heading">
+          <p class="page-eyebrow">OPERATIONAL INSIGHT</p>
+          <div class="page-title">
+            <h1>报表</h1>
+            <span class="page-meta">
+              {{ metrics.window || '—' }}
+              <template v-if="metrics.fetchedAt"> · {{ metrics.fetchedAt }}</template>
+              <template v-if="metrics.loading"> · 读取中…</template>
+            </span>
+          </div>
+          <p class="page-desc">观察问答延迟、拒答与模型消耗，让每一次服务改进都有数据可依。</p>
         </div>
         <div class="page-actions">
           <div class="windows segmented">

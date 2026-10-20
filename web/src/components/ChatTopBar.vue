@@ -60,7 +60,7 @@ const referenceCount = computed(() =>
     <button
       class="icon-btn"
       type="button"
-      title="打开/收起对话列表"
+      title="打开/收起问答列表"
       aria-label="打开对话列表"
       :aria-expanded="ui.drawerOpen"
       @click="toggleSidebar"
@@ -71,7 +71,7 @@ const referenceCount = computed(() =>
     <div class="title-block">
       <h1 class="title" :title="currentSessionTitle()">{{ currentSessionTitle() }}</h1>
       <div class="chips">
-        <button class="chip" type="button" title="知识库" @click="openSettings">
+        <button class="chip" type="button" title="检索范围" @click="openSettings">
           <Icon name="book" :size="12" />
           {{ scope }}
         </button>
@@ -79,14 +79,14 @@ const referenceCount = computed(() =>
           {{ method }}
         </button>
         <span v-if="rerankAvailable" class="chip ghost-chip">
-          {{ params.rerank ? '重排开' : '重排关' }}
+          {{ params.rerank ? '重排 · 已启用' : '重排 · 未启用' }}
         </span>
       </div>
     </div>
 
     <div class="actions">
       <span v-if="chat.generating" class="generating" role="status">
-        <span class="spin"></span> 生成中
+        <span class="spin"></span> 正在生成
       </span>
       <button
         class="icon-btn"
@@ -102,7 +102,7 @@ const referenceCount = computed(() =>
         class="icon-btn panel-toggle"
         :class="{ active: ui.panelOpen }"
         type="button"
-        title="引用原文面板"
+        title="引用原文"
         aria-label="引用原文面板"
         :aria-pressed="ui.panelOpen"
         @click="togglePanel"

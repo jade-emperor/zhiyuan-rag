@@ -71,7 +71,7 @@ async function submit(): Promise<void> {
         v-model="name"
         type="text"
         maxlength="40"
-        placeholder="例如:公司制度"
+        placeholder="例如：公司制度"
         autofocus
         @keydown.enter.prevent="submit"
       />
@@ -83,7 +83,7 @@ async function submit(): Promise<void> {
         v-model="description"
         type="text"
         maxlength="120"
-        placeholder="这一格放什么、给谁看"
+        placeholder="说明该目录收录的内容与适用范围"
         @keydown.enter.prevent="submit"
       />
     </label>

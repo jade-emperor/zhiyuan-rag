@@ -1660,8 +1660,8 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     limiter = _optional_factory(deps, "rate_limiter_factory")
 
     app = FastAPI(
-        title="project-rag",
-        description="知识库问答:FAQ 优先,未命中转知识库(答案带引用)",
+        title="知源助手 API",
+        description="企业知识智能问答：精准溯源、混合检索与权限隔离",
         version="0.1.0",
     )
     # 本机开发默认全开(api.cors_origins = ["*"]);要对外就得收紧到具体来源

@@ -2,7 +2,7 @@
   "name": "project-rag-web",
   "version": "0.1.0",
   "private": true,
-  "description": "project-rag 的前端(员工检索 / 管理员治理)。产物进 src/project_rag/api/static/app/ —— Python 侧与 Docker 镜像不需要 node。",
+  "description": "知源助手前端：企业知识问答、知识管理与运营治理。构建产物写入 src/project_rag/api/static/app/。",
   "type": "module",
   "scripts": {
     "dev": "vite",

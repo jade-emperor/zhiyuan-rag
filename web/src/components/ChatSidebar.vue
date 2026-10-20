@@ -56,7 +56,7 @@ onMounted(async () => {
     <div class="workspace-label">
       <span class="workspace-title">
         <Icon name="message" :size="15" />
-        对话
+        智能问答
       </span>
       <button
         v-if="ui.compact"
@@ -77,7 +77,7 @@ onMounted(async () => {
 
     <section class="kb">
       <div class="field-label">
-        <span>知识库范围</span>
+        <span>检索范围</span>
         <button
           class="icon-btn"
           type="button"
@@ -103,12 +103,12 @@ onMounted(async () => {
         {{ sources.error }}
         <button class="ghost retry" type="button" @click="reloadSources">重试</button>
       </p>
-      <p v-else class="hint">{{ sources.items.length }} 个来源</p>
+      <p v-else class="hint">{{ sources.items.length }} 个知识来源</p>
     </section>
 
     <label class="search">
       <Icon name="search" :size="15" aria-hidden="true" />
-      <input v-model="search" type="search" placeholder="搜索对话" aria-label="搜索对话" />
+      <input v-model="search" type="search" placeholder="搜索历史问答" aria-label="搜索对话" />
       <button
         v-if="search.length > 0"
         class="icon-btn"
@@ -122,6 +122,11 @@ onMounted(async () => {
     </label>
 
     <SessionList :query="search" />
+
+    <div class="sidebar-foot">
+      <span class="foot-mark"><Icon name="quote" :size="12" /></span>
+      <p>回答可点击引用，回到原文核验。</p>
+    </div>
   </aside>
 </template>
 
@@ -246,4 +251,31 @@ onMounted(async () => {
   height: 22px;
 }
 
+.sidebar-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 10px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-muted);
+}
+
+.foot-mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sidebar-foot p {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
 </style>

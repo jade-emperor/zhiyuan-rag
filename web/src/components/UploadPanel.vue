@@ -62,13 +62,13 @@ function reject(file: File): string | null {
   const dot = file.name.lastIndexOf('.')
   const suffix = dot >= 0 ? file.name.slice(dot).toLowerCase() : ''
   if (suffixes.value.length === 0) {
-    return '还没读到后端能力(capabilities)—— 先看左上角「后端」是否连通,再重进这一页'
+    return '服务能力尚未加载，请刷新页面或检查服务连接后重试'
   }
   if (!suffixes.value.includes(suffix)) {
-    return `不支持的类型 ${suffix || '(无后缀)'} —— 这个后端只吃 ${suffixes.value.join(' / ')}`
+    return `暂不支持 ${suffix || '无后缀'} 文件，可用格式为 ${suffixes.value.join(' / ')}`
   }
   if (maxMb.value > 0 && file.size > maxMb.value * 1024 * 1024) {
-    return `超过上限:${humanBytes(file.size)} > ${maxMb.value} MB`
+    return `文件超过 ${maxMb.value} MB 上限（当前 ${humanBytes(file.size)}）`
   }
   return null
 }
@@ -92,14 +92,16 @@ async function submit(files: File[]): Promise<void> {
   }
   if (good.length > 0) await uploadFiles(good, props.folder)
 }
+
+defineExpose({ openPicker })
 </script>
 
 <template>
   <aside class="panel">
     <div class="panel-head">
-      <h2>上传</h2>
+      <h2>导入资料</h2>
       <button v-if="docs.uploads.length > 0" class="ghost tiny" type="button" @click="clearUploads">
-        清空
+        清空记录
       </button>
     </div>
 
@@ -115,9 +117,9 @@ async function submit(files: File[]): Promise<void> {
       @drop.prevent="onDrop"
     >
       <span class="drop-icon"><Icon name="paperclip" :size="17" /></span>
-      <strong>拖拽或点击上传</strong>
-      <span class="faint">支持:{{ suffixes.length > 0 ? suffixes.join(' / ') : '(还没读到 capabilities)' }}</span>
-      <span class="faint">进「{{ folderName }}」 · ≤ {{ maxMb }} MB</span>
+      <strong>拖拽文件至此，或点击选择</strong>
+      <span class="faint">支持格式：{{ suffixes.length > 0 ? suffixes.join(' / ') : '正在加载' }}</span>
+      <span class="faint">导入至「{{ folderName }}」 · 单份 ≤ {{ maxMb }} MB</span>
       <input
         ref="picker"
         class="hidden-input"
@@ -151,10 +153,13 @@ async function submit(files: File[]): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
-  background: var(--bg);
+  padding: 15px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, transparent), transparent 58%),
+    var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
 }
 
 .panel-head {
@@ -165,18 +170,18 @@ async function submit(files: File[]): Promise<void> {
 
 .panel-head h2 {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 650;
 }
 
 .drop {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 18px 10px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-muted);
+  gap: 5px;
+  padding: 23px 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-muted));
   text-align: center;
   cursor: pointer;
   transition: border-color 0.12s ease, background 0.12s ease;
@@ -189,19 +194,21 @@ async function submit(files: File[]): Promise<void> {
 }
 
 .drop strong {
+  color: var(--text);
   font-size: 12.5px;
   font-weight: 600;
 }
 
 .drop-icon {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius);
   background: var(--bg);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  color: var(--accent);
+  box-shadow: var(--shadow-xs);
 }
 
 .hidden-input {

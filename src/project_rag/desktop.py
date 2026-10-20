@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="预置后端地址(本地模式用):页面启动时认一次并记住,例如 http://127.0.0.1:8080",
     )
-    parser.add_argument("--title", default="RAG Assistant", help="窗口标题")
+    parser.add_argument("--title", default="知源助手", help="窗口标题")
     parser.add_argument("--width", type=int, default=1280, help="窗口宽(默认 1280)")
     parser.add_argument("--height", type=int, default=860, help="窗口高(默认 860)")
     parser.add_argument(

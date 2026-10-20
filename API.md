@@ -1,4 +1,6 @@
-# project-rag 接口文档
+# 知源助手接口文档
+
+> 代码与命令行标识仍沿用 `project-rag`，以保证既有脚本与部署的兼容性。
 
 > **schema 的权威是运行时的 `/openapi.json`**（FastAPI 自动生成，同时提供 `/docs` Swagger 与 `/redoc`）。
 > 本文只写 schema 表达不了的东西：路由语义、WebSocket 帧协议、错误与降级、限额口径。

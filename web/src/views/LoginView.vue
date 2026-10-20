@@ -54,7 +54,11 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <AuthShell class="login" title="登录">
+  <AuthShell
+    class="login"
+    title="欢迎回来"
+    subtitle="登录知源助手，开始一次有据可循的知识探索。"
+  >
     <label class="field">
       <span>用户名</span>
       <input v-model="username" type="text" autocomplete="username" @keydown.enter="submit" />
@@ -84,14 +88,14 @@ async function submit(): Promise<void> {
     </button>
 
     <p v-if="canRegister" class="auth-foot">
-      <span>还没有账号?</span>
-      <RouterLink :to="{ name: 'register' }">创建账号</RouterLink>
+      <span>尚未开通账号？</span>
+      <RouterLink :to="{ name: 'register' }">申请开通</RouterLink>
     </p>
-    <p v-else-if="caps.data !== null" class="auth-foot">账号由管理员创建</p>
+    <p v-else-if="caps.data !== null" class="auth-foot">账号由组织管理员统一开通</p>
 
     <div class="backend">
       <button class="ghost small" type="button" @click="showBackend = !showBackend">
-        后端 {{ backendBase() || '未配置' }} · {{ backendOk ? '已连通' : '未连通' }}
+        服务 {{ backendBase() || '未配置' }} · {{ backendOk ? '已连通' : '未连通' }}
       </button>
       <div v-if="showBackend" class="backend-box">
         <input v-model="backendDraft" type="text" placeholder="http://主机:端口" />

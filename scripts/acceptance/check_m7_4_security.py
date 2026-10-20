@@ -834,7 +834,7 @@ def _() -> str:
 
 
 # ══ 六、前端静态 ═════════════════════════════════════════════════════════════
-@check("前端：限流那一条用暖色提醒 + 说明「不是出错」，不是红字错误")
+@check("前端：限流那一条用暖色提醒 + 说明「并非系统异常」，不是红字错误")
 def _() -> str:
     messages = _read_web("components/MessageList.vue")
     assert "throttled" in messages, "前端不认识 channel=throttled(会显示成光秃秃一句话)"
@@ -842,14 +842,14 @@ def _() -> str:
     assert re.search(r"badgeTone|tag warn", messages), (
         "限流那条没有单独的配色(与普通答案混在一起,用户看不出该等一会儿)"
     )
-    assert "这不是出错" in messages, "没有告诉用户「这不是错误」(不然他会去狂点重试)"
+    assert "并非系统异常" in messages, "没有告诉用户「这不是错误」(不然他会去狂点重试)"
     # 提示**不能画成红字**:`.alert.error` 是"出错了"的语气,与话术的意思正好相反
     assert re.search(r"channel === 'throttled'\" class=\"alert info\"", messages), (
         "限流那条提示用的不是 info 语气(红字会让人以为系统坏了)"
     )
     types = _read_web("api/types.ts")
     assert "'throttled'" in types, "types.ts 的 Channel 里没有 throttled"
-    return "标签「稍后重试」+ 暖色徽章 + 「这不是出错」说明三处都在"
+    return "标签「稍后重试」+ 暖色徽章 + 「并非系统异常」说明三处都在"
 
 
 @check("前端：?backend= 只认一次并抹掉；登出先调接口再清本地")
