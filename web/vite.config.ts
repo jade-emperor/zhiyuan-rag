@@ -21,6 +21,10 @@ export default defineConfig({
   server: {
     // 开发态默认打哪个后端。写在这里而不是源码里:源码里同样的值在构建产物里就变成
     // "写死的地址",而 app 的契约是**只知道一个可配置的后端地址**。
+    // 绑 0.0.0.0 而不是 Vite 默认的 localhost：WSL 里只绑回环时，Windows 浏览器
+    // 打 127.0.0.1:5173 可能到不了这个进程（18080 能开、5173 打不开就是这条）。
+    // 只在开发机上用；不要把 Vite dev server 暴露到生产网络。
+    host: '0.0.0.0',
     port: 5173,
     strictPort: true,
   },
