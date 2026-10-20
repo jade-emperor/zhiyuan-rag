@@ -9,8 +9,7 @@
 #                     check_m4_rewrite_ab）**永不进 CI**
 #                     —— 语料有版权、真 provider 调用花钱，见 run_all.py 的 LOCAL_ONLY。
 #
-# 平台说明：主仓在 Gitee，这个文件是 GitHub Actions 的格式。两种用法：① 在 GitHub 上镜像一份跑；
-# ② 本地/自建 runner 直接跑等价命令（`uv run python scripts/acceptance/run_all.py --set ci`）。
+# 本地跑同一份清单：`uv run python scripts/acceptance/run_all.py --set ci`（阈值与分组见 run_all.py）。
 
 name: CI
 

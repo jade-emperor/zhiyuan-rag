@@ -6,18 +6,11 @@
 > 约定：`0.x` 期间次要版本可能有破坏性改动；每条变更都尽量带**证据指针**
 >（契约脚本名），因为这个项目的规矩是"能验证的才算数"。
 
-## [Unreleased]
-### 变更（部署形态：前端产物与容器）
-- **构建产物两处**：`npm run build` 先产出 `web/dist`（可独立交给 Nginx / 静态服务器，**不入库**），
-  末尾再把一份**兼容副本**同步进 `src/project_rag/api/static/app/`（桌面壳与一体化模式用）；
-  两条路径都带 `source-digest`。
-- **新开关 `api.serve_frontend`**（默认 `true`，兼容旧部署）：关掉时后端不挂 `/static`，根路径回一段
-  JSON（`{"mode":"api-only",…}`）而不是 307 —— 前后端分离时"打开 8080 只看到 404"的坑由这条消掉。
-  `docker-compose.yaml` 的 `app` 服务显式设为 `false`：**容器只发 API**，页面由 Vite / Nginx 单独发。
-- `scripts/dev.sh` 短命令重写（`backend` / `web` / `frontend` / `status` / `ports`），端口分层写进脚本头部；
-  容器 smoke 与 `check_m6_deploy` 跟着服务集调整。
+## [0.1.0] - 2026-10-20
 
-### 新增（答案反馈）
+首个公开版本（没有更早的版本可比）。下面按能力分区列它包含什么，每条都带可执行的证据指针（契约脚本名）。
+
+### 答案反馈（留痕 + 看板）
 - **接口**：`POST /api/v1/feedback`（`up` / `down` / `none`=撤销，Bearer+归属）、
   `GET /api/v1/reports/feedback`（运维/管理员；`rating` 过滤、`days=0` = 全部历史）。
 - **存储**：`answer_feedback` 表 —— `turn_key`（会话+问题+答案的 SHA-256）唯一，
@@ -29,7 +22,7 @@
   归属人与通道，可跳到那段会话。
 - 验收：`check_m8_5_feedback.py`（8 条，含真 MySQL 的覆盖写与"只删自己"）、
   `reverse_m8_5_feedback.py`（9 条全红）。
-### 新增（会话历史页）
+### 会话历史（本人 / 管理员）
 - **接口**：`GET /api/v1/sessions` 多一个 `scope=mine|all`。`all` 仅管理员 —— 跨账号列会话，
   每行带 `owner`（登录名）与 `mine`（是不是当前账号的），`scope` 原样回显。账号被删除时
   `owner` 给空串（适配器 `LEFT JOIN users`），**会话不因删号而从视野里消失**。
@@ -42,7 +35,7 @@
 - 验收：`check_m5_10_history.py`（7 条，含真 MySQL 的 `list_all`）、
   `reverse_m5_10_history.py`（8 条全红）；`check_p0_3_auth` 的归属口径改为
   「员工 403 / 管理员 200 / 没归属谁都 403」，反向用例同步。
-### 新增（FAQ 管理台）
+### FAQ 管理台
 - **接口**：`GET /api/v1/admin/faq?query=`（服务端对问题与答案做包含匹配；`total` 是过滤前总数）、
   `POST`（`201`）、`PATCH`（字段可省）、`DELETE`（幂等，`deleted=0`）—— 四个都是 `admin`。
   在此之前问答对只能由**不随仓库发布的**装载脚本灌一次，改一条就得连库手写 SQL。
@@ -55,7 +48,7 @@
   Markdown 答案）/ 行内两步确认删除；页头写明"只答近乎一字不差的问法"。
 - 验收：`check_m2_5_faq_admin.py`（13 条，含真 MySQL 增改删往返与前端静态契约）；
   `reverse_m2_5_faq_admin.py`（9 条全红）。
-### 新增（知识库两级目录）
+### 知识库两级目录
 - **一级目录**：`documents` 加 `folder` 列 + `document_folders` 表（名字唯一、ID 形如 `f_`+12 位十六进制、
   **改名不改 ID**）；空串 = **未分类**，是一个合法归属而不是错误状态（磁盘上还没登记的文件只能是它）。
 - **接口**：`GET /api/v1/folders`（每格带对账后的份数 / 库内块数 / 占用 / 需要处理，含"未分类"与汇总）、
@@ -74,7 +67,7 @@
 - 验收：`check_m7_5_folders.py`（23 条，含真 MySQL 的迁移与唯一约束、同名换目录 409、语料目录同步与登记根归一化）；`reverse_m7_5_folders.py`（9 条全红）；
   `check_m7_2_kb` / `check_m7_2_live_kb` 改指两级页面后复跑通过。
 
-### 新增（图片模态）
+### 图片模态
 - **图片入库**：MinerU `content_list.json` → 正文 + 页码区间 + 图片锚点；图片按**字节 SHA-256**
   内容寻址上传阿里云 OSS（`x-oss-forbid-overwrite` 处理并发，同一张图不会产生第二个对象）；
   父块图片以 `image_keys` 随子块落 Milvus（新集合 `rag_chunks_img_v1`），**不把临时 URL 写进库**。
@@ -95,7 +88,7 @@
   `check_m7_frontend` / `check_m6_deploy` / `check_m7_4_security` 复跑通过。
 
 
-### 性能（两路召回并行）
+### 检索：两路召回并行
 
 - **知识库检索的两路召回改成并行**：稠密向量（Milvus）与关键字（Milvus 稀疏 / 进程内 BM25）
   此前是串着跑的，现在关键字那一路在子线程里跑、汇齐后再融合。真栈 A/B（真语料、真关键字编码，
@@ -110,3 +103,13 @@
   静默消失"：少召回一半而账上一切正常）；两路都抛时抛先查的那一路，另一路记 WARNING。
 - 验收：`check_m5_5_latency.py` **28 → 30 条**（并行墙钟 < 0.7×两段之和、融合段不吸等待、
   只开关键字时报自己的时长）；反向 `reverse_m5_5_latency.py` **2 → 4 例全红**。
+
+### 部署形态：前端产物与容器
+- **构建产物两处**：`npm run build` 先产出 `web/dist`（可独立交给 Nginx / 静态服务器，**不入库**），
+  末尾再把一份**兼容副本**同步进 `src/project_rag/api/static/app/`（桌面壳与一体化模式用）；
+  两条路径都带 `source-digest`。
+- **开关 `api.serve_frontend`**（默认 `true`，兼容旧部署）：关掉时后端不挂 `/static`，根路径回一段
+  JSON（`{"mode":"api-only",…}`）而不是 307 —— 前后端分离时"打开 8080 只看到 404"的坑由这条消掉。
+  `docker-compose.yaml` 的 `app` 服务显式设为 `false`：**容器只发 API**，页面由 Vite / Nginx 单独发。
+- `scripts/dev.sh` 短命令重写（`backend` / `web` / `frontend` / `status` / `ports`），端口分层写进脚本头部；
+  容器 smoke 与 `check_m6_deploy` 跟着服务集调整。

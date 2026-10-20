@@ -1132,8 +1132,7 @@ Redis 故障 → **降级放行**（fail-open）+ WARNING：限流是保护不�
 - **公开 schema 的权威是 `/openapi.json`**：本文档与它冲突时以它为准，并回来改本文档。
 - **兼容性：只增不改** —— 新增字段给默认值；删字段 / 改类型 / 改路由属于破坏性变更，
   要同步改 `scripts/acceptance/check_m5_api.py`（端点契约的唯一权威）。
-- 本版新增（都是**新增**，老行为不变）：`GET/POST /admin/faq`、`PATCH/DELETE /admin/faq/{id}`、
-  `POST /feedback`、`GET /reports/feedback`、`GET /sessions?scope=all`；`GET /history/{id}` 对管理员放行有归属的会话。
+- 完整路由清单见 §2（44 条：43 个 HTTP + 1 个 WebSocket），全部在 `/api/v1` 下。
 - 路由前缀一律 `/api/v1`，老路径已删除（那是唯一不用背兼容包袱的窗口）：`/api/query` → `/api/v1/query`、
   `/api/stream` → `/api/v1/stream`、`/api/create_session` → `/api/v1/create_session`、
   `/api/history/{id}` → `/api/v1/history/{id}`、`/api/sources` → `/api/v1/sources`、

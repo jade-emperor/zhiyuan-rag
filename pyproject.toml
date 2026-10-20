@@ -133,9 +133,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://gitee.com/The_Jade_Emperor/project_rag"
-Repository = "https://gitee.com/The_Jade_Emperor/project_rag"
-Issues = "https://gitee.com/The_Jade_Emperor/project_rag/issues"
+Homepage = "https://github.com/jade-emperor/zhiyuan-rag"
+Repository = "https://github.com/jade-emperor/zhiyuan-rag"
+Issues = "https://github.com/jade-emperor/zhiyuan-rag/issues"
 
 [project.scripts]
 # 构建映射,通过project-rag可以找到cli()函数

@@ -28,7 +28,7 @@
 
 ## 执行
 
-发现问题请**私信**维护者（Gitee [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)），
+发现问题请通过 GitHub 仓库的 **Issues / 私信** 联系维护者（[@jade-emperor](https://github.com/jade-emperor)），
 不要在公开区对线。维护者的处理包括：
 提醒 → 警告 → 临时禁言 → 永久移出。**维护者自己也受本准则约束**。
 

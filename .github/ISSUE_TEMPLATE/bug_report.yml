@@ -9,7 +9,7 @@ body:
         报之前请先确认：
         1. 已按 `README.md` 第一节把环境跑起来（或说明卡在哪一步）；
         2. 搜过已有 issue；
-        3. **安全漏洞不要走这里** —— 见 [SECURITY.md](https://gitee.com/The_Jade_Emperor/project_rag/blob/main/SECURITY.md)。
+        3. **安全漏洞不要走这里** —— 见 [SECURITY.md](https://github.com/jade-emperor/zhiyuan-rag/blob/main/SECURITY.md)。
 
   - type: textarea
     id: what

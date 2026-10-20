@@ -664,7 +664,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 - **还没接的格式**：HTML / Excel，以及工作表这类元数据到引用清单的透传。
   扫描件/PDF 内嵌图片走**可选**的 MinerU 服务（`RAG_IMAGES__ENABLED=true`），
   不开时仍是 PyMuPDF 的纯文本路径；MinerU 的依赖与模型不在基础镜像里（见 `services/mineru/`）。
-- **镜像已在真机构建并跑起来过**（之前"开发环境里没有 `docker` 命令"那条已作废）：
+- **镜像已在真机构建并跑起来过**：
   `docker compose up -d --build` 构建成功、app 变 healthy、8080 上 `/health` 200（容器默认 API-only；
   页面用 `./scripts/dev.sh web 8080`，或把 `RAG_API__SERVE_FRONTEND` 设回 true 走镜像里的兼容副本）。
   **体积 ~11G 的成因已量清**：venv 7.0G 里 `nvidia` 3.2G + `torch` 1.2G + `triton` 0.9G = 5.3G 是 CUDA 相关；

@@ -11,7 +11,8 @@
 
 优先走私密渠道，收到后我会在 **72 小时内**确认、并在修好之后与你商量要不要公开致谢：
 
-- Gitee 上私信 [@The_Jade_Emperor](https://gitee.com/The_Jade_Emperor)（标题请带 `[SECURITY]`）
+- 在仓库的 Security → **Report a vulnerability** 走私密报告（https://github.com/jade-emperor/zhiyuan-rag/security/advisories/new），
+  或私信维护者 [@jade-emperor](https://github.com/jade-emperor)（标题请带 `[SECURITY]`）
 
 > 仓库里**刻意不留邮箱**：那属于维护者的个人信息，不是你报漏洞必须付的成本。
 
