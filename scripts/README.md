@@ -32,7 +32,7 @@
 
 ```bash
 ./scripts/dev.sh up         # 只起中间件三件（standalone / mysql / redis）—— 没有前端
-./scripts/dev.sh app        # 起容器那份（8080，一个进程同时发页面与接口）
+./scripts/dev.sh app        # 起容器那份（8080，**API-only**；页面用 web 命令或 serve_frontend=true）
 ./scripts/dev.sh app --build# 同上，但先构建前端再重建镜像（改了 web/ 之后必须走这条）
 ./scripts/dev.sh serve      # 只起代码后端（18080，跑工作区源码，零镜像，页面也是工作区那份）
 ./scripts/dev.sh status     # 谁在发前端、发的是哪一份（对比容器/镜像与工作区的产物摘要）
@@ -385,8 +385,9 @@ uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：34 
 ```bash
 cd web && npm install            # 只第一次（node 工具链只在这里用得到）
 cd web && npm run typecheck      # vue-tsc --noEmit
-cd web && npm run build          # ① vite 构建 → src/project_rag/api/static/app/
-                                 # ② 写 source-digest.txt（产物「来自哪一版源码」的内容摘要）
+cd web && npm run build          # ① vite 构建 → web/dist（可独立部署，不入库）
+                                 # ② 写 dist/source-digest.txt，再把整份产物同步进
+                                 #    src/project_rag/api/static/app/（兼容副本，入库）
 cd web && npm run dev            # 开发态 5173;后端地址在页面左上角填（CORS 已开）
 ```
 
@@ -400,7 +401,7 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 | 契约（可观测看板） | `check_m7_3_metrics.py` **12 条**（`capabilities.metrics` + 报表行为 6 + 前端静态 6，其中一条盯"冷热分层读数"）；反向 `reverse_m7_3_metrics.py` **15 条**（多出来的四条盯"能力自述的取数时机"：守卫补拉 /「刷新」自救 / 不把"连不上"说成"还没读到" / 空白名单不冒充"不支持的类型"，另有两条盯"冷热分层被画平"：拿总行数当比率分母 / 冷启动那一套数不画出来） |
 | 契约（安全收口 + 桌面壳） | `check_m7_4_security.py` **22 条**（限流 10 + 登出 1 + 路由守卫扫描 1 + CSP/CORS 2 + 桌面壳 3 + 前端静态 2 + …）；反向 `reverse_m7_4_security.py` **21 条** |
 | 改了前端忘了构建 | 契约第 1 条就会红：产物摘要与当前源码不一致 |
-| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 19 条）+ `browser_m7_2_kb.cjs`（知识库页 21 条：原 12 + 实时清单 9）+ `browser_m7_3_metrics.cjs`（可观测看板 22 条，含"样本不够要画 `—` 不是 0"、"冷启动那次拒答没被算进拒答率"这两条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_p0_6_access.cjs`（角色与可见范围 23 条：文档侧授权弹层、**组侧「文档权限」三态与勾选保存**、运维页签与接口状态）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 打开 compose 里那份产物 —— 307 落登录页、登录卡片渲染、能力自述同源 200、控制台干净；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的（不随仓库发布） |
+| 浏览器实测（按需，不进回归） | `serve_fake_backend.py`（假后端，`>>> QUERY` 行会打出后端真正解析出的旋钮、**上传的文档也真的会入到它的假向量库里**）+ `browser_m7_frontend.cjs`（聊天页 19 条）+ `browser_m7_2_kb.cjs`（知识库页 21 条：原 12 + 实时清单 9）+ `browser_m7_3_metrics.cjs`（可观测看板 22 条，含"样本不够要画 `—` 不是 0"、"冷启动那次拒答没被算进拒答率"这两条，以及"直接落在 `#/metrics` 也要自己补拉能力 / 能力打空点「刷新」能自救"两条）+ `browser_m7_4_security.cjs`（**桌面壳场景** 10 条：起壳自己的回环服务、`?backend=`、跨源问答、退出撤销、限流可见）+ `browser_p0_6_access.cjs`（角色与可见范围 23 条：文档侧授权弹层、**组侧「文档权限」三态与勾选保存**、运维页签与接口状态）+ `browser_container_smoke.cjs`（**真容器**冒烟 8 条：`BASE=http://127.0.0.1:8080/` 验 **API-only** —— `/health`、`/` 回 JSON（不是 307 到页面）、`/docs`、`/static/app/` 404、能力自述；登录之后的问答要有真账号口令，归人工）；跑法与结果记在维护者本地的（不随仓库发布） |
 
 **三个不进回归的验证件**（在同一个目录里，但**不会**被 `check_*` / `reverse_*` 的 glob 扫到）:
 
@@ -427,9 +428,9 @@ cd web && npm run dev            # 开发态 5173;后端地址在页面左上角
 
 **两条容易踩的**:
 
-* **产物是入库的**（`src/project_rag/api/static/app/`）—— Python 侧与 Docker 镜像都不装 node，
-  代价是改完前端必须 `npm run build`；判据是**内容摘要**不是 mtime（mtime 会被"反向测试还原 /
-  checkout / clone"假红）；
+* **入库的是兼容副本**（`src/project_rag/api/static/app/`；`web/dist` 是构建中间产物、已忽略）——
+  Python 侧与 Docker 镜像都不装 node，代价是改完前端必须 `npm run build`；判据是**内容摘要**
+  不是 mtime（mtime 会被"反向测试还原 / checkout / clone"假红）；
 * **预览折叠的是父块**：向量库里写的是子块、父块正文挂在每个子块的 `parent_content` 上，
   所以 `GET /documents/{id}/chunks` 按 `parent_id` **折叠**回去 —— 只按子块列出来会把
   "入库 42 块 / 预览 15 段"显示成 42 段，用户以为我们丢了数据；

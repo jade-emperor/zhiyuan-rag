@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         提之前值得先看两处，能省一轮讨论：
-        - `scripts/README.md`：这个项目已经保证了什么（23 套契约 + 15 份反向测试），
+        - `scripts/README.md`：这个项目已经保证了什么（38 套契约 + 29 份反向测试），
           你的建议可能与已有能力重叠；
         - 代码里的注释：若干"看起来更好但被否掉"的写法都写明了原因（例如
           `adapters/bm25_index.py` 为什么不把 BM25 搬进 Milvus）。

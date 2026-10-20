@@ -13,6 +13,7 @@
 | **权限隔离** | 角色、分组与文档级权限三层协同，细粒度控制知识可见范围。 |
 | **多模态理解** | 接入 MinerU 解析 PDF 图文，图片经 OSS 内容寻址存储，按需签名后交给多模态模型。 |
 | **可观测运营** | 分段延迟、拒答率、截断率与模型消耗统一入账，让每一次优化都有数据依据。 |
+| **反馈闭环** | 每条回答可标「有帮助 / 没帮助」（带当轮问答快照）；运维台按窗口看负反馈率与逐条 badcase，一点回到原会话。 |
 
 ### 工程底座
 
@@ -175,7 +176,11 @@ data/
 
 ### 6. 初始化与集合管理（都幂等，可重跑）
 
-**6.1 建 FAQ 表并灌数据**
+**6.1 灌 FAQ 数据（表由服务自动建）**
+
+表不用自己建：服务启动时 `CREATE TABLE IF NOT EXISTS`（幂等，与老表同形）。
+下面这段只用于**从 CSV 批量灌**（会先 `TRUNCATE`，别在有线上数据时跑）；只改一两条请走界面
+「FAQ」页（管理员），改完下一次提问就生效。
 
 ```bash
 uv run python - <<'PY'
@@ -268,8 +273,9 @@ uv run project-rag-api                                      # HTTP + WebSocket �
 uv run project-rag <子命令> --help                           # 每个子命令的参数见这里
 ```
 
-浏览器打开 **`http://127.0.0.1:18080/`**（307 → `/static/app/`）就是那份 Vue 界面：上面这些能力在界面里
-是「对话 / 历史 / 知识库 / FAQ / 报表 / 反馈 / 账号与权限」七页（按角色显示：**员工**看到「对话 + 历史 + 知识库」，**运维**看到「对话 + 历史 + 报表 + 反馈」，**管理员**七页全有）。
+浏览器打开 **`http://127.0.0.1:18080/`**（307 → `/static/app/`）就是那份 Vue 界面
+（`api.serve_frontend` 默认开；关掉时后端只发 API）：上面这些能力在界面里
+是「对话 / 历史 / 知识库 / FAQ / 报表 / 反馈 / 账号与权限」七页（按角色显示：**员工**看到「对话 + 历史」，**运维**看到「对话 + 历史 + 报表 + 反馈」，**管理员**七页全有；后端每页各自 `require_knowledge` / `require_reports` / `require_admin`，藏起来只是不给点）。
 账号没有注册入口，先建一个：
 
 ```bash
@@ -295,7 +301,10 @@ mkdir -p logs data/uploads data/mineru   # 容器要写的三个目录（缺了 
 docker compose up -d --build        # 一次起全套：中间件 + app（首次要构建镜像，最久）
 docker compose ps                   # app 那行要是 healthy（首次最多等 3 分钟：启动预热要加载 BGE-M3）
 curl http://localhost:8080/health
-# 浏览器打开 http://localhost:8080/ —— 307 → /static/app/，就是那个 Vue 前端
+# 容器默认 **API-only**（compose 里 RAG_API__SERVE_FRONTEND=false）：8080 上没有页面，根路径回一段 JSON。
+# 看页面有两条路：① 另开 `./scripts/dev.sh web 8080`（Vite，5173，连容器后端）；
+# ② 把该变量改回 true 再 `docker compose up -d app` —— 镜像里带一份构建那一刻的兼容副本，
+#    / 会 307 到 /static/app/（那份产物不随源码更新，改前端要重新构建镜像）。
 ```
 
 - **地址用服务名**：`standalone:19530` / `mysql:3306` / `redis:6379`。同一个 compose 网络里，
@@ -308,8 +317,9 @@ curl http://localhost:8080/health
   compose 里已给 MinerU 申请 GPU（`gpus: all` + `MINERU_DEVICE_MODE=cuda`）；没有 GPU 的机器
   把这两处**一起**改回 CPU，别只删 `gpus`（容器里会看不见卡）。
 - **端口有三个角色，别混**：`18080` = 宿主上的**代码后端**（`uv run project-rag-api` 或
-  `./scripts/dev.sh serve`，改完源码直接跑、不必重建镜像），`8080` = 容器里的 app（上面这条命令；
-  一个进程同时发页面和接口），`5173` = vite 开发服务器（只发页面）。当前谁占着：`./scripts/dev.sh ports`。
+  `./scripts/dev.sh serve`，改完源码直接跑、不必重建镜像；**兼容模式下也发页面**），
+  `8080` = 容器里的 app（**API-only**，页面不在这一口），`5173` = vite 开发服务器（只发页面）。
+  当前谁占着：`./scripts/dev.sh ports`。
   **两个后端可以同时跑**（会话/向量/限流配额都在中间件里，同源不撕裂），代价是模型显存各占一份。
 - **只想起中间件**（在宿主上 `uv run` 开发）：`docker compose up -d standalone mysql redis`。
 - **⚠️「启动」有三个入口，起的服务集合不一样 —— 前端在不在，先看你在哪个入口**：
@@ -317,15 +327,15 @@ curl http://localhost:8080/health
   | 入口 | 起了什么 | 前端在 |
   |---|---|---|
   | `./scripts/dev.sh up` | 只起中间件三件（standalone / mysql / redis） | **没有前端** |
-  | `docker compose up -d` | compose 里全部服务（含 `app`，也含 Attu 那个 Milvus 管理界面） | `http://localhost:8080/` |
-  | `./scripts/dev.sh app` | 中间件 + `app` 容器（等价于只把容器那份补起来） | `http://localhost:8080/`（镜像里的那份） |
-  | `./scripts/dev.sh serve` | 什么容器都不起，只跑工作区源码 | `http://localhost:18080/`（你正在改的那份） |
+  | `docker compose up -d` | compose 里全部服务（含 `app`，也含 Attu 那个 Milvus 管理界面） | **没有页面**（容器只发 API）；用 `./scripts/dev.sh web 8080` |
+  | `./scripts/dev.sh app` | 中间件 + `app` 容器（等价于只把容器那份补起来） | 同上；要容器发页面得设 `RAG_API__SERVE_FRONTEND=true`（发镜像里的兼容副本） |
+  | `./scripts/dev.sh serve` | 什么容器都不起，只跑工作区源码 | `http://localhost:18080/`（工作区源码 + 兼容副本，`config.yaml` 默认开） |
 
   这就是"有时候启动 docker 会自动起前端、有时候不会"的全部原因 —— 不是随机，是入口不同。
   **谁现在在发前端、发的是哪一份**：`./scripts/dev.sh status`（它会把容器/镜像里的产物摘要与工作区
   的并排打出来）。
-- **镜像里的前端是"构建那一刻"的**：`npm run build` 只改工作区，容器照旧发旧产物（于是会出现
-  "前端在，但不是我刚改的那份"）。改完 `web/` 要让容器跟上，只有一条路：
+- **镜像里的前端是"构建那一刻"的**（指 `serve_frontend=true` 的兼容模式）：`npm run build` 只改工作区，
+  容器照旧发旧产物（于是会出现"前端在，但不是我刚改的那份"）。改完 `web/` 要让容器跟上，只有一条路：
   `./scripts/dev.sh app --build`（先构建前端、再重建镜像、再起容器 —— 顺序在契约里钉着）。
 - **模型与语料挂卷、不进镜像**：`./models` 与 `./data`。配置里的相对路径是按**项目根**解析的，
   所以容器里的路径与宿主一致（`/app/models/bge-m3`、`/app/data/corpus/...`）。
@@ -551,7 +561,7 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | FAQ 缓存 | Redis 短路 + TTL + 装配期/调用期双重降级；兜底答案也缓存 | `adapters/cache_redis.py` / `application/answer_faq.py` |
 | 多轮会话 | `conversations` 表 + 最近 5 轮裁剪（写入与裁剪同事务）+ 参数化查询 | `adapters/conversation_mysql.py` |
 | 流式帧协议 | `sources` / `token` / `done` 三类帧；**非流式入口就是流式的收拢器**（逐字一致） | `application/streaming.py` |
-| HTTP / WebSocket | 29 个业务端点（`/api/v1` 下：问答、流式 WS、会话增删查、来源、认证、能力自述、文档上传/清单/预览/删除、报表、账号与组、两个方向的文档授权）+ `/health` 与前端静态入口 | `api/app.py` |
+| HTTP / WebSocket | 44 个业务端点（43 个 HTTP + 1 个 WebSocket，全在 `/api/v1` 下：问答、流式 WS、会话目录/历史/反馈、来源、认证、能力自述、文档上传/清单/预览/删除、FAQ 管理、延迟与消耗报表、反馈看板、账号与组、两个方向的文档授权）+ `/health` 与静态入口 | `api/app.py` |
 | 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、**三种角色**：`employee`（检索问答）/ `ops`（问答 + 报表，**不能**管理）/ `admin`（全部 + 管理）；"能干什么"只在 `domain/auth.py` 的三张能力表里，接口各自 `require_knowledge` / `require_reports` / `require_admin`，前端只是"不给点" | `domain/auth.py` / `application/security.py` / `api/auth.py` |
 | 账号与可见范围 | 管理员可建号 / 删号 / 改密码 / 建组（一类员工）；**文档可见范围**按"某个人"或"某个组"授权，**没配规则 = 人人可见**（规则只用来收窄）；检索、清单、预览三处同时生效 | `domain/access.py` / `application/access.py` / `adapters/access_mysql.py` |
 | 消耗报表 | provider 回报的 token 落进账本（模型 / 输入 / **命中缓存** / 输出四个字段），按 `cost.models` 的**三档 × 两时段**单价折成钱（命中 vs 未命中差 50 倍、高峰 vs 空闲差 2 倍）。**时段 = 北京时间工作日 ∩ 09:00–12:00 / 14:00–18:00 ∩ 非中国法定节假日**（价值表原文；节假日表 `cost.holidays` 每年照国务院通知补一行），账本时间戳**带时区**（容器 UTC / 宿主 CST 都不会判错）；**没配单价 → 报"未配置"**，**没量到 / 无时间戳 / 无时区 / 无日历 / 缓存不明 → 各自单独计数**，都不显示成 0 | `application/cost.py` / `config.yaml` 的 `cost` 段 |
@@ -632,16 +642,18 @@ llm_ttft_ms=- think_tokens=0                         # 压根没调模型（FAQ 
 src/project_rag/
 ├── domain/          纯数据模型（只用标准库）
 ├── ports/           能力声明：llm / embedder / vector_store / keyword_index / reranker /
-│                    chunker / faq / matcher / cache / conversation / document_source
+│                    chunker / faq / feedback / matcher / cache / conversation /
+│                    sessions / document_source
 ├── adapters/        唯一碰第三方 SDK 的地方：DeepSeek / BGE-M3 / BGE-Reranker /
 │                    Milvus / BM25 / MySQL / Redis / jieba 分词 / 文档解析与装载
 ├── application/     用例：合流路由、RAG 检索与生成、FAQ、缓存、帧协议、切分入库、问候
 ├── observability/   日志装配 + 延迟账本
 ├── cli/             命令行入口与组合根（Deps：全是惰性工厂）
-├── api/             FastAPI 接口层 + 前端产物（static/app/ 由 web/ 构建进来）
+├── api/             FastAPI 接口层 + 兼容副本（static/app/，由 web/ 构建后同步进来）
 └── desktop.py       桌面壳（只开窗：本地回环托管产物，或 --remote 直接开后端那份）
 config/config.yaml   全部可调项（检索旋钮、模型路径、设备、思考档位、阈值、表名）
-web/                 前端工程（Vite+Vue3+TS）：`npm run build` 把产物写进 src/project_rag/api/static/app/
+web/                 前端工程（Vite+Vue3+TS）：`npm run build` 先产出 web/dist（可独立部署，不入库），
+                     再把一份兼容副本同步进 src/project_rag/api/static/app/（镜像与桌面壳用）
 docker-compose.yaml  中间件：Milvus(etcd+minio) / MySQL / Redis / Attu ＋ `app`(服务本体)
 Dockerfile           服务本体的镜像（中间件不进它）
 API.md               HTTP / WebSocket / CLI 接口文档
@@ -653,8 +665,8 @@ API.md               HTTP / WebSocket / CLI 接口文档
   扫描件/PDF 内嵌图片走**可选**的 MinerU 服务（`RAG_IMAGES__ENABLED=true`），
   不开时仍是 PyMuPDF 的纯文本路径；MinerU 的依赖与模型不在基础镜像里（见 `services/mineru/`）。
 - **镜像已在真机构建并跑起来过**（之前"开发环境里没有 `docker` 命令"那条已作废）：
-  `docker compose up -d --build` 构建成功、app 变 healthy、宿主 8080 上打开的就是仓库里这份
-  Vue 前端（容器内预热 7649ms、`/static/app/` 200、旧调试页 404）。
+  `docker compose up -d --build` 构建成功、app 变 healthy、8080 上 `/health` 200（容器默认 API-only；
+  页面用 `./scripts/dev.sh web 8080`，或把 `RAG_API__SERVE_FRONTEND` 设回 true 走镜像里的兼容副本）。
   **体积 ~11G 的成因已量清**：venv 7.0G 里 `nvidia` 3.2G + `torch` 1.2G + `triton` 0.9G = 5.3G 是 CUDA 相关；
   想要瘦身版用 `docker build --build-arg TORCH_BACKEND=cpu`（代价：容器里不能再用 GPU；
   ⚠️ 这条路本机**没验成** —— 它要从 `download.pytorch.org` 取 torch/triton，实测卡住 15 分钟无进展，
@@ -685,7 +697,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
 
 | | 内容 |
 |---|---|
-| **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端构建产物** `src/project_rag/api/static/app/`、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` |
+| **在仓库里** | 后端源码 `src/`、前端源码 `web/src/` 与两个锁文件、**前端兼容副本** `src/project_rag/api/static/app/`（`web/dist` 是可独立部署的产物，已忽略、不入库）、配置 `config/`、`Dockerfile` / `docker-compose.yaml`、`API.md`、`CHANGELOG.md`、演示语料 `demo/`、验收脚本 `scripts/acceptance/` |
 | **不在仓库里** | `docs/`（维护者的决策与状态文档）、`data/`（语料与评估集：第三方版权）、`models/`（4.4G 权重，按上面第一节那一行命令下载）、`.env`（密钥 —— 用 `.env.example` 复制一份填）、`logs/`、`.cache/`、`web/node_modules/`（`cd web && npm ci` 还原）、`scripts/tools/`（**离线工具**：造评估集 / 灌 FAQ / 下模型 / 跑 RAGAS / A-B 读数。它们跑在 `data/` 与本地表上，所以**不随仓库发布** —— 下面提到 `scripts/tools/xxx.py` 的命令，公开 clone 上跑不了；README 里凡是能公开复现的步骤都给了等价的内置命令） |
 
 后两条是**刻意的**，不是忘了：

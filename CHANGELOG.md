@@ -7,6 +7,16 @@
 >（契约脚本名），因为这个项目的规矩是"能验证的才算数"。
 
 ## [Unreleased]
+### 变更（部署形态：前端产物与容器）
+- **构建产物两处**：`npm run build` 先产出 `web/dist`（可独立交给 Nginx / 静态服务器，**不入库**），
+  末尾再把一份**兼容副本**同步进 `src/project_rag/api/static/app/`（桌面壳与一体化模式用）；
+  两条路径都带 `source-digest`。
+- **新开关 `api.serve_frontend`**（默认 `true`，兼容旧部署）：关掉时后端不挂 `/static`，根路径回一段
+  JSON（`{"mode":"api-only",…}`）而不是 307 —— 前后端分离时"打开 8080 只看到 404"的坑由这条消掉。
+  `docker-compose.yaml` 的 `app` 服务显式设为 `false`：**容器只发 API**，页面由 Vite / Nginx 单独发。
+- `scripts/dev.sh` 短命令重写（`backend` / `web` / `frontend` / `status` / `ports`），端口分层写进脚本头部；
+  容器 smoke 与 `check_m6_deploy` 跟着服务集调整。
+
 ### 新增（答案反馈）
 - **接口**：`POST /api/v1/feedback`（`up` / `down` / `none`=撤销，Bearer+归属）、
   `GET /api/v1/reports/feedback`（运维/管理员；`rating` 过滤、`days=0` = 全部历史）。

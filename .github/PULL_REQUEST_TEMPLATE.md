@@ -12,7 +12,7 @@
 - [ ] `uv run pyright src scripts` → 0 error
 - [ ] 相关契约脚本 → `0 失败`
 - [ ] 相关反向 runner → `全红`
-- [ ] 改了前端：`cd web && npm run typecheck && npm run build`（产物必须一起提交）
+- [ ] 改了前端：`cd web && npm run typecheck && npm run build`（兼容副本 `src/project_rag/api/static/app/` 与 `source-digest.txt` 必须一起提交；`web/dist` 不入库）
 - [ ] 跨模块改动：跑了全量回归（权威清单 = `scripts/README.md`；`./scripts/dev.sh all`）
 
 ## 自检（勾选）

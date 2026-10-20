@@ -20,10 +20,12 @@
 uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host / api.port
 ```
 
-浏览器打开 `http://<host>:<port>/` 就是前端 app（`307` → `/static/app/`）。
+`api.serve_frontend=true`（默认）时，浏览器打开 `http://<host>:<port>/` 就是前端 app（`307` → `/static/app/`）；
+设为 `false`（compose 里的容器）时**只发 API**，`/` 回一段 JSON、`/static` 不挂载。
 
-**三个口，别混**：`18080` = 宿主上的代码后端（跑当前源码）；`8080` = 容器里的 app（页面与接口同一个进程）；
-`5173` = Vite 开发服务器（只发页面）。前两个可同时跑。
+**三个口，别混**：`18080` = 宿主上的代码后端（跑当前源码，兼容模式下也发页面）；
+`8080` = 容器里的 app（**API-only**，页面由 Vite / Nginx 单独发）；`5173` = Vite 开发服务器（只发页面）。
+前两个可同时跑。
 
 ## 目录
 
@@ -38,11 +40,12 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 - **Base URL**：`http://<host>:<port>`；业务接口**一律在 `/api/v1` 下**（从 `/api/*` 迁完，没有留别名）。
   根上只有三个东西：`/health`、`/`（307 跳前端）、`/static`（静态资源，前端产物在 `/static/app/`）。
+  **API-only 部署**（`api.serve_frontend=false`）：`/` 改为回一段 JSON（`{"mode":"api-only",…}`），`/static` 不挂载。
 - **请求头**：业务接口一律带 `Authorization: Bearer <令牌>`（`POST /api/v1/auth/login` 获取）；
   有请求体的再带 `Content-Type: application/json`。**WebSocket 用 `?token=<令牌>`**
   （浏览器不能给 WS 设自定义头）。
 - **无状态**：服务端不发 cookie。`session_id` 指一段对话，令牌证明你是谁 —— 两件事，都由调用方保存。
-  会话**绑在账号上**：读别人的会话是 `403`。
+  会话**绑在账号上**：读别人的会话是 `403`（**管理员可读**，见 §7.3；没有归属记录的会话谁都不放行）。
 - **角色三种（闭集）**：`employee`（问答 + 看清单）/ `ops`（问答 + 报表）/ `admin`（全部）。没有注册接口。
 
 **错误码**：
@@ -1129,6 +1132,8 @@ Redis 故障 → **降级放行**（fail-open）+ WARNING：限流是保护不�
 - **公开 schema 的权威是 `/openapi.json`**：本文档与它冲突时以它为准，并回来改本文档。
 - **兼容性：只增不改** —— 新增字段给默认值；删字段 / 改类型 / 改路由属于破坏性变更，
   要同步改 `scripts/acceptance/check_m5_api.py`（端点契约的唯一权威）。
+- 本版新增（都是**新增**，老行为不变）：`GET/POST /admin/faq`、`PATCH/DELETE /admin/faq/{id}`、
+  `POST /feedback`、`GET /reports/feedback`、`GET /sessions?scope=all`；`GET /history/{id}` 对管理员放行有归属的会话。
 - 路由前缀一律 `/api/v1`，老路径已删除（那是唯一不用背兼容包袱的窗口）：`/api/query` → `/api/v1/query`、
   `/api/stream` → `/api/v1/stream`、`/api/create_session` → `/api/v1/create_session`、
   `/api/history/{id}` → `/api/v1/history/{id}`、`/api/sources` → `/api/v1/sources`、

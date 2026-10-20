@@ -38,7 +38,8 @@ uv run python -c "from modelscope import snapshot_download as d; \
 # 5) 起服务（两个角色别混：18080 = 宿主上的代码后端；8080 = 容器里的 app）
 uv run project-rag-api            # 裸跑读 config.yaml，绑 0.0.0.0:18080
 ./scripts/dev.sh serve            # 同一件事的短命令 + 端口占用守卫（带端口参数可换口）
-docker compose up -d app          # 或者整份用容器跑（宿主 8080，页面与接口同一个进程）
+docker compose up -d app          # 或者整份用容器跑（宿主 8080，**只发 API**；页面见下）
+./scripts/dev.sh web 8080         # 页面走 Vite（5173）连容器后端；或把 RAG_API__SERVE_FRONTEND 设回 true
 ```
 
 **没有模型/语料也能跑**：验收脚本对缺失的外部依赖是 **SKIP 并点名 owner**，不是 FAIL。
