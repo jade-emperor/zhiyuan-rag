@@ -276,7 +276,7 @@ uv run python scripts/acceptance/check_m3_bm25_cache.py     # 5 通过 / 0 失�
 uv run python scripts/acceptance/reverse_m3_bm25.py         # 反向测试：4 条全红（原地改 adapters/bm25_index.py，finally 还原）
 ```
 
-**权威 = `check_m3_bm25_cache.py` 的 docstring**：3938 块时 `VectorStore.fingerprint()` 要
+**权威 = `check_m3_bm25_cache.py` 的 docstring**：当时 3938 块的语料上，`VectorStore.fingerprint()` 要
 **397.6ms** 而**每次检索都要调**，真正的 BM25 打分只要 **~1ms** —— 所以指纹先问 Redis（存 sha256
 摘要，不是 250KB 的整条指纹），未命中才回源。五条契约分别钉「省了」与「没省出问题」：
 TTL 内不再回源 / 过期后变化仍被发现 / 缓存故障只降级（**不许"当作没变"**，那是静默错误）/
@@ -300,7 +300,7 @@ uv run python scripts/acceptance/reverse_p0_8_account.py   # 反向测试：5 �
 **切分与写入**（切分器两级偏移都切得出自己且与 `split_text` 分段一致、`chunk_documents` 算页码
 并在偏移数不符时**当场报错**、不报偏移的切分器给 `None`（**不许猜**）、跨页块取起始页、
 `Citation.page` 跟着子块走、Milvus 往返、**老集合读得回来但写入当场报错**）。
-⚠️ 页码是「块**开始**的那一页」：真语料里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」；
+⚠️ 页码是「块**开始**的那一页」：当时那批 PDF 里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」；
 ⚠️ 造 PDF 夹具用 **ASCII**；
 ⚠️ 夹具的**尺度**要让被测行为看得见（子块比一页还大就会把两页并进同一块，第二页永远验不到 ——
 ）；⚠️ langchain **1.x** 的 `add_start_index` 是**构造参数**。
@@ -312,7 +312,7 @@ uv run python scripts/acceptance/reverse_p0_8_account.py   # 反向测试：5 �
 uv run python scripts/acceptance/check_p0_4_ab.py      # 6 通过 / 0 失败（除阈值那条要真 FAQ 表外全内存）
 uv run python scripts/acceptance/reverse_p0_4.py       # 反向测试：6 条全红
 uv run python scripts/tools/ab_retrieval.py --limit 112 --configs rrf,weighted-5-5,weighted-3-7,weighted-7-3
-uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（真表 463 条，约 1 分钟；E 组最慢）
+uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（读真实 faq 表；约 1 分钟，E 组最慢）
 ```
 
 **权威 = `check_p0_4_ab.py` 的 docstring**：`overlaps()`（reference 的字符 3-gram 被某条 citation
@@ -322,7 +322,7 @@ uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（�
 
 **第六条是第三组（FAQ 阈值）**：`check_p0_4_ab` 直接 import 标定工具的 `probe` 与
 `NOISE_PROBES`（**探针口径只有一处**），只跑最快的 A/B/C 三组（0.8 秒）并断言
-`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数：**463 条语料上
+`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数（当时 463 条语料）：**463 条语料上
 区间 (0.303, 1.000]、余量 0.697，0.85 在区间内 → 不改默认**；反向 RT-4 把配置改成 0.20 会让它红。
 ⚠️ 区间只挡「分数太低」，挡不住「答成了隔壁那条」（近邻混淆）—— 那是排序问题，见
 规则见本节上一条。
