@@ -41,7 +41,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from _harness import check, report
+from _harness import SkipCheck, check, report
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_SRC = ROOT / "web" / "src"
@@ -498,14 +498,20 @@ def _() -> str:
     return f"错 {limit} 次 → 429(带 Retry-After);成功一次后计数清零(键 = socket 对端,不信 XFF)"
 
 
-@check("上传限流：超限 429（上传背后是几分钟的 CPU 嵌入,闸门更紧）")
+@check("上传限流：配了上限就按上限拦（429 + Retry-After），配 0 = 关掉这一档")
 def _() -> str:
+    """验的是**这一档限流生效**,不是"它该比另一档紧"。
+
+    两档的大小关系是**部署选择**(有人把 query 调得很低做压测,upload 反而更宽) ——
+    契约对它表态,结果就是"改一个参数验收就红",而代码其实好好的。
+    """
     from project_rag.config import get_settings
 
     limit = get_settings().api.rate_limit.upload
+    if limit <= 0:
+        raise SkipCheck("限流配置", "config.yaml 把 upload 档设成了 0（关闭）—— owner: 部署配置")
     store = _FakeAuth()
     client = _client(auth_store_factory=lambda: store, rate_limiter_factory=_memory)
-    assert limit < get_settings().api.rate_limit.query, "上传那一档该比问答更紧"
     token = client.post(
         "/api/v1/auth/login", json={"username": "boss", "password": "pw-123456"}
     ).json()["token"]

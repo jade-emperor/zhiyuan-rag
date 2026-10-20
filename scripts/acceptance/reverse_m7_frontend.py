@@ -94,15 +94,20 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-3  根路径直接回产物文件、不再跳 app（URL 不以 /static/app/ 结尾 → 相对资源解析错位）",
         target=APP,
-        old='        return RedirectResponse(url="/static/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)',
+        old=(
+            "        if serve_frontend:\n"
+            "            return RedirectResponse(\n"
+            '                url="/static/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT\n'
+            "            )"
+        ),
         new='        return FileResponse(_STATIC_DIR / "app" / "index.html")  # type: ignore[return-value]',
         needle="根路径跳前端 app",
     ),
     Case(
         title="RT-4  会话目录不再按账号过滤（谁的会话都能列出来）",
         target=APP,
-        old="        rows = await _call(catalog.list_for, user.user_id, limit=limit)",
-        new='        rows = await _call(catalog.list_for, "u-admin", limit=limit)',
+        old="                rows = await _call(catalog.list_for, user_id, limit=limit)",
+        new='                rows = await _call(catalog.list_for, "u-admin", limit=limit)',
         needle="sessions：无认证给空表",
     ),
     Case(
@@ -178,13 +183,29 @@ CASES: tuple[Case, ...] = (
         target=APP,
         old=(
             "        try:\n"
-            "            rows = await _call(catalog.list_for, user.user_id, limit=limit)\n"
-            "        except Exception as exc:  # noqa: BLE001"
+            "            if scope == \"all\":\n"
+            "                rows = await _call(catalog.list_all, limit=limit)\n"
+            "            elif user_id is None:  # 无认证模式:没有归属可过滤\n"
+            "                return SessionsOut(sessions=[], scope=scope)\n"
+            "            else:\n"
+            "                rows = await _call(catalog.list_for, user_id, limit=limit)\n"
+            "        except Exception as exc:  # noqa: BLE001 - 翻成 503 + 人话:裸 500 只显示\"Internal Server Error\"\n"
+            "            # 这条路径以前把存储层的异常直接抛给 FastAPI,前端拿到的是一句\n"
+            "            # \"Internal Server Error\" —— 用户看到的是\"会话都没了\",而真正的原因\n"
+            "            # (比如两张表排序规则不一致导致的 1267)一个字都没露出来。\n"
+            "            _logger.warning(\"读会话目录失败:%s\", exc, exc_info=True)\n"
+            "            raise HTTPException(\n"
+            "                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,\n"
+            "                detail=f\"读不到会话目录({type(exc).__name__}):{exc}\",\n"
+            "            ) from exc"
         ),
         new=(
-            "        if True:\n"
-            "            rows = await _call(catalog.list_for, user.user_id, limit=limit)\n"
-            "        elif False:  # noqa: BLE001"
+            "        if scope == \"all\":\n"
+            "            rows = await _call(catalog.list_all, limit=limit)\n"
+            "        elif user_id is None:  # 无认证模式:没有归属可过滤\n"
+            "            return SessionsOut(sessions=[], scope=scope)\n"
+            "        else:\n"
+            "            rows = await _call(catalog.list_for, user_id, limit=limit)"
         ),
         needle="sessions：无认证给空表",
     ),

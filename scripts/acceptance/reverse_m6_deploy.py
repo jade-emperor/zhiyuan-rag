@@ -230,7 +230,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-26 报 bug 模板写回「裸 uv run project-rag-api + 写死端口」（教人 curl 错端口）",
         ".github/ISSUE_TEMPLATE/bug_report.yml",
-        "- 容器里的 app：`docker compose up -d`（8080，页面和接口同一个进程）",
+        "- 容器里的 app：`docker compose up -d`（8080，**只发 API**；页面另用 `./scripts/dev.sh web 8080`）",
         "- 宿主上 `uv run project-rag-api`（18080）",
         "报 bug 的模板",
     ),
@@ -266,7 +266,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-31 `up` 起完不再说另外两条路（用户还是会去 8080 找前端）",
         "scripts/dev.sh",
-        "    printf '  要容器那份（%s，一个进程同时发页面与接口）：./scripts/dev.sh app\\n' \"$CONTAINER_PORT\"\n",
+        "    printf '  要容器后端（%s，API-only）：./scripts/dev.sh app\\n' \"$CONTAINER_PORT\"\n",
         "",
         "启动入口自报角色",
     ),
@@ -278,19 +278,10 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "启动入口自报角色",
     ),
     (
-        "RT-33 `app --build` 先建镜像后建前端（镜像里装进上一版产物，界面上看不出来）",
-        "scripts/dev.sh",
-        """    run bash -c 'cd web && npm run typecheck && npm run build'
-    run docker compose build app""",
-        """    run docker compose build app
-    run bash -c 'cd web && npm run typecheck && npm run build'""",
-        "启动入口自报角色",
-    ),
-    (
         "RT-34 `status` 读了两份摘要却不比较（「容器发的是旧前端」又变成要人自己看哈希）",
         "scripts/dev.sh",
-        '  printf \'\\n\\033[36m▸ 前端产物（改了 web/ 之后,容器里那份**不会**自己变）\\033[0m\\n\'\n  printf \'  容器/镜像里  %s\\n\' "${in_container:-（读不到：镜像没构建过，或容器没起且镜像不在）}"\n  printf \'  工作区       %s\\n\' "$in_workspace"\n  if [ -n "$in_container" ] && [ "$in_container" != "$in_workspace" ]; then',
-        '  printf \'\\n\\033[36m▸ 前端产物（改了 web/ 之后,容器里那份**不会**自己变）\\033[0m\\n\'\n  printf \'  容器/镜像里  %s\\n\' "${in_container:-（读不到：镜像没构建过，或容器没起且镜像不在）}"\n  printf \'  工作区       %s\\n\' "$in_workspace"\n  if [ -n "$in_container" ] && false; then',
+        '  if [ -n "$in_container" ] && [ "$in_container" != "$in_workspace" ]; then',
+        '  if [ -n "$in_container" ] && false; then',
         "启动入口自报角色",
     ),
 ]

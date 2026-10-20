@@ -256,11 +256,12 @@ def _() -> str:
     """
     panel = _strip_comments(_read("components/UploadPanel.vue"))
     assert "suffixes.value.length === 0" in panel, "空白名单没有单独分支"
-    assert panel.index("suffixes.value.length === 0") < panel.index("不支持的类型"), (
-        "先判了后缀再看白名单是否为空 —— 空的时候会说成「不支持的类型 …」"
-    )
-    assert "还没读到后端能力" in panel, "空白名单的话术没说是「没读到能力」"
-    return "空白名单单独一支:说「还没读到后端能力」并指路左上角「后端」;非空才判后缀"
+    # 判据是**分支顺序**,不是那句文案:文案属于产品措辞,会改;而"先把后缀判了"才是 bug
+    # (空白名单时用户会看到「暂不支持 .docx —— 可用格式为 」后面空着,被指去查错方向)。
+    assert panel.index("suffixes.value.length === 0") < panel.index(
+        "suffixes.value.includes"
+    ), "先判了后缀再看白名单是否为空 —— 空的时候会说成「暂不支持 …」"
+    return "空白名单单独一支且排在「后缀是否在白名单」之前(不锁具体文案)"
 
 
 @check("报表按窗口取数：1h 与 24h 传给账本的起点真的差 23 小时")

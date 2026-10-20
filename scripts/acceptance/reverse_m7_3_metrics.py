@@ -164,7 +164,7 @@ CASES: tuple[Case, ...] = (
         target=UPLOAD_PANEL,
         old=(
             "  if (suffixes.value.length === 0) {\n"
-            "    return '还没读到后端能力(capabilities)—— 先看左上角「后端」是否连通,再重进这一页'\n"
+            "    return '服务能力尚未加载，请刷新页面或检查服务连接后重试'\n"
             "  }\n"
         ),
         new="",

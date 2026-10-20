@@ -1254,10 +1254,17 @@ def _() -> str:
             "先在 Windows 侧 docker compose up -d"
         ) from exc
 
-    # 临时集合:验收不该碰生产集合,也不该留下垃圾(模式同 FAQ 通道的临时表)
+    # 临时集合:验收不该碰生产集合,也不该留下垃圾(模式同 FAQ 通道的临时表)。
+    # **一致性档位钉死 strong**:这一条验的是"删完立刻能看见"(适配器语义),
+    # 而 read_consistency 是**部署旋钮**(默认 bounded,实测检索 399ms → 2ms)。
+    # 跟着配置走的话,把旋钮调成 bounded 会让这条契约红 —— 那不是代码坏了,
+    # 是"部署选择了最终一致"。档位映射另有专门一条检查(只记录传下去的常量)。
     store = MilvusVectorStore(
         settings.milvus.model_copy(
-            update={"collection": f"rag_acceptance_{uuid.uuid4().hex[:8]}"}
+            update={
+                "collection": f"rag_acceptance_{uuid.uuid4().hex[:8]}",
+                "read_consistency": "strong",
+            }
         )
     )
     # 用哈希嵌入而不是 BGE-M3:这几条只验契约(建/写/查/删/幂等),不验语义。
@@ -2349,8 +2356,10 @@ def _() -> str:
         )
     if RagConfig().rerank is not True:
         raise AssertionError(f"RagConfig.rerank 默认应为 True，实际 {RagConfig().rerank!r}")
-    if get_settings().rag.rerank is not True:
-        raise AssertionError("环境里读到的 rag.rerank 不是 True，检查 config.yaml")
+    # 生效值是**部署旋钮**:关掉重排做消融是合法用法。这里只要求它是个布尔
+    # (真/假都行) —— 对"它现在必须是 True"表态,等于让改配置的人替代码背锅。
+    if not isinstance(get_settings().rag.rerank, bool):
+        raise AssertionError(f"rag.rerank 该是布尔，实际 {get_settings().rag.rerank!r}")
 
     # 决策钉死:重排开关**不进** RetrievalOptions。
     if hasattr(RetrievalOptions(), "rerank"):
@@ -2363,7 +2372,7 @@ def _() -> str:
         source = (SRC / "cli" / "commands" / name).read_text(encoding="utf-8")
         if "settings.rag.rerank" not in source:
             raise AssertionError(f"cli/commands/{name} 没读 settings.rag.rerank —— 配置写了没人读")
-    return "rag.rerank 在 yaml 与默认值里都是 True；rag/search 两个命令都读它"
+    return "rag.rerank 在 yaml 里有键、类默认 True、两个命令都读它；生效值随部署（布尔）"
 
 
 @check("脚本自身：检查不许引用后文定义的帮助函数（@check 在定义时就立即执行）")
