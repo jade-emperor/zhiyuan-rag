@@ -139,6 +139,7 @@ async function signOut(): Promise<void> {
       <!-- 知识库这一页要 manage(页面上有上传/删除/授权)：页签必须与**那一页的要求**一致，
            否则员工看到一个点进去就被守卫弹回来的入口。 -->
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'knowledge' }">知识库</RouterLink>
+      <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'faq' }">FAQ</RouterLink>
       <RouterLink v-if="canViewReports" class="tab" :to="{ name: 'reports' }">报表</RouterLink>
       <RouterLink v-if="isAdmin" class="tab" :to="{ name: 'accounts' }">账号与权限</RouterLink>
     </nav>

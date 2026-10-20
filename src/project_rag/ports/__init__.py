@@ -7,7 +7,7 @@ from .chunker import TextChunker
 from .document_source import DocumentSource, ParsedDocument, SourceImage
 from .documents import DiskFile, DocumentStore
 from .embedder import Embedder
-from .faq import FaqStore
+from .faq import FaqAdminStore, FaqEditor, FaqStore
 from .image_store import ImageStore
 from .keyword_index import KeywordIndex
 from .ledger import LedgerStore
@@ -33,6 +33,8 @@ __all__ = [
     "ParsedDocument",
     "SourceImage",
     "Embedder",
+    "FaqAdminStore",
+    "FaqEditor",
     "FaqStore",
     "ImageStore",
     "KeywordIndex",

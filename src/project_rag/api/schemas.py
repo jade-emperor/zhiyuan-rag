@@ -830,3 +830,42 @@ class SetDocumentAclRequest(BaseModel):
 
     user_ids: list[str] = []
     group_ids: list[str] = []
+
+
+# ── FAQ 管理台 ────────────────────────────────────────────────────────────────
+# 上限与 ``application/faq_admin.py`` 里的常量同源:这边是 pydantic 的快速失败,
+# 那边才是给人看的错误话术(超长时要说清"最多多少字")。
+class FaqOut(BaseModel):
+    """一条问答对。"""
+
+    id: int
+    question: str
+    answer: str
+
+
+class FaqListOut(BaseModel):
+    """问答对清单(按 ID 升序)。``query`` 是服务端过滤后的结果,``total`` 是过滤前的总数。"""
+
+    entries: list[FaqOut]
+    total: int
+
+
+class CreateFaqRequest(BaseModel):
+    """新建问答对。长度由用例层校验(这里只挡住明显过大的请求体)。"""
+
+    question: str = Field(min_length=1, max_length=512)
+    answer: str = Field(min_length=1, max_length=8000)
+
+
+class UpdateFaqRequest(BaseModel):
+    """改问答对(字段可省;一个都不给 → 400)。"""
+
+    question: str | None = Field(default=None, max_length=512)
+    answer: str | None = Field(default=None, max_length=8000)
+
+
+class DeletedFaqOut(BaseModel):
+    """删除结果。``deleted=0`` = 本来就没有这条(删除是幂等的)。"""
+
+    entry_id: int
+    deleted: int

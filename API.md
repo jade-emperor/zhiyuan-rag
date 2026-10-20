@@ -80,7 +80,7 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 
 ## 2. 端点一览
 
-29 条业务路由 + `/health` + 前端。**认证**列：`—` 不需要；`Bearer` 任意登录账号；`Bearer+归属` 还得是这段会话的主人；
+业务路由见下表（另有 `/health` 与前端）。**认证**列：`—` 不需要；`Bearer` 任意登录账号；`Bearer+归属` 还得是这段会话的主人；
 `admin` 管理员；`运维/admin` 报表那两条（运维不是管理员，所以不走 `/admin/` 前缀）。
 
 | 方法 | 路径 | 用途 | 认证 |
@@ -109,6 +109,10 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `PATCH` | `/api/v1/documents/{document_id}` | 把一份文档挪到另一个目录 | admin |
 | `DELETE` | `/api/v1/documents/{document_id}` | 删文档（登记行 + 向量 + 上传的原件） | admin |
 | `GET` | `/api/v1/documents/{document_id}/chunks` | 预览入库后的父块 | Bearer |
+| `GET` | `/api/v1/admin/faq?query=…` | FAQ 问答对清单（`total` 是过滤前总数） | admin |
+| `POST` | `/api/v1/admin/faq` | 新增问答对（`201`；同问 `409`） | admin |
+| `PATCH` | `/api/v1/admin/faq/{entry_id}` | 改问答对（字段可省） | admin |
+| `DELETE` | `/api/v1/admin/faq/{entry_id}` | 删问答对（幂等，`deleted=0`） | admin |
 | `GET` | `/api/v1/reports/metrics` | 延迟报表 | 运维/admin |
 | `GET` | `/api/v1/reports/cost` | 消耗报表 | 运维/admin |
 | `GET` | `/api/v1/admin/users` | 账号列表 | admin |
@@ -777,6 +781,34 @@ PATCH /api/v1/documents/{document_id}   {"folder_id": "f_523f8bb13dc6"}
 只改归属：**不重切、不重灌、块 id 一个都不变**，所以是毫秒级的，历史引用也不受影响。
 `folder_id` 给空串 = 挪回未分类。目标目录不存在、或这份文档没有登记行（`unregistered`）都是 `404`。
 响应 `{"document_id": "…", "folder": "…"}`。
+
+### 9.9 FAQ 管理（admin）
+
+「命中即直答」那张表的增改删。它和 §9.1–§9.8 的文档不同：FAQ 的答案是人写的标准口径，
+**不走向量检索**；命中要靠近乎一字不差的问法（口径见 README 的 FAQ 一节）。
+
+```
+GET    /api/v1/admin/faq?query=String
+POST   /api/v1/admin/faq              {"question": "…", "answer": "…"}
+PATCH  /api/v1/admin/faq/{entry_id}   {"question": "…", "answer": "…"}   # 两个字段都可选
+DELETE /api/v1/admin/faq/{entry_id}
+```
+
+| 情况 | 行为 |
+|---|---|
+| 列表 | `200`，`{entries: [{id, question, answer}], total}`；`query` 对**问题与答案**做包含匹配（忽略大小写），`total` 是**过滤前**的总数 |
+| 问题为空 / 超 512 字；答案为空 / 超 8000 字 | `400` |
+| 同一个问题（压空白 + 忽略大小写后相同）已存在 | `409`，`detail` 点出已有条目的 ID |
+| 改不存在的 ID | `404` |
+| 删不存在的 ID | `200` + `{"entry_id": …, "deleted": 0}`（**幂等**） |
+| 空补丁（一个字段都不给） | `400` |
+| 员工 | `403`（先认证再授权，无令牌 `401`） |
+
+**改完下一次提问就生效**：Web 每个请求都读库（没有旁路缓存）；只有 `project-rag faq`
+那条 CLI 会读到 `cache.ttl_s` 的旧值，最多晚 5 分钟。
+
+**表由应用启动时建**（`ensure_table`，幂等，与老表同形 `question VARCHAR(512)` /
+`answer TEXT`）：空库不必先跑装载脚本，管理台就能录第一条。
 
 ---
 

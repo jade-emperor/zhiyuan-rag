@@ -672,6 +672,27 @@ def ensure_documents_schema(deps: Deps) -> str | None:
     return None
 
 
+def ensure_faq_schema(deps: Deps) -> str | None:
+    """输入:Deps。行为:确保 FAQ 表存在(**幂等**)。输出:失败原因;成功给 None。
+
+    **为什么在启动时建**:以前这张表只由(不随仓库发布的)FAQ 装载脚本创建 ——
+    空库起来后管理台新建条目会撞 ``Table 'rag.faq' doesn't exist``。建表语句与老表同形
+    (``question VARCHAR(512)`` / ``answer TEXT``),所以老库上是空操作。
+
+    与其它 ``ensure_*`` 同一条政策:失败只记警告,不拦启动(管理台真正读不到时回 503)。
+    """
+    if deps.faq_store_factory is None:  # 注入式部署(验收/假件):不碰真库
+        return None
+    try:
+        ensure = getattr(deps.faq_store_factory(), "ensure_table", None)
+        if ensure is None:  # 假件:不建表,也不算失败
+            return None
+        ensure()
+    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
 def ensure_conversation_schema(deps: Deps) -> str | None:
     """输入:Deps。行为:确保会话历史表存在**并把老表补到当前结构**(幂等)。输出:失败原因;成功给 None。
 

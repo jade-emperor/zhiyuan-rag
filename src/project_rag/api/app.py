@@ -84,11 +84,13 @@ from project_rag.api.schemas import (
     CostLineOut,
     CostOut,
     PeriodTotalOut,
+    CreateFaqRequest,
     CreateFolderRequest,
     CreateGroupRequest,
     CreateUserOut,
     CreateUserRequest,
     DeletedDocumentOut,
+    DeletedFaqOut,
     DeletedFolderOut,
     DeletedGroupOut,
     DeletedOut,
@@ -99,6 +101,8 @@ from project_rag.api.schemas import (
     DocumentPreviewOut,
     DocumentsOut,
     DocumentSummaryOut,
+    FaqListOut,
+    FaqOut,
     FolderDetailOut,
     FolderOut,
     FoldersOut,
@@ -137,6 +141,7 @@ from project_rag.api.schemas import (
     SetMembersRequest,
     SlowRowOut,
     SourcesOut,
+    UpdateFaqRequest,
     UpdateFolderRequest,
     UserOut,
     UsersOut,
@@ -159,6 +164,13 @@ from project_rag.application.accounts import (
     role_of,
 )
 from project_rag.application.captcha import issue_captcha, verify_captcha
+from project_rag.application.faq_admin import (
+    FaqExists,
+    create_entry,
+    delete_entry,
+    filter_entries,
+    update_entry,
+)
 from project_rag.application.security import TOKEN_TTL_SECONDS
 from project_rag.application.greeting import match_greeting
 from project_rag.cli.deps import (
@@ -169,6 +181,7 @@ from project_rag.cli.deps import (
     ensure_auth_schema,
     ensure_conversation_schema,
     ensure_documents_schema,
+    ensure_faq_schema,
     knowledge_callable,
 )
 from project_rag.config import PROJECT_ROOT, get_settings, project_path
@@ -1619,6 +1632,91 @@ def _group_notice(plan: GroupGrantPlan) -> str:
     return ";".join(parts) if parts else "没有变化"
 
 
+# ── FAQ 管理台 ────────────────────────────────────────────────────────────────
+# 读写走同一个存储(同一张表),但**只有管理台**走这几个函数:答题路径只认识
+# ``FaqStore.load_all``。这样"能不能改问答对"在类型上就能看见(见 ports/faq.py)。
+def _faq_store(deps: Deps) -> Any:
+    """输入:依赖。行为:取 FAQ 存储并确认它带写入能力。输出:存储。
+
+    只读实现(老的注入式假件)缺 add/update/remove 时回 503 并点名 ——
+    让它撑起"管理"只会把一次缺装配变成一堆看不出原因的 500。
+    """
+    store = _factory(deps, "faq_store_factory")
+    missing = [
+        name
+        for name in ("load_all", "add", "update", "remove")
+        if not callable(getattr(store, name, None))
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"这个 FAQ 存储不支持管理(缺 {', '.join(missing)})",
+        )
+    return store
+
+
+def _faq_error(exc: Exception) -> HTTPException:
+    """输入:用例层抛出的异常。行为:翻成状态码 + 人话。输出:要抛的 HTTPException。"""
+    if isinstance(exc, FaqExists):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"FAQ 存储出错({type(exc).__name__}):{exc}",
+    )
+
+
+def _faq_out(entry: Any) -> FaqOut:
+    """输入:领域问答对。行为:转出参。输出:FaqOut。"""
+    return FaqOut(id=entry.id, question=entry.question, answer=entry.answer)
+
+
+def _faq_list(deps: Deps, query: str) -> FaqListOut:
+    """输入:依赖、搜索词。行为:读全量 → 过滤。输出:清单(``total`` 是过滤前的总数)。"""
+    store = _faq_store(deps)
+    entries = tuple(store.load_all())
+    return FaqListOut(
+        entries=[_faq_out(entry) for entry in filter_entries(entries, query)],
+        total=len(entries),
+    )
+
+
+def _faq_create(deps: Deps, request: CreateFaqRequest) -> FaqOut:
+    """输入:依赖、请求体。行为:校验 + 查重 + 写入。输出:新问答对。"""
+    try:
+        return _faq_out(
+            create_entry(_faq_store(deps), question=request.question, answer=request.answer)
+        )
+    except Exception as exc:  # noqa: BLE001 - 用例层的三类错都翻成人话
+        raise _faq_error(exc) from exc
+
+
+def _faq_update(deps: Deps, entry_id: int, request: UpdateFaqRequest) -> FaqOut:
+    """输入:依赖、ID、请求体。行为:改一行(字段可省)。输出:改后的问答对。"""
+    try:
+        return _faq_out(
+            update_entry(
+                _faq_store(deps),
+                entry_id,
+                question=request.question,
+                answer=request.answer,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - 同上
+        raise _faq_error(exc) from exc
+
+
+def _faq_delete(deps: Deps, entry_id: int) -> DeletedFaqOut:
+    """输入:依赖、ID。行为:删一行(幂等)。输出:删掉的行数。"""
+    try:
+        return DeletedFaqOut(entry_id=entry_id, deleted=delete_entry(_faq_store(deps), entry_id))
+    except Exception as exc:  # noqa: BLE001 - 同上
+        raise _faq_error(exc) from exc
+
+
 def create_app(deps: Deps | None = None) -> FastAPI:
     """输入:依赖集合(不传就真实装配)。行为:建 FastAPI 应用并注册全部路由。输出:应用。
 
@@ -1649,6 +1747,10 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     conversation_problem = ensure_conversation_schema(deps)
     if conversation_problem:
         _logger.warning("会话历史表未就绪(建表失败):%s", conversation_problem)
+    # FAQ 表:管理台能新建条目,空库就不该再要求先手工跑装载脚本(见 cli/deps.ensure_faq_schema)
+    faq_problem = ensure_faq_schema(deps)
+    if faq_problem:
+        _logger.warning("FAQ 表未就绪(建表失败):%s", faq_problem)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
     # 验证码:存放要**一个进程一份**(票据回到同一实例才能取出答案),所以在建应用时就实例化;
@@ -2157,6 +2259,45 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"window 只支持 {'/'.join(_WINDOWS)}")
         auth.require_reports(user)
         return await _call(_cost, deps, window)
+
+    # ── FAQ 管理台(管理员专用) ───────────────────────────────────────────────
+    # 这四个接口改的是**答题用的那张表**:改完下一次提问就按新条目匹配。
+    # 只有 `project-rag faq` 那条 CLI 走 Redis 旁路缓存,会吃到最多 cache.ttl_s 的旧值。
+    @app.get("/api/v1/admin/faq", response_model=FaqListOut)
+    async def admin_faq(
+        query: str = "", user: User | None = Depends(auth.user)
+    ) -> FaqListOut:
+        """问答对清单(按 ID 升序)。``query`` 对问题与答案做包含匹配。
+
+        ``total`` 是**过滤前**的总数:界面上"共 N 条 / 筛出 M 条"两个数都必须有准,
+        只回过滤结果的话,搜索框一填就说不清库里到底有多少条。
+        """
+        auth.require_admin(user)
+        return await _call(_faq_list, deps, query)
+
+    @app.post("/api/v1/admin/faq", response_model=FaqOut, status_code=201)
+    async def admin_create_faq(
+        request: CreateFaqRequest, user: User | None = Depends(auth.user)
+    ) -> FaqOut:
+        """新增一条问答对(201)。空问题/超长 → 400,同问重复 → 409(回执点名已有 ID)。"""
+        auth.require_admin(user)
+        return await _call(_faq_create, deps, request)
+
+    @app.patch("/api/v1/admin/faq/{entry_id}", response_model=FaqOut)
+    async def admin_update_faq(
+        entry_id: int, request: UpdateFaqRequest, user: User | None = Depends(auth.user)
+    ) -> FaqOut:
+        """改一条(字段可省;一个都不给 → 400)。ID 不存在 → 404,改成别人的问法 → 409。"""
+        auth.require_admin(user)
+        return await _call(_faq_update, deps, entry_id, request)
+
+    @app.delete("/api/v1/admin/faq/{entry_id}", response_model=DeletedFaqOut)
+    async def admin_delete_faq(
+        entry_id: int, user: User | None = Depends(auth.user)
+    ) -> DeletedFaqOut:
+        """删一条。**幂等**:删不存在的给 ``deleted=0`` 而不是 404(重复点不该报错)。"""
+        auth.require_admin(user)
+        return await _call(_faq_delete, deps, entry_id)
 
     # ── 账号与可见范围(管理员专用) ───────────────────────────────────────────
     @app.get("/api/v1/admin/users", response_model=UsersOut)

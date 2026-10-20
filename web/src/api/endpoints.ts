@@ -18,6 +18,9 @@ import type {
   DocumentPreview,
   DocumentRecord,
   DocumentsOut,
+  DeletedFaqOut,
+  FaqEntry,
+  FaqListOut,
   FolderDetail,
   FolderRecord,
   FoldersOut,
@@ -315,6 +318,42 @@ export function adminSetDocumentAcl(
     `${API_PREFIX}/admin/documents/${encodeURIComponent(documentId)}/acl`,
     { method: 'PUT', body: payload },
   )
+}
+
+// ── FAQ 管理台(仅管理员)──────────────────────────────────────────────────
+/**
+ * 问答对清单。`query` 在服务端对问题与答案做包含匹配 —— 不是前端过滤:
+ * 答案正文可能上千字,全量搬给浏览器只为搜一次不划算。
+ */
+export function faqEntries(query = ''): Promise<FaqListOut> {
+  // 两个分支分开写：模板里 `${}` 出现在 `?` 之前，会让"路径清单对账"那条契约把它读成
+  // `/admin/faq{}`（一条不存在的路由）。与 `documents(folder)` 同一条写法。
+  if (!query) return request<FaqListOut>(`${API_PREFIX}/admin/faq`)
+  return request<FaqListOut>(`${API_PREFIX}/admin/faq?query=${encodeURIComponent(query)}`)
+}
+
+/** 新增一条。空问题/超长 400、同问重复 409(回执点名已有 ID)。 */
+export function createFaq(question: string, answer: string): Promise<FaqEntry> {
+  return request<FaqEntry>(`${API_PREFIX}/admin/faq`, {
+    method: 'POST',
+    body: { question, answer },
+  })
+}
+
+/** 改一条(字段可省;一个都不给 = 400)。 */
+export function updateFaq(
+  entryId: number,
+  patch: { question?: string; answer?: string },
+): Promise<FaqEntry> {
+  return request<FaqEntry>(`${API_PREFIX}/admin/faq/${entryId}`, {
+    method: 'PATCH',
+    body: patch,
+  })
+}
+
+/** 删一条(幂等:不存在的给 deleted=0,不报错)。 */
+export function deleteFaq(entryId: number): Promise<DeletedFaqOut> {
+  return request<DeletedFaqOut>(`${API_PREFIX}/admin/faq/${entryId}`, { method: 'DELETE' })
 }
 
 /** 非流式问答。**界面走 WebSocket**;这条留给"不要流式"的调用方与排障。 */

@@ -553,3 +553,23 @@ export type StreamFrame =
       session_id: string | null
     }
   | { type: 'error'; detail: string }
+
+// ── FAQ 管理台 ────────────────────────────────────────────────────────────────
+/** 一条问答对。`id` 是库里的自增主键(用它改/删,不用问题文本当标识)。 */
+export interface FaqEntry {
+  id: number
+  question: string
+  answer: string
+}
+
+/** `GET /api/v1/admin/faq` 的出参。`total` 是**过滤前**的总数。 */
+export interface FaqListOut {
+  entries: FaqEntry[]
+  total: number
+}
+
+export interface DeletedFaqOut {
+  entry_id: number
+  /** 0 = 本来就没有这条(删除是幂等的)。 */
+  deleted: number
+}

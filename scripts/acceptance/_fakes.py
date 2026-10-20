@@ -46,7 +46,11 @@ class FakeEmbedder:
 
 
 class FakeFaqStore:
-    """假 FAQ 存储。``error`` 模拟 MySQL 连不上,``delay`` 模拟慢查询。"""
+    """假 FAQ 存储。``error`` 模拟 MySQL 连不上,``delay`` 模拟慢查询。
+
+    同时满足 ``FaqStore``(读)与 ``FaqEditor``(写):管理台的接口要能整条走通。
+    写操作也记进 ``writes``,好让用例层"到底把清洗后的值传下来没有"可断言。
+    """
 
     def __init__(
         self, entries=(), *, error: Exception | None = None, delay: float = 0.0
@@ -55,6 +59,7 @@ class FakeFaqStore:
         self.error = error
         self.delay = delay
         self.loads = 0
+        self.writes: list[tuple[Any, ...]] = []
 
     def load_all(self):
         self.loads += 1
@@ -63,6 +68,35 @@ class FakeFaqStore:
         if self.delay:
             time.sleep(self.delay)
         return list(self.entries)
+
+    def add(self, question, answer):
+        from project_rag.domain import FaqEntry
+
+        entry = FaqEntry(id=max((e.id for e in self.entries), default=0) + 1, question=question, answer=answer)
+        self.entries.append(entry)
+        self.writes.append(("add", question, answer))
+        return entry
+
+    def update(self, entry_id, *, question=None, answer=None):
+        from project_rag.domain import FaqEntry
+
+        self.writes.append(("update", entry_id, question, answer))
+        for index, entry in enumerate(self.entries):
+            if entry.id == entry_id:
+                fresh = FaqEntry(
+                    id=entry.id,
+                    question=entry.question if question is None else question,
+                    answer=entry.answer if answer is None else answer,
+                )
+                self.entries[index] = fresh
+                return fresh
+        return None
+
+    def remove(self, entry_id) -> int:
+        self.writes.append(("remove", entry_id))
+        before = len(self.entries)
+        self.entries = [entry for entry in self.entries if entry.id != entry_id]
+        return before - len(self.entries)
 
 
 class FakeMatcher:

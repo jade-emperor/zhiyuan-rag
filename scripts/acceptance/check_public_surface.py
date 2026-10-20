@@ -77,6 +77,11 @@ MILESTONE = re.compile(
 )
 
 _DOCS = re.compile(r"(?<![-/\w])docs/")
+
+# SVG 路径数据里那个 ``M`` 是**绘图指令**(moveto),不是票号:``d="M6.5 9.2c…"`` 与
+# 图标表里的 ``'M12 5v14'`` 都算。判据 = 引号里以 M/m 开头、随后全是数字/空格/命令字母 ——
+# 里程碑引用后面跟的是中文或空格+词("M7.4 之后"),不会长成这样。
+_SVG_PATH = re.compile(r"""['"][Mm][\d.,\s]*[A-Za-z]""")
 # 忽略清单里出现目录名是**技术需要**（不是文档引用）—— 不进仓的规则必须写得出来。
 PATH_ONLY_FILES = (".gitignore", ".dockerignore")
 # 判据本身要能写出"被禁的形状"（否则这份文件没法描述自己），所以**只豁免这两份**：
@@ -116,12 +121,14 @@ def _scan(paths: list[str]) -> list[tuple[str, int, str, str]]:
         except (OSError, UnicodeDecodeError):
             continue  # 二进制 / 不可读 —— 不是文档面
         for lineno, line in enumerate(text.splitlines(), 1):
+            # 边界声明本身是合法的:同一行说清了"不发布",读者就不会顺着路径找过去。
+            boundary = any(marker in line for marker in BOUNDARY_MARKERS)
             for pattern in INTERNAL_PATTERNS:
-                if pattern in line:
+                if pattern in line and not boundary:
                     hits.append((rel, lineno, pattern, line.strip()))
                     break
             else:
-                found = MILESTONE.search(line)
+                found = None if _SVG_PATH.search(line) else MILESTONE.search(line)
                 if found:
                     hits.append((rel, lineno, found.group(0), line.strip()))
     return hits
