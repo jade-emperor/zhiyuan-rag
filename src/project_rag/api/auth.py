@@ -11,12 +11,18 @@ API 层的认证与授权:把「认证存储」包成 FastAPI 依赖 + WebSocket
 反过来,假如把"连不上库"也降级成无认证,那就是把一次数据库抖动变成一次**全网放行**,
 那是最坏的一种失败方式;所以这里**连不上就 503**,不放行。
 
-**会话归属的三种情况**(``check_owner``):
+**会话归属的四种情况**(``check_owner``):
 
 * 没配认证 → 放行(注入式测试);
 * 这个会话**没有主人**(从没绑过) → **拒绝**。不能放行:``owner_of`` 返回 None 有两种可能 ——
   "加认证之前建的老会话"和"别人瞎编的一个 ID",两者都**不该**让人读到内容;
-* 有主人但不是当前用户 → 拒绝(403)。
+* 有主人、是当前用户 → 放行;
+* 有主人、不是当前用户 → **管理员放行**(运维台要看"谁问了什么"才能迭代:答案质量、
+  拒答、改写效果都藏在真实问答里;``GET /sessions?scope=all`` 与
+  ``GET /history/{id}`` 是同一道口径),其他人 403。
+
+管理员这道口子是**显式**的:它由 ``require_admin`` 的同一套角色表定义(``User.is_admin``),
+不是"管理员恰好绕过了某一层"。
 """
 
 from __future__ import annotations
@@ -228,8 +234,10 @@ class Authenticator:
             return "未认证"
         owner = await run_in_threadpool(self._store.owner_of, session_id)
         if owner is None:
+            # 没有归属的会话连管理员也不放行:它要么是加认证之前的老数据,要么是编的 ID ——
+            # 「读别人的」是授权,「读一个不知道是谁的」是另一回事(内容可能不属于任何人)。
             return "这段会话没有归属记录(可能是加认证之前建的,或会话 ID 不存在)"
-        if owner != user.user_id:
+        if owner != user.user_id and not user.is_admin:
             return "这段会话不属于当前账号"
         return None
 

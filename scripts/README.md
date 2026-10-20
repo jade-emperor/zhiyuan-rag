@@ -16,8 +16,8 @@
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 27 套契约 + 27 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：36 套契约 + 27 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 28 套契约 + 28 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：37 套契约 + 28 份反向（要中间件 + 语料 + key）
 ```
 
 > **这几个数同时写在五个地方**：这里、`scripts/dev.sh` 的用法注释、
@@ -44,7 +44,7 @@
 
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
 分组依据是**一次实测探测**：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
-再跑全部 36 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与维护者的 WSL
+再跑全部 37 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与维护者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
 
@@ -72,7 +72,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 36 份检查 + 27 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 37 份检查 + 28 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标

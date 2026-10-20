@@ -88,9 +88,9 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `POST` | `/api/v1/query` | 非流式问答 | Bearer |
 | `WS` | `/api/v1/stream` | 流式问答（`sources` / `token` / `done` 帧） | `?token=` |
 | `POST` | `/api/v1/create_session` | 发新会话 ID（当场绑归属） | Bearer |
-| `GET` | `/api/v1/sessions` | 我名下的会话目录 | Bearer |
-| `GET` | `/api/v1/history/{session_id}` | 读最近 N 轮 | Bearer+归属 |
-| `DELETE` | `/api/v1/history/{session_id}` | 清空一段会话 | Bearer+归属 |
+| `GET` | `/api/v1/sessions` | 会话目录（`scope=all` 仅管理员） | Bearer |
+| `GET` | `/api/v1/history/{session_id}` | 读最近 N 轮 | Bearer+归属（管理员可读任意有归属的） |
+| `DELETE` | `/api/v1/history/{session_id}` | 清空一段会话 | Bearer+归属（管理员同上） |
 | `GET` | `/api/v1/sources` | 语料里真实有哪些来源 | Bearer |
 | `POST` | `/api/v1/auth/login` | 账号密码换令牌 | — |
 | `GET` | `/api/v1/auth/me` | 当前账号 + 三个能力布尔值 | Bearer |
@@ -506,27 +506,38 @@ POST /api/v1/create_session
 
 `uuid4`，**当场把归属绑到你账号上**：光有 ID 也读不到别人的会话（`403`）。
 
-### 7.2 我名下的会话目录
+### 7.2 会话目录（我的 / 管理员看全部）
 
 **请求**
 
 ```
-GET /api/v1/sessions?limit=50
+GET /api/v1/sessions?limit=50&scope=mine
+GET /api/v1/sessions?limit=100&scope=all
 ```
 
 | 查询参数 | 范围 | 默认 |
 |---|---|---|
 | `limit` | 1..200 | 50 |
+| `scope` | `mine` / `all` | `mine` |
 
 **响应**
 
 ```json
-{ "sessions": [
+{ "scope": "all",
+  "sessions": [
     { "session_id": "b7f0…", "title": "每周加班最多多长时间", "rounds": 3,
-      "created_at": "<ISO 时间>", "updated_at": "<ISO 时间>" }] }
+      "created_at": "<ISO 时间>", "updated_at": "<ISO 时间>",
+      "owner": "zhangsan", "mine": false }] }
 ```
 
 **只列有轮次的会话**（刚建没问过的不占地方），按最近活动倒序；标题 = 首问裁到 40 字。
+
+* `scope=mine`：只给当前账号的，`owner` 是空串、`mine` 为 `true`；
+* `scope=all`：**仅管理员**（员工 `403`）——跨账号列出并带上归属人的登录名，
+  `mine` 表示这一段是不是当前账号的。账号已删除时 `owner` 给空串（会话本身还在库里，
+  不因为删了一个人就从视野里消失）；
+* `scope` 在响应里**原样回显**：切了开关之后，拿回来的到底是谁的不能靠"我记得我传了什么"。
+
 无认证模式给空表；认证开着却没装配会话目录 → `503`（不拿空表冒充"你还没有会话"）。
 
 ### 7.3 读历史
@@ -545,6 +556,10 @@ GET /api/v1/history/{session_id}
 ```
 
 最近 N 轮（`conversation.history_rounds`，默认 5），按时间正序，**与喂给模型的是同一份**。
+
+**谁能读**：本人的会话；**管理员可以读任意一段有归属的会话**（运维台复盘答案质量要用真实问答）。
+**没有归属记录的会话谁都不放行**（`403`）——「读到别人的」是授权问题，「读一段不知道是谁的」
+是另一回事：它可能是加认证之前的老数据，也可能是编出来的 ID。
 每轮的 `citations[]` 是**当轮引用卡片的快照**，形状与 `/query` 出参里那份逐字相同；
 更早的轮次给空列表（那一轮的出处当时没留下 —— 不编）。
 

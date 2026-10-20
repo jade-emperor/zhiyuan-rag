@@ -220,28 +220,40 @@ def _login_no_enumeration() -> str:
     return f"401 话术一致(«{wrong.json()['detail']}»);成功给 {sorted(ok.json())}"
 
 
-@check("会话归属：别人的会话读不到（403）、没主人的也读不到、自己的能读")
+@check("会话归属：员工读别人的 403、管理员能读、没主人的谁都不放行、自己的 200")
 def _session_ownership() -> str:
     client, store = _seeded_client()
-    boss, worker = _login(client, "boss"), _login(client, "worker")
+    boss, worker, watcher = (
+        _login(client, "boss"),
+        _login(client, "worker"),
+        _login(client, "watcher"),
+    )
     sid = client.post("/api/v1/create_session", headers=worker).json()["session_id"]
 
     own = client.get(f"/api/v1/history/{sid}", headers=worker)
     if own.status_code != 200:
         raise AssertionError(f"自己的会话该 200,实际 {own.status_code}:{own.text[:200]}")
-    other = client.get(f"/api/v1/history/{sid}", headers=boss)
+    other = client.get(f"/api/v1/history/{sid}", headers=watcher)
     if other.status_code != 403:
         raise AssertionError(
-            f"**管理员读别人的会话也该 403**(这是越权,不是权限不够),实际 {other.status_code}"
+            f"**运维读别人的会话该 403**(越权不是权限不够),实际 {other.status_code}"
         )
-    orphan = client.get("/api/v1/history/从没绑过的ID", headers=worker)
-    if orphan.status_code != 403:
-        raise AssertionError(f"没主人的会话该 403(不能放行),实际 {orphan.status_code}")
+    admin = client.get(f"/api/v1/history/{sid}", headers=boss)
+    if admin.status_code != 200:
+        raise AssertionError(
+            f"**管理员读别人的会话该 200**(运维台要看真实问答才能迭代),实际 {admin.status_code}"
+        )
+    if admin.json()["rounds"] != []:
+        raise AssertionError(f"空会话该给空轮次,实际 {admin.json()}")
+    for who, headers in (("员工", worker), ("管理员", boss)):
+        orphan = client.get("/api/v1/history/从没绑过的ID", headers=headers)
+        if orphan.status_code != 403:
+            raise AssertionError(f"{who}读没主人的会话该 403(不能放行),实际 {orphan.status_code}")
     if client.get(f"/api/v1/history/{sid}").status_code != 401:
         raise AssertionError("不带令牌读会话该 401")
     if store.owners.get(sid) != store.users["worker"][0].user_id:
         raise AssertionError("建会话时没绑定归属 —— 那中间有一段谁都能读的窗口")
-    return "自己的 200 / 别人的 403 / 没主人的 403 / 无令牌 401;归属在 create_session 时绑定"
+    return "自己 200 / 运维读别人 403 / 管理员读别人 200 / 没主人的两人都 403 / 无令牌 401"
 
 
 @check("角色：报表是运维与管理员的（员工 403、无令牌 401），/me 如实报能力")
@@ -366,13 +378,17 @@ def _ws_requires_token() -> str:
         raise AssertionError("回完 error 帧之后该关闭连接，而不是继续服务")
 
 
-@check("WebSocket：带令牌但用别人的会话 → 回 error 帧且**连接不断**（下一句照常）")
+@check("WebSocket：运维用别人的会话 → error 帧且连接不断；管理员能继续问")
 def _ws_ownership_keeps_connection() -> str:
     client, _ = _seeded_client()
-    boss, worker = _login(client, "boss"), _login(client, "worker")
+    boss, worker, watcher = (
+        _login(client, "boss"),
+        _login(client, "worker"),
+        _login(client, "watcher"),
+    )
     sid = client.post("/api/v1/create_session", headers=worker).json()["session_id"]
-    boss_token = boss["Authorization"].split(" ", 1)[1]
-    with client.websocket_connect(f"/api/v1/stream?token={boss_token}") as ws:
+    watcher_token = watcher["Authorization"].split(" ", 1)[1]
+    with client.websocket_connect(f"/api/v1/stream?token={watcher_token}") as ws:
         ws.send_json({"query": "你好", "session_id": sid})
         frame = ws.receive_json()
         if frame.get("type") != "error" or "不属于" not in str(frame.get("detail")):
@@ -381,7 +397,14 @@ def _ws_ownership_keeps_connection() -> str:
         frames = [ws.receive_json(), ws.receive_json()]
     if not any(f.get("type") == "done" for f in frames):
         raise AssertionError(f"越权之后连接该继续可用（回帧而不是断链），实际 {frames}")
-    return "越权：error 帧且连接不断；下一句（无 session_id）正常走完"
+    # 管理员:同一段会话能直接接着问(HTTP 与 WS 是同一道 ``owner_violation``)
+    boss_token = boss["Authorization"].split(" ", 1)[1]
+    with client.websocket_connect(f"/api/v1/stream?token={boss_token}") as ws:
+        ws.send_json({"query": "你好", "session_id": sid})
+        admin_frames = [ws.receive_json(), ws.receive_json()]
+    if not any(f.get("type") == "done" for f in admin_frames):
+        raise AssertionError(f"管理员该能接着别人的会话问,实际 {admin_frames}")
+    return "运维:error 帧且连接不断;管理员:同一段会话正常走完"
 
 
 @check("WebSocket：无认证模式下不带令牌也能连（check_m5_stream 那 37 条仍有效的原因）")

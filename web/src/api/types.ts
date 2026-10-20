@@ -160,10 +160,16 @@ export interface SessionSummary {
   rounds: number
   created_at: string
   updated_at: string
+  /** 归属人的登录名。`scope=mine` 时是空串，`scope=all` 时才有值。 */
+  owner: string
+  /** 是不是当前账号的会话（后端算好，前端不比较字符串）。 */
+  mine: boolean
 }
 
 export interface SessionsOut {
   sessions: SessionSummary[]
+  /** 这次问的是哪一档：`mine` / `all`。 */
+  scope: string
 }
 
 export interface DeletedOut {

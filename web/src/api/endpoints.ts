@@ -76,8 +76,8 @@ export function sources(): Promise<{ sources: string[] }> {
   return request<{ sources: string[] }>(`${API_PREFIX}/sources`)
 }
 
-export function sessions(limit = 50): Promise<SessionsOut> {
-  return request<SessionsOut>(`${API_PREFIX}/sessions?limit=${limit}`)
+export function sessions(limit = 50, scope: 'mine' | 'all' = 'mine'): Promise<SessionsOut> {
+  return request<SessionsOut>(`${API_PREFIX}/sessions?limit=${limit}&scope=${scope}`)
 }
 
 export function createSession(): Promise<{ session_id: string }> {

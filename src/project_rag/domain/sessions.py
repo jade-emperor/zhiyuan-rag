@@ -39,6 +39,9 @@ class SessionSummary:
     rounds: int
     created_at: str
     updated_at: str
+    # 归属人的登录名(管理员看全量时才有值)。空串 = 没查/没记录 —— 不编一个占位名字。
+    # 它不是授权判断(授权看 ``session_owner.user_id``),只用于界面上那一枚"谁的会话"标签。
+    owner: str = ""
 
     def __post_init__(self) -> None:
         """输入:无。行为:校验字段。输出:无。

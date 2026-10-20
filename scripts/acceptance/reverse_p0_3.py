@@ -66,9 +66,9 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-4  对没有归属的会话放行（老会话与瞎编的 ID 全都读得到）",
         "src/project_rag/api/auth.py",
-        '        if owner is None:\n            return "这段会话没有归属记录(可能是加认证之前建的,或会话 ID 不存在)"',
-        "        if owner is None:\n            return None",
-        "会话归属：别人的会话读不到",
+        '            return "这段会话没有归属记录(可能是加认证之前建的,或会话 ID 不存在)"',
+        "            return None",
+        "会话归属：员工读别人的 403",
     ),
     (
         "RT-14  回填把状态写成 pending（前端显示处理中，对账又把它报成缺块）",
@@ -151,7 +151,7 @@ CASES: list[tuple[str, str, str, str, str]] = [
         "src/project_rag/api/app.py",
         "                violation = await auth.owner_violation(request.session_id, ws_user)",
         "                violation = None",
-        "WebSocket：带令牌但用别人的会话",
+        "WebSocket：运维用别人的会话",
     ),
     (
         # 报表从 require_admin 挪到了 require_reports(运维也要能看),

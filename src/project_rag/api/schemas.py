@@ -716,12 +716,22 @@ class SessionSummaryOut(BaseModel):
     rounds: int
     created_at: str
     updated_at: str
+    # 归属人的登录名。``scope=mine`` 时是空串(每一行都是自己的,再写一遍是噪音);
+    # ``scope=all`` 时才有值 —— 账号已删除给空串,不编占位名。
+    owner: str = ""
+    # 是不是当前账号的会话(前端据此画"我的"标签,不用自己比字符串)。
+    mine: bool = True
 
 
 class SessionsOut(BaseModel):
-    """我名下的会话(最近活动在前)。**只列有轮次的** —— 刚建没问过的不占地方。"""
+    """会话目录(最近活动在前)。**只列有轮次的** —— 刚建没问过的不占地方。
+
+    ``scope`` 回显这次问的是哪一档(``mine`` / ``all``):前端切了开关之后,
+    拿回来的数据到底是谁的,不能靠"我记得我传了什么"。
+    """
 
     sessions: list[SessionSummaryOut]
+    scope: str = "mine"
 
 
 # ── 账号、分组与文档可见范围 ──────────────────────────────────────────────────

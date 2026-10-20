@@ -38,14 +38,20 @@ class MySQLSessionCatalog:
         conversation_config: ConversationConfig,
         *,
         owners_table: str = "session_owner",
+        users_table: str = "users",
     ) -> None:
-        """输入:MySQL 配置、会话配置(取表名)、归属表名。行为:校验表名并记下。输出:无。"""
-        for table in (conversation_config.table, owners_table):
+        """输入:MySQL 配置、会话配置(取表名)、归属表名、账号表名。行为:校验表名并记下。输出:无。
+
+        账号表只用于 ``list_all`` 把 ``user_id`` 翻成登录名(管理员视角要看"这是谁的会话");
+        ``list_for`` 不 JOIN 它 —— 自己看自己的列表不需要多一次关联。
+        """
+        for table in (conversation_config.table, owners_table, users_table):
             if not _SAFE_TABLE.match(table):
                 raise ValueError(f"表名不合法:{table!r};只允许字母、数字、下划线")
         self._config = mysql_config
         self._table = conversation_config.table
         self._owners = owners_table
+        self._users = users_table
 
     def list_for(self, user_id: str, *, limit: int) -> Sequence[SessionSummary]:
         """输入:用户 ID、最多几条。行为:两次查询(聚合 + 标题)。输出:摘要序列(最近活动在前)。
@@ -84,6 +90,45 @@ class MySQLSessionCatalog:
                 updated_at=_stamp(updated_at),
             )
             for session_id, created_at, rounds, updated_at in rows
+        )
+
+    def list_all(self, *, limit: int) -> Sequence[SessionSummary]:
+        """输入:最多几条。行为:跨账号列**有轮次**的会话 + 归属人登录名。输出:摘要序列。
+
+        账号可能已被删除:``LEFT JOIN`` 保留会话行,``owner`` 给空串 ——
+        用 ``JOIN`` 的话,删一个人会让他的会话整段从管理员视野里消失,而数据还在库里。
+        """
+        if limit <= 0:
+            return ()
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT o.session_id, o.created_at, COUNT(c.id), MAX(c.created_at), u.username"
+                    f" FROM {self._owners} o JOIN {self._table} c"
+                    " ON c.session_id = o.session_id"
+                    f" LEFT JOIN {self._users} u ON u.user_id = o.user_id"
+                    " GROUP BY o.session_id, o.created_at, u.username"
+                    " ORDER BY MAX(c.created_at) DESC, o.created_at DESC"
+                    " LIMIT %s",
+                    (limit,),
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    return ()
+                titles = self._titles(cur, [str(row[0]) for row in rows])
+        finally:
+            conn.close()
+        return tuple(
+            SessionSummary(
+                session_id=str(session_id),
+                title=titles.get(str(session_id), ""),
+                rounds=int(rounds),
+                created_at=_stamp(created_at),
+                updated_at=_stamp(updated_at),
+                owner=str(owner) if owner is not None else "",
+            )
+            for session_id, created_at, rounds, updated_at, owner in rows
         )
 
     def _titles(self, cur: pymysql.cursors.Cursor, session_ids: list[str]) -> dict[str, str]:

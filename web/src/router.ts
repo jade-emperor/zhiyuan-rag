@@ -35,6 +35,7 @@ import { capabilitiesState, loadCapabilities } from './stores/capabilities'
 import AccountsView from './views/AccountsView.vue'
 import ChatView from './views/ChatView.vue'
 import FaqView from './views/FaqView.vue'
+import HistoryView from './views/HistoryView.vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import MetricsView from './views/MetricsView.vue'
@@ -51,6 +52,13 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
     { path: '/register', name: 'register', component: RegisterView },
     { path: '/chat', name: 'chat', component: ChatView, meta: { needs: 'knowledge' } },
+    // 会话历史：`session` 是可选的一段（深链 / 刷新后仍停在同一段）。
+    {
+      path: '/history/:session?',
+      name: 'history',
+      component: HistoryView,
+      meta: { needs: 'knowledge' },
+    },
     { path: '/knowledge', name: 'knowledge', component: KnowledgeView, meta: { needs: 'manage' } },
     // 二级页面:**一个目录里的文档**。`unfiled` 是未分类那一格的保留 ID(它也是目录)。
     {
@@ -71,6 +79,7 @@ const TITLES: Record<string, string> = {
   login: '登录',
   register: '注册',
   chat: '对话',
+  history: '会话历史',
   knowledge: '知识库',
   folder: '知识库',
   faq: 'FAQ 管理',

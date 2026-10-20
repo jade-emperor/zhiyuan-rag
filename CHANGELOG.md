@@ -7,6 +7,19 @@
 >（契约脚本名），因为这个项目的规矩是"能验证的才算数"。
 
 ## [Unreleased]
+### 新增（会话历史页）
+- **接口**：`GET /api/v1/sessions` 多一个 `scope=mine|all`。`all` 仅管理员 —— 跨账号列会话，
+  每行带 `owner`（登录名）与 `mine`（是不是当前账号的），`scope` 原样回显。账号被删除时
+  `owner` 给空串（适配器 `LEFT JOIN users`），**会话不因删号而从视野里消失**。
+- **正文读取**：`GET/DELETE /api/v1/history/{id}` 对**管理员**放行任意一段有归属的会话；
+  员工的跨账号读取仍然 `403`。**没有归属记录的会话谁都不放行**（包括管理员）。
+  HTTP 与 WebSocket 共用同一份 `owner_violation`，两边一起改、一起测。
+- **前端**：`#/history/:session?`「会话历史」页（员工看自己的，管理员可切「全部」）——
+  目录搜索、按轮次渲染问答、**当轮引用快照**（页码未知照实说、老账没引用也照实说）、
+  「继续对话」回聊天页、行内两步确认清空。
+- 验收：`check_m5_10_history.py`（7 条，含真 MySQL 的 `list_all`）、
+  `reverse_m5_10_history.py`（8 条全红）；`check_p0_3_auth` 的归属口径改为
+  「员工 403 / 管理员 200 / 没归属谁都 403」，反向用例同步。
 ### 新增（FAQ 管理台）
 - **接口**：`GET /api/v1/admin/faq?query=`（服务端对问题与答案做包含匹配；`total` 是过滤前总数）、
   `POST`（`201`）、`PATCH`（字段可省）、`DELETE`（幂等，`deleted=0`）—— 四个都是 `admin`。

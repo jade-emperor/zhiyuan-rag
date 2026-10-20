@@ -46,7 +46,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastapi import (
     BackgroundTasks,
@@ -1890,9 +1890,10 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     @app.get("/api/v1/sessions", response_model=SessionsOut)
     async def sessions(
         limit: int = Query(default=50, ge=1, le=200),
+        scope: Literal["mine", "all"] = "mine",
         user: User | None = Depends(auth.user),
     ) -> SessionsOut:
-        """**我名下的**会话目录(标题 = 首问裁到 40 字、轮数、最近活动)。
+        """会话目录(标题 = 首问裁到 40 字、轮数、最近活动、归属人)。
 
         三条口径:
 
@@ -1904,20 +1905,31 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
         这条走 ``require_knowledge``:会话目录是"我读过什么"的索引,属于知识库那一侧 ——
         员工 / 运维 / 管理员都能看自己的(运维也能问答,见 ``domain/auth.py`` 的角色表)。
+
+        ``scope=all`` 是**管理员视角**(改版后加的):跨账号列会话,每行带 ``owner``
+        (登录名)与 ``mine``。员工的 ``scope=all`` → 403 —— 看别人的问答内容仍然要过
+        ``require_admin`` 这道门;会话**内容**的读取在 ``check_owner`` 里同样是
+        "本人或管理员"(见 ``api/auth.py`` 的三种情况)。
         """
         auth.require_knowledge(user)
+        if scope == "all":
+            auth.require_admin(user)
         catalog = _optional_factory(deps, "session_catalog_factory")
         if catalog is None:
-            if user is None:  # 无认证模式:没有归属可过滤
-                return SessionsOut(sessions=[])
+            if user is None and scope == "mine":  # 无认证模式:没有归属可过滤
+                return SessionsOut(sessions=[], scope=scope)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="没有接上会话目录(session_catalog_factory 为空)",
             )
-        if user is None:
-            return SessionsOut(sessions=[])
+        user_id = None if user is None else user.user_id
         try:
-            rows = await _call(catalog.list_for, user.user_id, limit=limit)
+            if scope == "all":
+                rows = await _call(catalog.list_all, limit=limit)
+            elif user_id is None:  # 无认证模式:没有归属可过滤
+                return SessionsOut(sessions=[], scope=scope)
+            else:
+                rows = await _call(catalog.list_for, user_id, limit=limit)
         except Exception as exc:  # noqa: BLE001 - 翻成 503 + 人话:裸 500 只显示"Internal Server Error"
             # 这条路径以前把存储层的异常直接抛给 FastAPI,前端拿到的是一句
             # "Internal Server Error" —— 用户看到的是"会话都没了",而真正的原因
@@ -1928,6 +1940,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                 detail=f"读不到会话目录({type(exc).__name__}):{exc}",
             ) from exc
         return SessionsOut(
+            scope=scope,
             sessions=[
                 SessionSummaryOut(
                     session_id=row.session_id,
@@ -1935,9 +1948,14 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                     rounds=row.rounds,
                     created_at=row.created_at,
                     updated_at=row.updated_at,
+                    owner=row.owner,
+                    # scope=mine 时每一行都是自己的;scope=all 按登录名比 —— 没有 user
+                    # (无认证模式的 all)就当"不是我的",不假装。
+                    mine=(scope == "mine")
+                    or (user is not None and row.owner == user.username),
                 )
                 for row in rows
-            ]
+            ],
         )
 
     # ── 一级目录:知识库的两层结构 ──────────────────────────────────────────────

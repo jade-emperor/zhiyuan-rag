@@ -716,7 +716,10 @@ def _() -> str:
 @check("sessions：无认证给空表、认证按账号过滤、没装目录 → 503、**存储层坏掉给人话**")
 def _() -> str:
     anonymous = _World(auth=False, catalog=False).client().get("/api/v1/sessions")
-    assert anonymous.status_code == 200 and anonymous.json() == {"sessions": []}, anonymous.text
+    assert anonymous.status_code == 200 and anonymous.json() == {
+        "sessions": [],
+        "scope": "mine",
+    }, anonymous.text
 
     missing = _World(auth=True, catalog=False)
     token = missing.token("admin")
@@ -738,7 +741,15 @@ def _() -> str:
     assert [row["session_id"] for row in employee_rows] == ["s-emp-1"], employee_rows
     assert world.catalog.calls[0][0] == "u-admin", world.catalog.calls
     fields = set(admin_rows[0])
-    assert fields == {"session_id", "title", "rounds", "created_at", "updated_at"}, fields
+    assert fields == {
+        "session_id",
+        "title",
+        "rounds",
+        "created_at",
+        "updated_at",
+        "owner",
+        "mine",
+    }, fields
 
     # 存储层坏掉时要说人话:这条路径以前把 MySQL 的异常直接抛给 FastAPI,前端拿到的是
     # 一句 "Internal Server Error" —— 用户看到的是"会话都没了",而真正的原因(作者那次是
