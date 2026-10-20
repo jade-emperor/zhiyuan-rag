@@ -413,6 +413,18 @@ uv run python scripts/tools/run_ragas_eval.py --dataset data/eval/datasets/bagu_
 否则「改了配置再跑评估」会把旧数据标成新旋钮）→ 最后才打分。judge 用 DeepSeek、
 embedding 用本地 BGE-M3（不需要 OpenAI key）。
 
+**当前读数**（`data/eval/ragas_runs/*.summary.csv`；裁判 `deepseek-flash`、嵌入本地 BGE-M3，
+检索 `rrf` / k=5 / m=2 / 开重排）：
+
+| 评估集 | n | faithfulness | answer_relevancy | context_precision | context_recall | 四项均值 |
+|---|---|---|---|---|---|---|
+| `bagu_v1`：56 原句 + 56 改写句（**标准问法**，单域） | 112 | **0.940** | **0.774** | **0.986** | **0.969** | **0.917** |
+| `mix_v1`：direct / vague / denoise / subquery 各 30（**含边界问法**，不开改写） | 120 | 0.788 | 0.647 | 0.874 | 0.775 | 0.771 |
+
+两套不是"进步 / 退步"的关系：`mix_v1` 里 vague（指代不清）那一类的 faithfulness 只有 0.49，
+均值被它拉低；`bagu_v1` 是标准问法的基线。`mix_v1` 的**开改写**对照见下面「查询改写」一节 ——
+那张表是**逐条配对**后的均值（只算两臂都有分的行），与这里 `summary.csv` 的总均值会差一点点。
+
 ---
 
 ## 二、这个项目做什么
