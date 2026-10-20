@@ -388,8 +388,9 @@ uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：34 
 `.dockerignore` 按**整行**匹配、**`unstructured` 那一档不许回到运行时依赖**（`en-core-web-sm` 的 wheel
 只有 GitHub 一个源，回去就意味着 `docker build` 要去 github.com 取一个产品路径不用的模型）。
 
-**它证明「配置自洽」，不证明「镜像能构建」** —— 后者只能在装了 docker 的机器上跑
-`docker compose up -d --build`（开发机没有 `docker` 命令，见 README 的「仓库里有什么、没有什么」）。
+**它证明「配置自洽」，不证明「镜像在你这台机器上能构建」** —— 后者要跑
+`docker compose up -d --build` + `docker compose ps`（app 要 `healthy`）。镜像在作者那台
+Windows/WSL 机器上构建并实测过（见 README §8），但换机器 / 换网络 / 换缓存仍要自己跑一遍。
 
 ## 前端：源码在 `web/`、产物入库、契约在 `check_m7_frontend.py`
 
