@@ -74,6 +74,27 @@ def _purge_project_bytecode() -> int:
 # `project_rag.*` 的 —— 所以模块级这一句必须在这里。
 _PURGED = _purge_project_bytecode()
 
+
+def _placeholder_secrets() -> None:
+    """新克隆（没有 `.env`）也要能跑验收:给三处必填密钥塞占位值（与 CI 同一组）。
+
+    **有 `.env` 时一个都不设**:pydantic 先读进程环境变量、再读 `.env` ——
+    设了占位值会把本地真实 key 盖掉,需要真 provider 的那几套会莫名其妙地失败。
+
+    为什么不是"缺密钥就 SKIP":配置校验（`check_m1_1_config`）与只跑假件的那些检查
+    本来就不需要真 key;让它们因为"没填 .env"红 15 条,新克隆的第一印象就是"项目跑不起来"。
+    需要真连接的检查在连不上时各自 SKIP 并点名 owner。
+    """
+    root = Path(__file__).resolve().parents[2]
+    if (root / ".env").exists():
+        return
+    os.environ.setdefault("RAG_LLM__DEEPSEEK_API_KEY", "sk-acceptance-dummy")
+    os.environ.setdefault("RAG_MYSQL__PASSWORD", "acceptance-dummy")
+    os.environ.setdefault("RAG_REDIS__PASSWORD", "acceptance-dummy")
+
+
+_placeholder_secrets()
+
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 _MARK = {PASS: "✔", FAIL: "✘", SKIP: "○"}
 _results: list[tuple[str, str, str]] = []
