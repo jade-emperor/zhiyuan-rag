@@ -68,6 +68,16 @@ def run(args) -> int:
         bm25_weight=settings.rag.bm25_weight,
         vector_weight=settings.rag.vector_weight,
     )
+    # 图片模态:rag 命令是 answer_rag 的直调方,不像 qa 走 knowledge_callable ——
+    # 这里不传 signer,模型就收不到图(CLI 的"看图"会静默失效)。构造期仍然惰性:
+    # 没有图片 key 时 _llm_images 根本不会调用它。
+    def _sign_image(key: str) -> str:
+        if deps.image_store_factory is None:
+            raise RuntimeError("图片功能没装配:image_store_factory 为空")
+        return deps.image_store_factory().sign(key)
+
+    image_signer = _sign_image if deps.image_store_factory is not None else None
+
     try:
         result = answer_rag(
             args.question,
@@ -83,6 +93,7 @@ def run(args) -> int:
             rewriter=deps.query_rewriter_factory()
             if deps.query_rewriter_factory is not None
             else None,
+            image_signer=image_signer,
         )
     except Exception as exc:  # noqa: BLE001 - CLI 只给短消息,细节进日志
         _logger.error("知识库问答失败:%s", exc)

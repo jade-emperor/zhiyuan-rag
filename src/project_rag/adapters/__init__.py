@@ -16,6 +16,7 @@ from .matcher_bm25 import BM25TextMatcher
 from .memory_vector_store import InMemoryVectorStore
 from .milvus_store import MilvusVectorStore
 from .office_files import OfficeFileSource
+from .oss_images import OssImageStore, image_key_for
 from .pdf_files import PdfFileSource
 from .text_files import TextFilesSource
 
@@ -30,9 +31,11 @@ __all__ = [
     "MySQLConversationStore",
     "MySQLFaqStore",
     "OfficeFileSource",
+    "OssImageStore",
     "PdfFileSource",
     "RedisCache",
     "TextFilesSource",
+    "image_key_for",
     "load_documents",
     "supported_suffixes",
 ]

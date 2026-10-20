@@ -108,6 +108,12 @@ class _FakeAuthStore:
     def revoke_token(self, token_hash):
         self.tokens.pop(token_hash, None)
 
+    def revoke_all_tokens(self, user_id):
+        doomed = [h for h, owner in self.tokens.items() if owner == user_id]
+        for token_hash in doomed:
+            self.tokens.pop(token_hash, None)
+        return len(doomed)
+
     def bind_session(self, session_id, user_id):
         self.owners.setdefault(session_id, user_id)
 
@@ -916,6 +922,7 @@ def _retrieval_overfetches() -> str:
 def _documents_list_respects_acl() -> str:
     client, store, access = _client()
     made = _seed(store, access)
+    from _fakes import NoFolders
     from project_rag.cli.deps import Deps
 
     # 直接换一个带文档的客户端:清单要登记表 + 磁盘 + 向量库三处都有东西才算 ok,
@@ -931,7 +938,7 @@ def _documents_list_respects_acl() -> str:
         [Embedding(dense=(1.0, 0.0)), Embedding(dense=(0.0, 1.0))],
     )
 
-    class _Docs:
+    class _Docs(NoFolders):
         def init_schema(self): ...
         def add(self, record): ...
         def upsert(self, record): ...
@@ -990,12 +997,12 @@ def _preview_hidden_is_404() -> str:
     _seed(store, access)
     from fastapi.testclient import TestClient
 
-    from _fakes import FakeVectorStore
+    from _fakes import FakeVectorStore, NoFolders
     from project_rag.api.app import create_app
     from project_rag.cli.deps import Deps
     from project_rag.domain import Chunk, RetrievedChunk
 
-    class _Docs:
+    class _Docs(NoFolders):
         def init_schema(self): ...
         def add(self, record): ...
         def upsert(self, record): ...
@@ -1069,7 +1076,13 @@ def _group_documents() -> str:
     """
     from fastapi.testclient import TestClient
 
-    from _fakes import FakeConversationStore, FakeFaqStore, FakeMatcher, FakeVectorStore
+    from _fakes import (
+        FakeConversationStore,
+        FakeFaqStore,
+        FakeMatcher,
+        FakeVectorStore,
+        NoFolders,
+    )
     from project_rag.adapters.document_loader import DiskFile
     from project_rag.api.app import create_app
     from project_rag.cli.deps import Deps
@@ -1079,7 +1092,7 @@ def _group_documents() -> str:
     access = _FakeAccess()
     made = _seed(auth, access)  # 建 admin/ops/emp/emp2 + 「销售」组(emp 在里面)
 
-    class _Docs:
+    class _Docs(NoFolders):
         def init_schema(self) -> None: ...
         def add(self, record) -> None: ...
         def upsert(self, record) -> None: ...
@@ -1323,7 +1336,7 @@ def _access_read_failure_is_503() -> str:
 def _delete_document_clears_acl() -> str:
     from fastapi.testclient import TestClient
 
-    from _fakes import FakeVectorStore
+    from _fakes import FakeVectorStore, NoFolders
     from project_rag.api.app import create_app
     from project_rag.cli.deps import Deps
     from project_rag.domain import Chunk
@@ -1332,7 +1345,7 @@ def _delete_document_clears_acl() -> str:
     _seed(store, access)
     removed: list[str] = []
 
-    class _Docs:
+    class _Docs(NoFolders):
         def init_schema(self): ...
         def add(self, record): ...
         def upsert(self, record): ...

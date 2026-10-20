@@ -13,12 +13,24 @@
  * 还一条话术上的规矩:**白名单是空的**时不许说「不支持的类型」—— 那是"还没读到
  * capabilities"(能力自述没取到),与"后端不认这个后缀"是两件事。以前混成一句话,
  * 用户看到的是「不支持的类型 .docx —— 这个后端只吃 」(后面空着),被指到错的方向。
+ *
+ * **上传到哪一格**:目录二级页面把 `folder` 传进来,面板上写明"进「X」" ——
+ * 服务端不按地址栏猜,前端也不按"当前页"猜,落点是一个显式参数。
  */
 import { computed, ref } from 'vue'
 
 import { capabilitiesState } from '../stores/capabilities'
 import { clearUploads, documentsState, uploadFiles } from '../stores/documents'
+import Icon from './Icon.vue'
 import { humanBytes } from '../utils/format'
+
+const props = withDefaults(
+  defineProps<{
+    folder?: string
+    folderName?: string
+  }>(),
+  { folder: '', folderName: '未分类' },
+)
 
 const caps = capabilitiesState()
 const docs = documentsState()
@@ -78,13 +90,18 @@ async function submit(files: File[]): Promise<void> {
       detail: item.detail,
     })
   }
-  if (good.length > 0) await uploadFiles(good)
+  if (good.length > 0) await uploadFiles(good, props.folder)
 }
 </script>
 
 <template>
   <aside class="panel">
-    <h2>Actions</h2>
+    <div class="panel-head">
+      <h2>上传</h2>
+      <button v-if="docs.uploads.length > 0" class="ghost tiny" type="button" @click="clearUploads">
+        清空
+      </button>
+    </div>
 
     <div
       class="drop"
@@ -97,8 +114,10 @@ async function submit(files: File[]): Promise<void> {
       @dragleave="dragging = false"
       @drop.prevent="onDrop"
     >
-      <button class="primary block" type="button">上传文件</button>
-      <p class="faint">把文件拖到这里也行</p>
+      <span class="drop-icon"><Icon name="paperclip" :size="17" /></span>
+      <strong>拖拽或点击上传</strong>
+      <span class="faint">支持:{{ suffixes.length > 0 ? suffixes.join(' / ') : '(还没读到 capabilities)' }}</span>
+      <span class="faint">进「{{ folderName }}」 · ≤ {{ maxMb }} MB</span>
       <input
         ref="picker"
         class="hidden-input"
@@ -109,64 +128,80 @@ async function submit(files: File[]): Promise<void> {
       />
     </div>
 
-    <p class="faint">
-      支持:{{ suffixes.length > 0 ? suffixes.join(' / ') : '(还没读到 capabilities)' }}<br />
-      单个文件上限 {{ maxMb }} MB
-    </p>
-
     <div v-if="docs.uploads.length > 0" class="tasks">
-      <div class="tasks-head">
-        <span class="faint">本次上传</span>
-        <button class="ghost tiny" type="button" @click="clearUploads">清空</button>
-      </div>
       <div v-for="(task, index) in docs.uploads" :key="`${task.name}-${index}`" class="task">
         <span class="name" :title="task.name">{{ task.name }}</span>
-        <span class="tag" :class="task.state === 'failed' ? 'danger' : task.state === 'uploading' ? 'warn' : 'ok'">
+        <span
+          class="tag"
+          :class="task.state === 'failed' ? 'danger' : task.state === 'uploading' ? 'warn' : 'ok'"
+        >
           {{ task.state === 'uploading' ? '上传中' : task.state === 'submitted' ? '已提交' : '失败' }}
         </span>
-        <span class="faint detail">{{ task.detail }}</span>
+        <span class="faint detail" :title="task.detail">{{ task.detail }}</span>
       </div>
     </div>
-
-    <p class="alert info small">
-      上传是<strong>异步入库</strong>:接口立刻返回,后台切块嵌入(539 页的 PDF 在 CPU 上约 8 分钟)。
-      卡片上的状态会自动刷新;<strong>只有「已入库」才是能被检索到的</strong>。
-    </p>
   </aside>
 </template>
 
 <style scoped>
 .panel {
-  width: 260px;
-  flex: none;
+  width: 100%;
+  position: sticky;
+  top: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  padding: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
-h2 {
-  font-size: 16px;
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel-head h2 {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .drop {
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
-  padding: 16px 12px;
-  text-align: center;
-  cursor: pointer;
-  background: var(--bg);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 
+.drop:hover,
 .drop.over {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
 
-.block {
-  width: 100%;
+.drop strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.drop-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }
 
 .hidden-input {
@@ -176,23 +211,22 @@ h2 {
 .tasks {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.tasks-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 .task {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 4px 8px;
-  font-size: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 6px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .name {
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -200,14 +234,20 @@ h2 {
 
 .detail {
   grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tiny {
-  font-size: 12px;
-  padding: 2px 6px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
 }
 
-.small {
-  font-size: 12px;
+@media (max-width: 1040px) {
+  .panel {
+    position: static;
+  }
 }
 </style>

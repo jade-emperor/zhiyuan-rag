@@ -5,6 +5,8 @@ import { onUnauthorized, seedBackendFromQuery } from './api/client'
 import { router } from './router'
 import { clearAuth, loadMe } from './stores/auth'
 import { resetChat } from './stores/chat'
+import { initUi } from './stores/ui'
+import { initTheme } from './stores/theme'
 import './styles/tokens.css'
 import './styles/base.css'
 
@@ -18,6 +20,12 @@ onUnauthorized(() => {
 
 // 先认一次 `?backend=…`(桌面壳/书签),再让任何组件去读后端地址
 seedBackendFromQuery()
+
+// 主题在首帧之前落地,避免浅色闪一下
+initTheme()
+
+// 布局断点（侧栏/引用面板/底部弹层）在首帧前就算好，避免桌面布局闪一下
+initUi()
 
 const app = createApp(App)
 app.use(router)

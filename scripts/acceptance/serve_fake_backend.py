@@ -161,6 +161,9 @@ SEED_CHUNKS = [
         "劳动者每日工作时间不超过八小时、平均每周工作时间不超过四十四小时。用人单位由于"
         "生产经营需要,经与工会和劳动者协商后可以延长工作时间,一般每日不得超过一小时。",
         page=7,
+        # 假后端的一张演示图:sign 出来指向一个公开 PNG,用来肉眼/浏览器验
+        # 「引用卡片能显示图片」。真数据由 MinerU + OSS 产生,这里只是夹具。
+        image_keys=("demo-image",),
     ),
     Chunk(
         "seed-pdf-2",
@@ -262,6 +265,31 @@ SUFFIXES = (".pdf", ".md", ".txt", ".docx")
 
 DOCS: dict[str, Any] = {}
 
+# 一级目录:两格真实的(界面上一级页面要能看到"公司制度 / 产品资料"),
+# 剩下那几份留在未分类里 —— 未分类是兜底格子,演示里也得有东西落进去。
+FOLDERS: dict[str, Any] = {}
+
+
+def _seed_folders() -> None:
+    """输入:无。行为:建两个目录并记下它们的 ID。输出:无。"""
+    from project_rag.domain import Folder
+
+    now = _ts(7, 9, 0)
+    FOLDERS["f_demo_handbook"] = Folder(
+        folder_id="f_demo_handbook",
+        name="公司制度",
+        description="员工手册、报销与信息安全",
+        created_at=now,
+        updated_at=now,
+    )
+    FOLDERS["f_demo_product"] = Folder(
+        folder_id="f_demo_product",
+        name="产品资料",
+        description="对外文件与法务模板",
+        created_at=now,
+        updated_at=now,
+    )
+
 
 def _seed_documents() -> None:
     """六份种子文档:**五种 state 各来一份**,界面上挨个看得到。
@@ -284,6 +312,7 @@ def _seed_documents() -> None:
         chunks=2,
         size_bytes=20480,
         created_at=_ts(3, 9, 0),
+        folder="f_demo_product",
     )
     DOCS["员工手册.md"] = DocRecord(
         document_id="员工手册.md",
@@ -293,6 +322,7 @@ def _seed_documents() -> None:
         chunks=1,
         size_bytes=4096,
         created_at=_ts(2, 16, 20),
+        folder="f_demo_handbook",
     )
     DOCS["reimburse.docx"] = DocRecord(
         document_id="reimburse.docx",
@@ -311,6 +341,7 @@ def _seed_documents() -> None:
         chunks=12,
         size_bytes=999,
         created_at=_ts(4, 10, 0),
+        folder="f_demo_handbook",
     )
     DOCS["内部报价单.md"] = DocRecord(
         document_id="内部报价单.md",
@@ -320,6 +351,7 @@ def _seed_documents() -> None:
         chunks=1,
         size_bytes=2048,
         created_at=_ts(6, 10, 0),
+        folder="f_demo_product",
     )
     DOCS["已经删掉的文件.md"] = DocRecord(
         document_id="已经删掉的文件.md",
@@ -374,8 +406,25 @@ def _fake_uploads_dir() -> Path:
     return project_path(get_settings().api.uploads_dir)
 
 
+class FakeImageStore:
+    """假图片库:签名返回一个公开 PNG,让前端能真的把 <img> 渲染出来。"""
+
+    def put(self, path):
+        return "demo-image"
+
+    def sign(self, key: str) -> str:
+        return "https://httpbin.org/image/png" if key == "demo-image" else f"https://placehold.co/64x64/png?text={key[:8]}"
+
+    def delete(self, key: str) -> None:
+        return None
+
+
 class FakeDocs:
-    """登记表的内存替身(端口 `DocumentStore`)。"""
+    """登记表 + 目录表的内存替身(端口 `DocumentStore`)。
+
+    目录那半必须一起实现:知识库一级页面(`GET /api/v1/folders`)是这一批的新入口,
+    假件少一个方法,浏览器实测会看到 500 而界面上只显示"连不上"。
+    """
 
     def init_schema(self) -> None: ...
     def add(self, record): DOCS[record.document_id] = record
@@ -404,7 +453,46 @@ class FakeDocs:
             size_bytes=old.size_bytes,
             created_at=old.created_at,
             error=error,
+            folder=old.folder,
         )
+
+    # ── 目录 ──────────────────────────────────────────────────────────────
+    def list_folders(self):
+        return sorted(FOLDERS.values(), key=lambda item: item.name)
+
+    def get_folder(self, folder_id):
+        return FOLDERS.get(folder_id)
+
+    def folder_named(self, name):
+        return next((item for item in FOLDERS.values() if item.name == name), None)
+
+    def add_folder(self, folder) -> None:
+        FOLDERS[folder.folder_id] = folder
+
+    def update_folder(self, folder) -> None:
+        FOLDERS[folder.folder_id] = folder
+
+    def remove_folder(self, folder_id) -> int:
+        return 1 if FOLDERS.pop(folder_id, None) is not None else 0
+
+    def set_folder(self, document_id, folder_id) -> int:
+        from project_rag.domain import DocRecord
+
+        old = DOCS.get(document_id)
+        if old is None:
+            return 0
+        DOCS[document_id] = DocRecord(
+            document_id=old.document_id,
+            source=old.source,
+            filename=old.filename,
+            status=old.status,
+            chunks=old.chunks,
+            size_bytes=old.size_bytes,
+            created_at=old.created_at,
+            error=old.error,
+            folder=folder_id,
+        )
+        return 1
 
 
 class FakeChunker:
@@ -699,6 +787,7 @@ ACCESS = FakeAccess()
 
 
 def build():
+    _seed_folders()
     _seed_documents()
     store = FakeAuthStore()
     # 会话归属必须真的绑上:否则 /api/v1/history/{id} 会 403(「这段会话没有归属记录」)——
@@ -803,6 +892,8 @@ def build():
         "disk_files_factory": _disk_files,
         "chunker_factory": lambda: FakeChunker(),
         "loader_factory": lambda: fake_load,
+        # 图片:引用出参要签名 URL;这里指向公开 PNG,只用于界面演示。
+        "image_store_factory": lambda: FakeImageStore(),
         # 报表要一份账本(不然看板只能看到空窗)
         "ledger_store_factory": lambda: FakeLedger(),
         # 可见范围(一个组 + 一份受限文档)。接了它,浏览器用例才看得到

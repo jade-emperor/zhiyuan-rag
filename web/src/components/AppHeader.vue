@@ -12,7 +12,7 @@
  * 2. **后端地址放在这里**(而不是藏在设置页深处):它是这个 app 唯一的环境,
  *    填错了连登录都进不去,必须一眼可见、一点可改。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import { backendBase, setBackendBase } from '../api/client'
@@ -26,11 +26,20 @@ import {
 } from '../stores/auth'
 import { loadCapabilities } from '../stores/capabilities'
 import { resetChat } from '../stores/chat'
+import { changePassword } from '../stores/auth'
+import ThemeToggle from './ThemeToggle.vue'
 
 const router = useRouter()
 const auth = authState()
 
 const editingBackend = ref(false)
+const editingPassword = ref(false)
+const oldPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
+const passwordError = ref('')
+const passwordDone = ref(false)
+const passwordBusy = ref(false)
 const backendDraft = ref(backendBase())
 const backendError = ref('')
 
@@ -65,6 +74,45 @@ async function saveBackend(): Promise<void> {
   await router.replace({ name: 'login' })
 }
 
+/** Esc 关掉任一浮层:顶栏上的面板没有遮罩,不给键盘出口就只能点一下别处。 */
+function closePanels(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  if (!editingBackend.value && !editingPassword.value) return
+  editingBackend.value = false
+  editingPassword.value = false
+}
+
+onMounted(() => window.addEventListener('keydown', closePanels))
+onUnmounted(() => window.removeEventListener('keydown', closePanels))
+
+function togglePasswordPanel(): void {
+  editingPassword.value = !editingPassword.value
+  editingBackend.value = false
+  passwordError.value = ''
+  passwordDone.value = false
+}
+
+async function savePassword(): Promise<void> {
+  passwordError.value = ''
+  passwordDone.value = false
+  if (newPassword.value !== confirmPassword.value) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  passwordBusy.value = true
+  try {
+    await changePassword(oldPassword.value, newPassword.value)
+    passwordDone.value = true
+    oldPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
+  } catch (failure) {
+    passwordError.value = (failure as Error).message
+  } finally {
+    passwordBusy.value = false
+  }
+}
+
 async function signOut(): Promise<void> {
   await logout()
   resetChat()
@@ -97,7 +145,6 @@ async function signOut(): Promise<void> {
         <div v-if="editingBackend" class="backend-panel card">
           <label for="backend-input">RAG 服务地址(app 只依赖它)</label>
           <input id="backend-input" v-model="backendDraft" type="text" placeholder="http://主机:端口" />
-          <p class="faint">换地址会清掉当前登录状态 —— 那是另一套账号体系。</p>
           <p v-if="backendError" class="alert error">{{ backendError }}</p>
           <div class="backend-actions">
             <button class="ghost" type="button" @click="editingBackend = false">取消</button>
@@ -105,6 +152,28 @@ async function signOut(): Promise<void> {
           </div>
         </div>
       </div>
+
+      <div class="password">
+        <button class="chip" type="button" @click="togglePasswordPanel()">改密</button>
+        <div v-if="editingPassword" class="backend-panel card">
+          <label for="old-password">原密码</label>
+          <input id="old-password" v-model="oldPassword" type="password" autocomplete="current-password" />
+          <label for="new-password">新密码</label>
+          <input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" />
+          <label for="confirm-password">确认新密码</label>
+          <input id="confirm-password" v-model="confirmPassword" type="password" autocomplete="new-password" />
+          <p v-if="passwordError" class="alert error">{{ passwordError }}</p>
+          <p v-if="passwordDone" class="alert ok">已更新,其它设备需要重新登录。</p>
+          <div class="backend-actions">
+            <button class="ghost" type="button" @click="editingPassword = false">关闭</button>
+            <button class="primary" type="button" :disabled="passwordBusy" @click="savePassword">
+              {{ passwordBusy ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <ThemeToggle />
 
       <span class="who">
         {{ auth.user?.username ?? auth.username }}
@@ -167,7 +236,8 @@ async function signOut(): Promise<void> {
   gap: 12px;
 }
 
-.backend {
+.backend,
+.password {
   position: relative;
 }
 
@@ -215,5 +285,46 @@ async function signOut(): Promise<void> {
   gap: 6px;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+@media (max-width: 768px) {
+  .header {
+    gap: 8px;
+    padding: 0 8px;
+  }
+
+  .brand strong {
+    display: none;
+  }
+
+  .nav {
+    gap: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab {
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
+  .right {
+    gap: 4px;
+  }
+
+  .backend,
+  .password,
+  .who {
+    display: none;
+  }
+
+  .right > button.ghost {
+    padding: 0 6px;
+    font-size: 12px;
+  }
 }
 </style>

@@ -1006,6 +1006,11 @@ def _cost_endpoint() -> str:
         def issue_token(self, user, token_hash, ttl_seconds): self.tokens[token_hash] = user
         def user_for_token(self, token_hash): return self.tokens.get(token_hash)
         def revoke_token(self, token_hash): self.tokens.pop(token_hash, None)
+        def revoke_all_tokens(self, user_id):
+            doomed = [h for h, owner in self.tokens.items() if owner.user_id == user_id]
+            for token_hash in doomed:
+                self.tokens.pop(token_hash, None)
+            return len(doomed)
         def bind_session(self, session_id, user_id): ...
         def owner_of(self, session_id): return None
 

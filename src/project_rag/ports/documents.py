@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from project_rag.domain.documents import DocRecord, DocStatus
+from project_rag.domain.documents import DocRecord, DocStatus, Folder
 
 
 class DiskFile(Protocol):
@@ -84,4 +84,39 @@ class DocumentStore(Protocol):
 
     def remove(self, document_id: str) -> int:
         """输入:文档 ID。行为:删掉这一行。输出:删除条数(0 = 本来就没有)。"""
+        ...
+
+    # ══ 一级目录 ═══════════════════════════════════════════════════════════
+    # 目录与文档在**同一个存储**里(同一份 MySQL 配置、同一族表):它们是"文档治理"的
+    # 两半,拆成两个工厂只会让"登记一行时顺带写目录"变成一次跨适配器事务。
+    # 归属存在 ``documents.folder`` 一列上,空串 = 未分类 —— 所以**读目录的文档清单**
+    # 仍然走 ``list_all()``,这一组方法只管目录自己的增删改。
+    # 建表/补列/回填都在 ``init_schema()`` 里(启动时那一处),这里不另开一个入口。
+
+    def list_folders(self) -> Sequence[Folder]:
+        """输入:无。行为:全部目录(按名字排)。输出:目录序列。"""
+        ...
+
+    def get_folder(self, folder_id: str) -> Folder | None:
+        """输入:目录 ID。行为:取一个。输出:目录;没有给 None。"""
+        ...
+
+    def folder_named(self, name: str) -> Folder | None:
+        """输入:目录名。行为:按名字取一个(名字唯一)。输出:目录;没有给 None。"""
+        ...
+
+    def add_folder(self, folder: Folder) -> None:
+        """输入:目录。行为:插入一行;名字或 ID 重复抛 ValueError。输出:无。"""
+        ...
+
+    def update_folder(self, folder: Folder) -> None:
+        """输入:目录(整行)。行为:改名字/说明/更新时间(ID 与创建时间不动)。输出:无。"""
+        ...
+
+    def remove_folder(self, folder_id: str) -> int:
+        """输入:目录 ID。行为:删掉这一行(**不动任何文档**)。输出:删除条数。"""
+        ...
+
+    def set_folder(self, document_id: str, folder_id: str) -> int:
+        """输入:文档 ID + 目录 ID(空串 = 未分类)。行为:改这一份的归属。输出:改动条数(0 = 没这份文档)。"""
         ...

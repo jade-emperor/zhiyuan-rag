@@ -13,6 +13,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import * as api from '../api/endpoints'
+import DialogShell from './ui/DialogShell.vue'
 import { accountsState, loadAccounts } from '../stores/accounts'
 import { documentsState, refreshDocuments } from '../stores/documents'
 
@@ -85,125 +86,82 @@ async function save(): Promise<void> {
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
-    <div class="card dialog" role="dialog" aria-label="文档权限">
-      <header>
-        <div>
-          <h3>{{ filename }}</h3>
-          <p class="faint">
-            <!-- **读规则之前不许下结论**:那一刻名单还是空的,画成"人人可见"就是在编一个
-                 (而它可能正好相反)。加载中如实说加载中。 -->
-            <span v-if="loading" class="tag soft">读取中…</span>
-            <span v-else class="tag" :class="restricted ? 'warn' : 'ok'">
-              {{ restricted ? '限定:只有名单里的人能看' : '人人可见(没有任何限制)' }}
-            </span>
-            <span class="faint">
-              管理员永远能看到这份文档(否则改错一次就再也改不回来)。
-            </span>
-          </p>
+  <DialogShell label="文档权限" :title="filename" size="md" @close="emit('close')">
+    <template #subtitle>
+      <span v-if="loading" class="tag soft">读取中…</span>
+      <span v-else class="tag" :class="restricted ? 'warn' : 'ok'">
+        {{ restricted ? '限定' : '人人可见' }}
+      </span>
+    </template>
+
+    <p v-if="error" class="alert error">{{ error }}</p>
+    <p v-if="notice" class="alert info">{{ notice }}</p>
+
+    <template v-if="!loading">
+      <section>
+        <h4>人员</h4>
+        <div class="checks">
+          <label v-for="user in accounts.users" :key="user.user_id" class="check">
+            <input
+              type="checkbox"
+              :checked="selectedUsers.includes(user.user_id)"
+              @change="toggle('users', user.user_id)"
+            />
+            {{ user.username }}
+          </label>
+          <p v-if="accounts.users.length === 0" class="faint">暂无账号</p>
         </div>
-        <button class="ghost" type="button" @click="emit('close')">关闭</button>
-      </header>
+      </section>
 
-      <p v-if="loading" class="muted"><span class="spin"></span> 读取中…</p>
-      <p v-if="error" class="alert error">{{ error }}</p>
-      <p v-if="notice" class="alert info">{{ notice }}</p>
-
-      <template v-if="!loading">
-        <p class="faint">
-          <strong>怎么读</strong>:两个名单都空 = 人人可见;勾了人 / 组之后,
-          <strong>只有</strong>他们能检索到、看到、预览这份文档 ——
-          员工搜索时它不会出现在结果里。
-        </p>
-
-        <section>
-          <h4>按人授权</h4>
-          <div class="checks">
-            <label v-for="user in accounts.users" :key="user.user_id" class="check">
-              <input
-                type="checkbox"
-                :checked="selectedUsers.includes(user.user_id)"
-                @change="toggle('users', user.user_id)"
-              />
-              {{ user.username }}
-              <span class="faint">{{ user.role }}</span>
-            </label>
-            <p v-if="accounts.users.length === 0" class="faint">还没有其它账号。</p>
-          </div>
-        </section>
-
-        <section>
-          <h4>按类授权(组)</h4>
-          <div class="checks">
-            <label v-for="group in accounts.groups" :key="group.group_id" class="check">
-              <input
-                type="checkbox"
-                :checked="selectedGroups.includes(group.group_id)"
-                @change="toggle('groups', group.group_id)"
-              />
-              {{ group.name }}
-              <span class="faint">{{ group.member_ids.length }} 人</span>
-            </label>
-            <p v-if="accounts.groups.length === 0" class="faint">
-              还没有组 —— 去「账号与权限」页建一个(例如「销售」)。
-            </p>
-          </div>
-        </section>
-
-        <div class="actions">
-          <button class="primary" type="button" :disabled="saving" @click="save">
-            {{ saving ? '保存中…' : '保存(整份名单)' }}
-          </button>
-          <button
-            class="ghost"
-            type="button"
-            :disabled="saving"
-            @click="selectedUsers = []; selectedGroups = []"
-          >
-            清空名单(= 取消限制)
-          </button>
+      <section>
+        <h4>组</h4>
+        <div class="checks">
+          <label v-for="group in accounts.groups" :key="group.group_id" class="check">
+            <input
+              type="checkbox"
+              :checked="selectedGroups.includes(group.group_id)"
+              @change="toggle('groups', group.group_id)"
+            />
+            {{ group.name }}
+          </label>
+          <p v-if="accounts.groups.length === 0" class="faint">暂无分组</p>
         </div>
-      </template>
-    </div>
-  </div>
+      </section>
+    </template>
+
+    <template #footer>
+      <button
+        class="ghost"
+        type="button"
+        :disabled="saving"
+        @click="selectedUsers = []; selectedGroups = []"
+      >
+        清空名单(= 取消限制)
+      </button>
+      <button class="primary" type="button" :disabled="saving || loading" @click="save">
+        {{ saving ? '保存中…' : '保存(整份名单)' }}
+      </button>
+    </template>
+  </DialogShell>
 </template>
 
 <style scoped>
-.dialog {
-  width: min(640px, 92vw);
-  max-height: 86vh;
-  overflow-y: auto;
-  padding: 16px;
+section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-h3 {
-  font-size: 15px;
+  gap: 6px;
 }
 
 h4 {
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-
-section {
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .checks {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 14px;
 }
 
 .check {
@@ -211,11 +169,6 @@ section {
   align-items: center;
   gap: 4px;
   font-size: 13px;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
+  color: var(--text);
 }
 </style>

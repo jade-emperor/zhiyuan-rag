@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from project_rag.adapters.bm25_index import BM25KeywordIndex
@@ -28,6 +29,7 @@ from project_rag.ports import (
     ConversationStore,
     Embedder,
     FaqStore,
+    ImageStore,
     LedgerStore,
     LLMClient,
     QueryRewriter,
@@ -39,6 +41,7 @@ from project_rag.ports import (
     VectorStore,
 )
 from project_rag.ports.keyword_index import KeywordIndex
+from project_rag.ports.captcha import CaptchaRenderer, CaptchaStore
 
 if TYPE_CHECKING:  # 只为注解;知识库通道的形状由用例层定义
     from project_rag.application.answer_question import KnowledgeChannel
@@ -63,6 +66,23 @@ def _default_cache_ttl() -> int:
     from project_rag.config import get_settings
 
     return get_settings().cache.ttl_s
+
+
+_CAPTCHA_STORE: Any = None
+
+
+def _captcha_store() -> CaptchaStore:
+    """输入:无。行为:返回**进程级唯一**的验证码存放。输出:存放实例。
+
+    票据是"一次性的问题":下发它的进程必须也是校验它的进程。每次新建一个实例,
+    ``take`` 就永远取不到答案 —— 所以这里必须是单例。
+    """
+    global _CAPTCHA_STORE
+    if _CAPTCHA_STORE is None:
+        from project_rag.adapters.captcha_memory import MemoryCaptchaStore
+
+        _CAPTCHA_STORE = MemoryCaptchaStore()
+    return _CAPTCHA_STORE  # pyright: ignore[reportUnknownVariableType]
 
 
 def _default_cost_prices() -> dict[str, Any]:
@@ -116,6 +136,10 @@ class Deps:
     # 「显式注入的结果」,不是"忘了配":验收脚本注入无认证的 Deps 才能只测业务逻辑,
     # 而 `build_real_deps` 永远把它接上(生产路径没有无认证这一档)。
     auth_store_factory: Callable[[], AuthStore] | None = None
+    # 图形验证码:存放 + 渲染。存放**必须每次返回同一实例**(票据要能被下一请求取回),
+    # 所以 `build_real_deps` 用模块级单例;渲染器无状态。
+    captcha_store_factory: Callable[[], CaptchaStore] | None = None
+    captcha_renderer_factory: Callable[[], CaptchaRenderer] | None = None
     # 文档登记表(有哪些文档 / 各自状态)。默认 None = 不接(老契约与纯检索路径用不上)。
     document_store_factory: Callable[[], DocumentStore] | None = None
     # 可见范围(组 / 组员 / 每份文档授权给谁)。默认 None = 不接 = **不做可见范围**
@@ -127,6 +151,9 @@ class Deps:
     chunker_factory: Callable[[], Any] | None = None
     loader_factory: Callable[[], Any] | None = None
     suffixes_factory: Callable[[], tuple[str, ...]] | None = None
+    # 图片对象存储:入库时上传、出参时签临时 URL。默认 None = 图片功能没开
+    # (纯文本部署与注入式验收都不该被 OSS 配置拦住)。
+    image_store_factory: Callable[[], ImageStore] | None = None
     # **磁盘索引**(上传目录 + 语料目录里的文件、大小、候选 doc_id)。清单拿它和登记表、
     # 向量库对账 —— "语料目录里新放的文件"只有这一处看得见。默认 None = 不看磁盘那一处
     # (多份老契约只关心登记表与库,不注入就不扫);`build_real_deps` 永远接上。
@@ -212,6 +239,7 @@ def build_real_deps() -> Deps:
     # (llm_deepseek 拉 langchain,实测 3510ms;另外两个拉 torch,秒级 + 上 G 内存)
     from project_rag.adapters.auth_mysql import MySQLAuthStore
     from project_rag.adapters.access_mysql import MySQLAccessStore
+    from project_rag.adapters.captcha_image import ImageCaptchaRenderer
     from project_rag.adapters.chunker_recursive import ChineseRecursiveChunker
     from project_rag.adapters.document_loader import (
         index_files,
@@ -256,6 +284,40 @@ def build_real_deps() -> Deps:
         # 免得"配置说用稀疏检索、集合却没有那一列"这种两处各说一套的坏法)
         return MilvusVectorStore(
             settings.milvus, sparse=settings.keyword.backend == "milvus"
+        )
+
+    @lru_cache(maxsize=1)
+    def _image_store() -> ImageStore:
+        """图片对象存储。只在 ``images.enabled`` 时装配;构造期不连网。"""
+        from project_rag.adapters.oss_images import OssImageStore
+
+        note_build("image_store")
+        return OssImageStore(
+            settings.oss,
+            allowed_types=settings.images.allowed_type_set,
+        )
+
+    def _load_documents(path: Path):
+        """装载器:图片模态开启时用 MinerU + OSS,否则保持原来的 PyMuPDF/文本路径。
+
+        ``corpus_root`` 传进去:同一个文件不管从语料根还是子目录灌,``doc_id``/``source``
+        都一样(见 ``adapters/document_loader.registration_anchor``)。上传目录不在语料根下,
+        行为与原来一致。
+        """
+        corpus_dir = project_path(settings.api.corpus_dir)
+        if not settings.images.enabled:
+            return load_documents(path, corpus_root=corpus_dir)
+        from project_rag.adapters.mineru_client import MinerUClient
+        from project_rag.adapters.mineru_pdf import MinerUFileSource
+
+        return load_documents(
+            path,
+            corpus_root=corpus_dir,
+            image_store=_image_store(),
+            pdf_source=MinerUFileSource(MinerUClient(settings.mineru).parse),
+            image_min_bytes=settings.images.min_bytes,
+            image_max_bytes=settings.images.max_bytes,
+            image_max_per_doc=settings.images.max_per_doc,
         )
 
     @lru_cache(maxsize=1)
@@ -326,6 +388,8 @@ def build_real_deps() -> Deps:
         cache_factory=lambda: RedisCache(settings.redis),
         ledger_store_factory=lambda: MySQLLedgerStore(settings.mysql),
         auth_store_factory=lambda: MySQLAuthStore(settings.mysql),
+        captcha_store_factory=_captcha_store,
+        captcha_renderer_factory=ImageCaptchaRenderer,
         document_store_factory=lambda: MySQLDocumentStore(settings.mysql),
         access_store_factory=lambda: MySQLAccessStore(settings.mysql),
         chunker_factory=lambda: ChineseRecursiveChunker(
@@ -333,8 +397,12 @@ def build_real_deps() -> Deps:
             settings.rag.child_chunk_size,
             settings.rag.chunk_overlap,
         ),
-        loader_factory=lambda: load_documents,
+        loader_factory=lambda: _load_documents,
         suffixes_factory=supported_suffixes,
+        # 图片存储:关掉时是 None(出参就没有图片);开着时构造期只保存配置,
+        # 第一次 put/sign 才 import oss2。不要在这里 eager 建 Bucket ——
+        # `project-rag --help` 不该为了一个没用的功能付 OSS SDK 的 import。
+        image_store_factory=_image_store if settings.images.enabled else None,
         # 磁盘索引(清单对账用的"磁盘那一处")。**每次调用扫一遍**,不做缓存:
         # 有人刚往语料目录里放了个文件,清单就该立刻看见它 —— 缓存一秒都是在制造
         # "我明明放进去了前端看不到"这类问题。目录不大,递归列一遍是毫秒级。
@@ -518,6 +586,15 @@ def knowledge_callable(
     ``qa`` 命中 FAQ 时这个闭包一次都不会被调用,嵌入/重排模型也就不会被加载。
     """
 
+    # 图片签名器**惰性**到真的用到才构造:FAQ 命中时一次都不会调;
+    # 没有图片的语料也不会为了一个空 signer 去碰 oss2。
+    def _sign_image(key: str) -> str:
+        if deps.image_store_factory is None:
+            raise RuntimeError("图片功能没装配:image_store_factory 为空")
+        return deps.image_store_factory().sign(key)
+
+    image_signer = _sign_image if deps.image_store_factory is not None else None
+
     def call(history: Sequence[ConversationTurn], timing: StreamTiming) -> Iterator[QaEvent]:
         from project_rag.application import stream_rag
 
@@ -545,6 +622,7 @@ def knowledge_callable(
             rewriter=deps.query_rewriter_factory()
             if deps.query_rewriter_factory is not None
             else None,
+            image_signer=image_signer,
         )
 
     return call
@@ -579,12 +657,17 @@ def ensure_documents_schema(deps: Deps) -> str | None:
     扳回来(见 ``adapters/mysql_schema.py``:那张表与可见范围表按 ``document_id`` 相关)。
 
     与另外两个 ``ensure_*`` 同一条政策:失败只记警告,不拦启动。
+
+    **语料目录 → 一级目录的同步不在这里**:这个函数也会被注入式验收的 ``create_app`` 调用,
+    在假件上同步真语料会把每个用例的假库塞进 4 个真目录(踩过)。同步放在真正的进程入口
+    (``api.app.run``)与 ``ingest`` 里 —— 那两处才是"一个部署开始工作"的时刻。
     """
     if deps.document_store_factory is None:  # 注入式部署(验收/假件):不碰真库
         return None
     try:
-        deps.document_store_factory().init_schema()
-    except Exception as e:  # noqa: BLE001 - 见上:建表失败不该拦启动
+        store = deps.document_store_factory()
+        store.init_schema()
+    except Exception as e:  # noqa: BLE001 - 见上:建表/同步失败不该拦启动
         return f"{type(e).__name__}: {e}"
     return None
 

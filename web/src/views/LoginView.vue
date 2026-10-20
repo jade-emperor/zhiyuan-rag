@@ -1,17 +1,13 @@
 <script setup lang="ts">
 /**
- * 登录页。
- *
- * 两条刻意的事:
- * 1. 页面上就能改**后端地址** —— 这个 app 只依赖它,而"连不上"与"密码不对"
- *    必须让用户分得清(所以错误提示来自 capabilities 探测,不是笼统的一句"登录失败");
- * 2. **没有注册入口**:账号由管理员用 `project-rag user add` 建(后端也没有注册接口)——
- *    前端不给一个点了必然 404 的按钮。
+ * 登录页。页面上就能改后端地址:这个 app 只依赖它,而「连不通」与「密码不对」必须让用户分得清。
+ * 自助注册入口只在后端 `capabilities.registration.enabled` 为真时显示。
  */
-import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-import { backendBase, setBackendBase } from '../api/client'
+import { backendBase, setBackendBase, storedUsername } from '../api/client'
+import AuthShell from '../components/ui/AuthShell.vue'
 import { login, authState } from '../stores/auth'
 import { capabilitiesState, loadCapabilities } from '../stores/capabilities'
 
@@ -20,12 +16,15 @@ const route = useRoute()
 const auth = authState()
 const caps = capabilitiesState()
 
-const username = ref('')
+const username = ref(storedUsername() ?? '')
 const password = ref('')
 const backendDraft = ref(backendBase())
 const showBackend = ref(false)
+const showPassword = ref(false)
+const fieldErrors = reactive<{ username: string; password: string }>({ username: '', password: '' })
 
 const backendOk = computed(() => caps.data !== null && caps.error === '')
+const canRegister = computed(() => caps.data?.registration.enabled === true)
 
 onMounted(async () => {
   if (caps.data === null) await loadCapabilities()
@@ -38,8 +37,10 @@ async function connect(): Promise<void> {
 }
 
 async function submit(): Promise<void> {
-  if (username.value.trim().length === 0 || password.value.length === 0) {
-    auth.error = '用户名与密码都要填'
+  fieldErrors.username = username.value.trim().length === 0 ? '请填写用户名' : ''
+  fieldErrors.password = password.value.length === 0 ? '请填写密码' : ''
+  if (fieldErrors.username !== '' || fieldErrors.password !== '') {
+    auth.error = ''
     return
   }
   try {
@@ -47,84 +48,81 @@ async function submit(): Promise<void> {
     const next = typeof route.query.next === 'string' ? route.query.next : '/chat'
     await router.replace(next.startsWith('/') ? next : '/chat')
   } catch {
-    /* 错误已经写进 auth.error,这里不再抛(模板会显示) */
+    /* 错误已写入 auth.error,模板负责显示 */
   }
 }
 </script>
 
 <template>
-  <div class="page">
-    <div class="card login">
-      <h1>🍜 RAG Assistant</h1>
-      <p class="muted">课程知识库问答。员工可检索;管理员还能管文档与看观测报表。</p>
+  <AuthShell class="login" title="登录">
+    <label class="field">
+      <span>用户名</span>
+      <input v-model="username" type="text" autocomplete="username" @keydown.enter="submit" />
+      <small v-if="fieldErrors.username" class="alert error small">{{ fieldErrors.username }}</small>
+    </label>
 
-      <label class="field">
-        <span>用户名</span>
-        <input v-model="username" type="text" autocomplete="username" @keydown.enter="submit" />
-      </label>
-      <label class="field">
-        <span>密码</span>
-        <input v-model="password" type="password" autocomplete="current-password" @keydown.enter="submit" />
-      </label>
-
-      <p v-if="auth.error" class="alert error">{{ auth.error }}</p>
-
-      <button class="primary block" type="button" :disabled="auth.loading" @click="submit">
-        {{ auth.loading ? '登录中…' : '登录' }}
-      </button>
-
-      <p class="faint">没有注册入口:账号由管理员用 <code>project-rag user add</code> 创建。</p>
-
-      <div class="backend">
-        <button class="ghost small" type="button" @click="showBackend = !showBackend">
-          后端 {{ backendBase() || '未配置' }} · {{ backendOk ? '已连通' : '未连通' }}
+    <label class="field">
+      <span>密码</span>
+      <div class="secret">
+        <input
+          v-model="password"
+          :type="showPassword ? 'text' : 'password'"
+          autocomplete="current-password"
+          @keydown.enter="submit"
+        />
+        <button class="ghost small" type="button" @click="showPassword = !showPassword">
+          {{ showPassword ? '隐藏' : '显示' }}
         </button>
-        <div v-if="showBackend" class="backend-box">
-          <input v-model="backendDraft" type="text" placeholder="http://主机:端口" />
-          <button class="primary small" type="button" @click="connect">连接</button>
-        </div>
-        <p v-if="caps.error" class="alert error small">{{ caps.error }}</p>
       </div>
+      <small v-if="fieldErrors.password" class="alert error small">{{ fieldErrors.password }}</small>
+    </label>
+
+    <p v-if="auth.error" class="alert error">{{ auth.error }}</p>
+
+    <button class="primary login-btn" type="button" :disabled="auth.loading" @click="submit">
+      {{ auth.loading ? '登录中…' : '登录' }}
+    </button>
+
+    <p v-if="canRegister" class="auth-foot">
+      <span>还没有账号?</span>
+      <RouterLink :to="{ name: 'register' }">创建账号</RouterLink>
+    </p>
+    <p v-else-if="caps.data !== null" class="auth-foot">账号由管理员创建</p>
+
+    <div class="backend">
+      <button class="ghost small" type="button" @click="showBackend = !showBackend">
+        后端 {{ backendBase() || '未配置' }} · {{ backendOk ? '已连通' : '未连通' }}
+      </button>
+      <div v-if="showBackend" class="backend-box">
+        <input v-model="backendDraft" type="text" placeholder="http://主机:端口" />
+        <button class="primary small" type="button" @click="connect">连接</button>
+      </div>
+      <p v-if="caps.error" class="alert error small">{{ caps.error }}</p>
     </div>
-  </div>
+  </AuthShell>
 </template>
 
 <style scoped>
-.page {
+.secret {
+  display: flex;
+  gap: 6px;
+}
+
+.secret input {
   flex: 1;
-  display: grid;
-  place-items: center;
-  padding: 24px;
 }
 
-.login {
-  width: 380px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-h1 {
-  font-size: 18px;
-}
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.block {
+.login-btn {
   width: 100%;
+  height: 38px;
+  margin-top: 2px;
 }
 
 .backend {
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 2px;
 }
 
 .backend-box {
@@ -133,7 +131,8 @@ h1 {
 }
 
 .small {
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: 11px;
+  height: 22px;
+  padding: 0 6px;
 }
 </style>

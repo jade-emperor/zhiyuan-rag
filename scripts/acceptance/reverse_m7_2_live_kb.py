@@ -38,7 +38,7 @@ DOCS_APP = ROOT / "src" / "project_rag" / "application" / "documents.py"
 API_APP = ROOT / "src" / "project_rag" / "api" / "app.py"
 LOADER = ROOT / "src" / "project_rag" / "adapters" / "document_loader.py"
 INGEST = ROOT / "src" / "project_rag" / "cli" / "commands" / "ingest.py"
-CARD = ROOT / "web" / "src" / "components" / "DocumentCard.vue"
+TABLE = ROOT / "web" / "src" / "components" / "DocumentTable.vue"
 SCRIPT = "check_m7_2_live_kb.py"
 
 
@@ -117,11 +117,11 @@ CASES: tuple[Case, ...] = (
         needle="删除：只清上传目录里的原件",
     ),
     Case(
-        title="RT-9  卡片回到按 status 显示（「已入库」再次由登记表说了算）",
-        target=CARD,
-        old="const label = computed(() => STATE_LABELS[props.doc.state])",
-        new="const label = computed(() => STATE_LABELS[props.doc.status as DocState])",
-        needle="前端：卡片按 state 显示",
+        title="RT-9  表格回到按 status 显示（「已入库」再次由登记表说了算）",
+        target=TABLE,
+        old="  return STATE_LABELS[doc.state]",
+        new="  return STATE_LABELS[doc.status as DocState]",
+        needle="前端：表格按 state 显示",
     ),
     Case(
         title="RT-10  上传直接往最终文件名里写（中断留下半截文件,清单上多一张「未入库」）",

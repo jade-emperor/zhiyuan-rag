@@ -685,7 +685,10 @@ def _() -> str:
     cards = rounds[2]["citations"]
     if len(cards) != 1 or cards[0]["index"] != 1 or cards[0]["page"] != 7:
         raise AssertionError(f"历史该带当轮引用卡片,实际 {cards}")
-    if set(cards[0]) != {"index", "source", "doc_id", "preview", "score", "rerank_score", "page"}:
+    if set(cards[0]) != {
+        "index", "source", "doc_id", "preview", "score", "rerank_score", "page",
+        "images",
+    }:
         raise AssertionError(f"引用卡片的字段与实时那份不一致:{sorted(cards[0])}")
     if rounds[0]["citations"] != []:
         raise AssertionError(f"没有出处的那一轮该给空列表(不是缺字段也不是编一条),实际 {rounds[0]}")

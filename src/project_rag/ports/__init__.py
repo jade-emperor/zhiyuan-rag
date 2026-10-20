@@ -1,12 +1,14 @@
 from .access import AccessStore
 from .auth import AuthStore
+from .captcha import CaptchaRenderer, CaptchaStore
 from .cache import Cache
 from .conversation import ConversationStore
 from .chunker import TextChunker
-from .document_source import DocumentSource
+from .document_source import DocumentSource, ParsedDocument, SourceImage
 from .documents import DiskFile, DocumentStore
 from .embedder import Embedder
 from .faq import FaqStore
+from .image_store import ImageStore
 from .keyword_index import KeywordIndex
 from .ledger import LedgerStore
 from .llm import LLMClient
@@ -21,13 +23,18 @@ from .vector_store import VectorStore
 __all__ = [
     "AccessStore",
     "AuthStore",
+    "CaptchaRenderer",
+    "CaptchaStore",
     "Cache",
     "ConversationStore",
     "DocumentSource",
     "DiskFile",
     "DocumentStore",
+    "ParsedDocument",
+    "SourceImage",
     "Embedder",
     "FaqStore",
+    "ImageStore",
     "KeywordIndex",
     "LedgerStore",
     "LLMClient",

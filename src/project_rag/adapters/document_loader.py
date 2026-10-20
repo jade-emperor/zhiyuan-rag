@@ -25,9 +25,9 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from project_rag.domain import Document
+from project_rag.domain import Document, DocumentImage
 from project_rag.observability import get_logger
-from project_rag.ports import DocumentSource
+from project_rag.ports import DocumentSource, ImageStore
 
 from .office_files import OfficeFileSource
 from .pdf_files import PdfFileSource
@@ -188,11 +188,54 @@ def supported_suffixes() -> tuple[str, ...]:
     return tuple(sorted(_BY_SUFFIX))
 
 
-def load_documents(path: Path) -> LoadedCorpus:
-    """输入:一个文件或目录。行为:递归收集文件、按扩展名分派、读成带结构的正文。输出:装载结果(含跳过清单)。
+def registration_anchor(file: Path, root: Path, corpus_root: Path | None) -> Path:
+    """输入:一个文件、本次的入库根、语料根(可 None)。行为:算它的**登记根**。输出:一个目录。
+
+    **为什么"登记根"不总是本次的入库根**:``project-rag ingest --path data/corpus`` 与
+    ``--path data/corpus/bagu_ai_data`` 指的是同一批文件,但相对路径不同
+    (``bagu_ai_data/x.md`` vs ``x.md``)—— 于是 ``doc_id`` 不同、``chunk_id`` 不同、
+    ``source`` 也不同,同一份文档在库里变成两份(检索时还会被当成两条互相竞争的证据,
+    界面上则是"两个同名文件")。
+
+    规则只有一条:**文件在语料根下时,取它的一级子目录当登记根**。那正好是磁盘索引给出的
+    首选候选 id(见 ``ingest_roots``),两条入库路径从此同口径;文件不在语料根下
+    (上传目录、任意临时目录)时,仍然是本次的入库根 —— 老行为不变。
+    """
+    if corpus_root is not None:
+        try:
+            relative = file.resolve().relative_to(corpus_root.resolve())
+        except (ValueError, OSError):
+            relative = None
+        if relative is not None and len(relative.parts) >= 2:
+            return corpus_root / relative.parts[0]
+    return root
+
+
+def load_documents(
+    path: Path,
+    *,
+    image_store: ImageStore | None = None,
+    pdf_source: DocumentSource | None = None,
+    image_min_bytes: int = 0,
+    image_max_bytes: int = 0,
+    image_max_per_doc: int = 0,
+    corpus_root: Path | None = None,
+) -> LoadedCorpus:
+    """输入:一个文件或目录(+ 可选图片上传器、可选 PDF 解析器)。行为:递归收集、按扩展名分派、读成带结构的正文。输出:装载结果(含跳过清单)。
 
     深度优先递归 + 按相对路径排序:``source`` 只看顶层目录名,子目录不再影响来源标签
     (``corpus_alpha/notes/01.md`` 的 source 仍是 ``corpus_alpha``)。
+
+    ``pdf_source`` 用来替换内置的 PyMuPDF 适配器(图片模态开启时换成 MinerU 那一份)。
+    只用 ``isinstance(source, PdfFileSource)`` 判一次,别的格式不受影响。
+
+    ``image_store`` 给了才上传图片并得到 ``DocumentImage.key``;不给时**图不落库**,
+    但正文/页码照常装载(dry-run 与纯文本验收不需要 OSS)。给了却上传失败会原样抛,
+    不静默丢图 —— 那是入库失败,管理员应该看到 ``failed``。
+
+    ``image_min_bytes`` / ``image_max_bytes`` / ``image_max_per_doc`` 是图片的**资源闸**:
+    太小的是图标,太大的是扫描整页,超过张数的先到先得。被闸掉的图记日志,
+    不阻断正文入库 —— 图片是增强,不该让一份有 51 张图的 PDF 整份失败。
     """
     if path.is_file():
         root, candidates = path.parent, [path]
@@ -201,29 +244,110 @@ def load_documents(path: Path) -> LoadedCorpus:
     else:
         raise FileNotFoundError(f"路径不存在:{path}")
 
-    name = source_of(root)
+    sources = (
+        tuple(
+            pdf_source if isinstance(source, PdfFileSource) else source
+            for source in SOURCES
+        )
+        if pdf_source is not None
+        else SOURCES
+    )
+    by_suffix = {suffix: source for source in sources for suffix in source.suffixes}
+
     documents: list[Document] = []
     skipped: list[str] = []
     empty: list[str] = []
 
-    for file in sorted(candidates, key=lambda found: doc_id_of(root, found)):
-        relative = doc_id_of(root, file)
-        source = _BY_SUFFIX.get(file.suffix.lower())
+    def anchor_of(found: Path) -> Path:
+        """输入:一个候选文件。行为:算它的登记根(见 ``registration_anchor``)。输出:目录。"""
+        return registration_anchor(found, root, corpus_root)
+
+    for file in sorted(candidates, key=lambda found: doc_id_of(anchor_of(found), found)):
+        anchor = anchor_of(file)
+        relative = doc_id_of(anchor, file)
+        name = source_of(anchor)
+        source = by_suffix.get(file.suffix.lower())
         if source is None:
             skipped.append(relative)
             continue
-        # **有页码能力的源就用它**(结构判据,不用 isinstance):
-        # `read_with_pages` 不是端口成员(只有 PDF 有页码),所以这里不该写死类型。
-        # 拿到的 (正文, 区间表) 与 read() 的正文逐字符一致,适配器那边有契约钉着。
+        # **有图片/页码能力的源优先**:`read_with_assets` 是 MinerU 这类源的扩展,
+        # 不是所有格式都有,所以用结构判据而不是写死类型。
         pages: tuple[tuple[int, int, int], ...] = ()
-        reader = getattr(source, "read_with_pages", None)
-        if reader is not None:
-            text, pages = reader(file)
+        images = ()
+        rich_reader = getattr(source, "read_with_assets", None)
+        if rich_reader is not None:
+            parsed = rich_reader(file)
+            text, pages = parsed.text, parsed.pages
+            # 先判空再上传:空文档的图传上去只会变成没人引用的孤儿对象。
+            if not text.strip():
+                empty.append(relative)
+                continue
+            if parsed.images and image_store is None:
+                _logger.warning(
+                    "%s 解析出 %d 张图,但没装配图片上传器 —— 图片不会进库",
+                    relative,
+                    len(parsed.images),
+                )
+            uploaded = []
+            if image_store is not None:
+                for image in parsed.images:
+                    if image_max_per_doc > 0 and len(uploaded) >= image_max_per_doc:
+                        _logger.warning(
+                            "%s 的图片超过上限 %d 张,后面的不再上传",
+                            relative,
+                            image_max_per_doc,
+                        )
+                        break
+                    try:
+                        size = image.path.stat().st_size
+                    except OSError as exc:
+                        _logger.warning("读不到图片大小,跳过 %s:%s", image.path, exc)
+                        continue
+                    if image_min_bytes > 0 and size < image_min_bytes:
+                        _logger.info(
+                            "%s 的图片只有 %d 字节(< %d),按小图标跳过",
+                            relative,
+                            size,
+                            image_min_bytes,
+                        )
+                        continue
+                    if image_max_bytes > 0 and size > image_max_bytes:
+                        _logger.warning(
+                            "%s 的图片 %d 字节超过上限 %d,跳过",
+                            relative,
+                            size,
+                            image_max_bytes,
+                        )
+                        continue
+                    key = image_store.put(image.path)
+                    uploaded.append(
+                        DocumentImage(
+                            key=key,
+                            offset=image.offset,
+                            page=image.page,
+                            alt=image.alt,
+                        )
+                    )
+            images = tuple(uploaded)
         else:
-            text = source.read(file)
+            # `read_with_pages` 不是端口成员(只有 PDF 有页码),所以这里也不该写死类型。
+            # 拿到的 (正文, 区间表) 与 read() 的正文逐字符一致,适配器那边有契约钉着。
+            page_reader = getattr(source, "read_with_pages", None)
+            if page_reader is not None:
+                text, pages = page_reader(file)
+            else:
+                text = source.read(file)
         if not text.strip():
             empty.append(relative)
             continue
-        documents.append(Document(doc_id=relative, text=text, source=name, pages=pages))
+        documents.append(
+            Document(
+                doc_id=relative,
+                text=text,
+                source=name,
+                pages=pages,
+                images=images,
+            )
+        )
 
     return LoadedCorpus(tuple(documents), tuple(skipped), tuple(empty))

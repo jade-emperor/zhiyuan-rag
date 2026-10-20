@@ -76,15 +76,14 @@ dependencies = [
     "tiktoken>=0.7",
     "sentencepiece>=0.2",
     # ---- 文档解析 ----
-    # 注意:unstructured 是**可选依赖**(见下方 [project.optional-dependencies]),不在运行时依赖里。
     "python-docx>=1.1.2",
     "python-pptx>=1.0",
     "PyMuPDF>=1.25",
     "pillow>=10.4",
     "opencv-python>=4.10",
     "rapidocr-onnxruntime>=1.4",
-    # ↑ OCR 三件套(cv2 / rapidocr / pillow)目前产品路径一行没 import,是为
-    #   「将来加扫描件」预留的;真要瘦身时它们和 unstructured 一样可以搬进 optional,
+    # ↑ pillow 用于登录/注册的图形验证码(captcha_image);cv2 / rapidocr 仍未进产品路径,是为
+    #   「将来加扫描件」预留的;真要瘦身时它们可以搬进 optional,
     #   搬之前先确认没有传递依赖靠它们(卸载后跑一遍验收)。
     # ---- RAG 评估 ----
     "ragas>=0.3",
@@ -109,6 +108,10 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "pyyaml>=6.0.3",
     "pdfminer-six>=20260107",
+    # ---- 图片模态 ----
+    # 阿里云 OSS SDK。**延迟 import**:图片开关关掉时不付它的导入时间;
+    # 它只负责对象上传/签名,不参与文本链路。
+    "oss2>=2.19,<3.0",
 ]
 
 [build-system]
@@ -117,27 +120,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/project_rag"]
-
-[tool.uv.sources]
-en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
-
-# 静态元数据（加)——**别再删掉它**,删了就把下一条注释里那两次事故请回来。
-#
-# 为什么需要:那个 wheel 的 METADATA 里**只有 Name/Version**(实测:没有一条
-# ``Requires-Dist`` / ``Requires-Python`` / ``Provides-Extra`` —— 它是纯数据包,
-# 描述正文里那句 "spaCy >=3.8.0,<3.9.0" 只是表格文字,不是元数据字段),
-# 所以可以如实静态声明。而 uv 解析时**即使没选中这个 extra 也要它的元数据**来校验锁 ——
-# 那个 wheel 又只有 GitHub 一个来源(实测取一次:宿主 **172s**、容器 **186s**,
-# 而 uv 默认 HTTP 超时 30s × 3 次重试 → **46s 就失败**)。于是它会随机死在这一步:
-# * `docker build`;
-#   * **日常 `uv run project-rag-api`**(同一天第二次,报错一模一样)。
-# 声明之后 uv 不必再去取它 —— 开发与构建都不再依赖 github。
-# 维护:URL 里的版本(`en_core_web_sm-3.8.0`)与这里的 `version` 必须一致,
-# 有契约盯着(`check_m6_deploy.py`「静态元数据」那条 + 反向 RT-19)。
-[tool.uv]
-dependency-metadata = [
-    { name = "en-core-web-sm", version = "3.8.0" },
-]
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -163,28 +145,19 @@ project-rag-api = "project_rag.api.app:run"
 project-rag-desktop = "project_rag.desktop:main"
 
 # ---------------------------------------------------------------------------
-# 可选依赖:不进运行时依赖,也就**不进镜像**(`uv sync --no-dev` 不装 optional)。
-# 这三样是「第 4 个适配器」的备选 —— 加 HTML / Excel / 扫描件时才用得上
-#。
+# 可选依赖:不进运行时依赖,也不进镜像(`uv sync --no-dev` 不装 optional)。
+# 只有桌面壳(`--extra desktop`)。
 #
-# 为什么必须搬出主依赖(两条都是实测,不是洁癖):
-#   1) `en-core-web-sm` 的 wheel **只有 GitHub 一个来源**(见 [tool.uv.sources]),
-#      留在主依赖里意味着每次 `uv sync --locked` 都要去 github.com 取一个
-#      产品路径根本不用的模型 → 镜像构建会卡在这里(本机 `uv run` 曾卡满 90s 超时);
-#   2) `src/` 里 **0 处** import unstructured —— 只有 4 处 docstring 在解释
-#      「为什么不用它」(PDF 标题会从 551 条真书签变成 10883 条、慢 72 倍)。
-#      留在主依赖里等于把一个整套解析栈塞进镜像,换来 0 收益。
-#
-# 要用时:`uv sync --extra unstructured`
+# **`unstructured` 那一档已整块删除**(连同 `en-core-web-sm`):它的 wheel 只有 GitHub
+# 一个来源,而 uv 在**任何一次重新解析**(换机、改依赖、清缓存)时都要去取它 ——
+# 实测取一次 172s,uv 默认 46s 放弃,于是 `uv run` / `docker build` 随机死在网络上。
+# 而 `src/` 里 0 处 import 它(见 adapters/pdf_files.py、office_files.py 的说明),
+# 为一个用不上的包赌构建可用性不划算。要用时自己 `uv add --optional unstructured`,
+# 并先确认那个模型的来源可达。
 # ---------------------------------------------------------------------------
 [project.optional-dependencies]
 # 桌面壳:pywebview 只在**开窗那一步**才 import(见 src/project_rag/desktop.py),
 # 所以 `--help` / `--check` 在没有 GUI 栈的机器上照样能跑(CI 里就是这么验的)。
 desktop = [
     "pywebview>=5.0",
-]
-unstructured = [
-    "unstructured>=0.16,<1.0",
-    "langchain-unstructured>=1.0,<2.0",
-    "en-core-web-sm",
 ]

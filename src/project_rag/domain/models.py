@@ -37,6 +37,10 @@ class ChatMessage:
     # 声明Role只能是system、user、assistant三种字面量
     role: Role
     content: str
+    # 多模态消息附带的图片 URL(按顺序附在文字之后)。空元组 = 纯文本,
+    # 适配器必须走原来的纯字符串 content,不能凭空把消息变成列表。
+    # URL 由调用方现签(短时有效),**不在 domain 里签** —— 领域层不认识 OSS。
+    images: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +54,9 @@ class CitationSnapshot:
 
     ``page`` 与实时那份同一条口径:**None = 不知道**(md/txt 没有页码、老块也没记),
     不许拿 0/1 顶上。
+
+    ``image_keys`` 同理:存 key 不存签名 URL —— 历史回看时 URL 早就过期了,
+    而 key 永远能用(只要对象还在,现签一次即可)。
     """
 
     index: int
@@ -59,6 +66,7 @@ class CitationSnapshot:
     score: float
     rerank_score: float | None = None
     page: int | None = None
+    image_keys: tuple[str, ...] = ()
 
 
 # 引用预览留多少字。**只在这里定义一次**:实时那份(接口出参)与历史那份(落库快照)
@@ -81,6 +89,7 @@ def snapshot_citations(citations: Sequence[Citation]) -> tuple[CitationSnapshot,
             score=citation.score,
             rerank_score=citation.rerank_score,
             page=citation.page,
+            image_keys=citation.chunk.image_keys,
         )
         for citation in citations
     )
@@ -228,6 +237,24 @@ class FaqAnswer:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentImage:
+    """文档里的一张图在正文中的锚点。
+
+    ``key`` 是 OSS 对象的稳定身份(图片字节的 SHA-256),**不是 URL** ——
+    签名 URL 会过期,存进 Document / Chunk / 历史就会变成死链。
+
+    ``offset`` 是这张图在 ``Document.text`` 里的字符位置(图片被从正文里摘掉后,
+    这个位置仍然保留)。切块时用它判断图属于哪个父块:位置只能由解析器给,
+    不能事后拿图注去正文里 ``find`` —— 重复句子会给出看着合法的错位置。
+    """
+
+    key: str
+    offset: int
+    page: int | None = None
+    alt: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Document:
     """加载进来的一份原始文档(还没切分)。
 
@@ -242,6 +269,10 @@ class Document:
     # 空元组 = 这份格式没有页码概念(md/txt 就是空,不是"第 0 页")。
     # 默认值让现有构造不受影响(加字段不许改调用点)。
     pages: tuple[tuple[int, int, int], ...] = ()
+    # 文档里的图片。空元组 = 这份文档没有图,或者图片功能没开。
+    # 图注/alt 只作为给人看的说明保留,**不参与检索正文**;正文里另有一段
+    # ``【图】`` 之类的短标记(由解析器决定),避免整块只剩图片时切不出父块。
+    images: tuple[DocumentImage, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +297,10 @@ class Chunk:
     # None = 不知道 —— 两种来源都归到这里:这种格式没有页码概念(md/txt),或者块是
     # 早期入库的老数据。**不许拿 0 或 -1 当"没有页码"**:那会被读成一个真实页号。
     page: int | None = None
+    # 这个子块所属**父块**包含的图片 key(内容哈希)。同一父块的所有子块共用一份 ——
+    # 检索命中哪个子块不确定,但折叠父块后要能拿到同一组图。
+    # 空元组 = 没有图,或者图片功能关着;老数据读回来也是空。
+    image_keys: tuple[str, ...] = ()
 
     @property
     def context_text(self) -> str:
@@ -417,6 +452,10 @@ class ChunkGroup:
     parent_text: str
     children: tuple[str, ...]
     child_starts: tuple[int, ...] = ()
+    # 父块在**整篇正文**里的起始偏移。图片靠它挂到父块:offset 落在
+    # [parent_start, 下一个 parent_start) 之间就是这一块的图。
+    # None = 切分器不报位置(旧实现/验收夹具),此时**不挂图**,不许猜。
+    parent_start: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

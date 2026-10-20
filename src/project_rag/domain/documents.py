@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+from uuid import uuid4
 
 DocStatus = Literal["pending", "processing", "processed", "failed", "deleting"]
 
@@ -89,6 +90,9 @@ class DocRecord:
     size_bytes: int
     created_at: str
     error: str | None = None
+    # 这一份归在哪一级目录下(见 ``Folder``)。空串 = 未分类 —— 它**是**一个合法归属,
+    # 不是"缺字段":磁盘上刚放进来、还没登记的文件也只能是未分类(没有行可写)。
+    folder: str = ""
 
     @property
     def searchable(self) -> bool:
@@ -100,3 +104,81 @@ class DocRecord:
         是因为对账(``reconcile``)要的正是"登记表怎么说"。
         """
         return self.status in SEARCHABLE_STATUSES
+
+
+# ══ 一级目录 ════════════════════════════════════════════════════════════════
+UNFILED: str = ""
+"""未分类的目录 ID。空串在接口路径里不好看,所以对外用 ``UNFILED_ID`` 这一个别名。"""
+
+UNFILED_ID: str = "unfiled"
+"""未分类在**接口路径**与前端路由里的那一节(``GET /api/v1/folders/unfiled``)。
+
+真实的目录 ID 永远是 ``f_`` 开头的十六进制,不会撞上这个词 —— 这条由 ``new_folder_id``
+的形状保证,不是靠调用方小心。
+"""
+
+UNFILED_NAME: str = "未分类"
+
+FOLDER_NAME_MAX = 40
+"""目录名上限。**只在这一处**:数据库列宽(64)、接口校验、前端 `maxlength` 都跟着它。
+
+留出余量是因为列宽要装得下"改名时把名字塞进 URL"这类临时形态;真正给人看的上限
+是 40 —— 再长在卡片上就要折行了,而折行的目录名读起来像两行正文。
+"""
+
+FOLDER_DESCRIPTION_MAX = 120
+
+
+def new_folder_id() -> str:
+    """输入:无。行为:生成一个目录 ID。输出:``f_`` + 12 位十六进制。
+
+    前缀不是装饰:生成出来的 ID 恒满足 ``^f_[0-9a-f]{12}$``,于是**在形状上**就不可能
+    等于保留 ID ``unfiled`` —— 这条不靠调用方小心,由 ``check_m7_5_folders`` 钉住。
+    """
+    return f"f_{uuid4().hex[:12]}"
+
+
+def check_folder_name(raw: str) -> str:
+    """输入:用户给的目录名。行为:去掉首尾空白并校验。输出:可入库的名字;不合法则抛 ValueError。
+
+    **为什么名字也要有规矩**:目录名是这个系统里唯一一个"人给、人看、还要当命令行参数"
+    的标识 —— ``project-rag ingest --folder 产品资料`` 就是按名字找目录的。
+    带首尾空格的名字会让同一次命令在下一次找不到它;带 ``/`` 或换行的名字在任何路径式
+    展示里都会错位。所以这些一律当场驳回,而不是"存进去再说"。
+
+    ``未分类`` 是保留名:它与"没有目录"在界面上长得一样,允许存在就会有两件事共用一个名字。
+    """
+    name = raw.strip()
+    if not name:
+        raise ValueError("目录名不能为空")
+    if len(name) > FOLDER_NAME_MAX:
+        raise ValueError(f"目录名最多 {FOLDER_NAME_MAX} 个字符,收到 {len(name)} 个")
+    if name == UNFILED_NAME:
+        raise ValueError(f"{UNFILED_NAME!r} 是保留名(它表示「没有目录」),换一个")
+    bad = [ch for ch in name if ch in "/\\" or ord(ch) < 32]
+    if bad:
+        raise ValueError(f"目录名里不能有 / \\ 或控制字符,收到 {bad!r}")
+    return name
+
+
+def check_folder_description(raw: str) -> str:
+    """输入:用户给的目录描述。行为:去空白、限长。输出:可入库的描述(空串 = 不写)。"""
+    text = " ".join(raw.split())
+    if len(text) > FOLDER_DESCRIPTION_MAX:
+        raise ValueError(f"目录说明最多 {FOLDER_DESCRIPTION_MAX} 个字符,收到 {len(text)} 个")
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class Folder:
+    """一级目录:**只有两层**,所以它没有 ``parent_id``。
+
+    ``folder_id`` 一旦生成就不再变(改名不改 ID):它是前端路由 ``#/knowledge/<id>``
+    与 ``documents.folder`` 那一列的键,变了就等于把目录里的文档全丢了。
+    """
+
+    folder_id: str
+    name: str
+    description: str
+    created_at: str
+    updated_at: str

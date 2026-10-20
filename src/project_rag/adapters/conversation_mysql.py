@@ -61,6 +61,20 @@ def _dump_citations(citations: Sequence[CitationSnapshot]) -> str | None:
     return json.dumps([asdict(item) for item in citations], ensure_ascii=False)
 
 
+def _image_keys_of(item: dict) -> tuple[str, ...]:
+    """输入:一条历史引用的 JSON 对象。行为:取 image_keys(老行没有就是空)。输出:key 元组。
+
+    老行没有这个键是**正常**的(加图片之前记的历史);形状不对(比如一个字符串)
+    才是坏数据,当场炸,不把字符拆成 key。
+    """
+    raw = item.get("image_keys")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TypeError(f"image_keys 必须是数组,收到 {type(raw).__name__}")
+    return tuple(str(key) for key in raw)
+
+
 def _load_citations(raw: object) -> tuple[CitationSnapshot, ...]:
     """输入:库里的 JSON 列(pymysql 可能给 str / bytes / None)。行为:翻回快照元组。输出:快照元组。
 
@@ -86,6 +100,7 @@ def _load_citations(raw: object) -> tuple[CitationSnapshot, ...]:
                     None if item.get("rerank_score") is None else float(item["rerank_score"])
                 ),
                 page=None if item.get("page") is None else int(item["page"]),
+                image_keys=_image_keys_of(item),
             )
             for item in items
         )

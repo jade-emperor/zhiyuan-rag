@@ -78,6 +78,22 @@ export interface Capabilities {
   retrieval: RetrievalCapabilities
   metrics: MetricsCapabilities
   roles: Role[]
+  registration: RegistrationCapabilities
+}
+
+/** 自助注册的可用性(前端据此决定显示还是隐藏注册入口)。 */
+export interface RegistrationCapabilities {
+  enabled: boolean
+  captcha_required: boolean
+  invite_required: boolean
+  min_password_chars: number
+}
+
+/** 一张图形验证码。`image` 是 data URI,直接给 `<img src>`。 */
+export interface CaptchaOut {
+  ticket: string
+  image: string
+  expires_in: number
 }
 
 export interface LoginOut {
@@ -102,6 +118,13 @@ export interface Me {
   can_manage: boolean
 }
 
+export interface CitationImage {
+  /** 稳定身份:图片字节的 SHA-256(OSS 对象 key 里的那一段)。 */
+  key: string
+  /** 本次响应现签的临时 URL;空串 = 这次签不出来,界面按"暂时取不到"处理。 */
+  url: string
+}
+
 export interface Citation {
   index: number
   source: string
@@ -111,6 +134,8 @@ export interface Citation {
   rerank_score: number | null
   /** None = 不知道(md/txt 没有页码,早期入库的老块也可能没有)—— 显示「页码未知」,不许拿 0/1 顶。 */
   page: number | null
+  /** 这一条引用所属父块里的图;空数组 = 没有图/老数据/图片功能没开。 */
+  images: CitationImage[]
 }
 
 export interface HistoryTurn {
@@ -207,6 +232,12 @@ export interface DocumentRecord {
   on_disk: boolean
   created_at: string
   error: string | null
+  /**
+   * 归在哪一级目录下(`folder_id`;空串 = 未分类)。
+   *
+   * **未登记的文件必然是未分类**:归属要写库,而"未登记"正是"没有行可写"。
+   */
+  folder: string
   /** **按库内实际块数算**:登记说 processed 不算数 —— 那正是"显示已入库却搜不到"的成因。 */
   searchable: boolean
   /** **向量库里**实际的块数(与 `chunks` 不是一个数:相等才是"对得上")。 */
@@ -216,6 +247,51 @@ export interface DocumentRecord {
    * 员工看到的每一行他都能看;这个字段只用来标一句"这是限定的"。
    */
   restricted: boolean
+}
+
+/**
+ * 一级目录(知识库的第一层)。**只有两层**,所以它没有 `parent_id`。
+ *
+ * `documents` / `chunks` / `size_bytes` 都是从**清单那一份行**聚合出来的
+ * (`chunks` 是库内实际块数)—— 目录卡片与点进去看到的行必须是同一批数。
+ */
+export interface FolderRecord {
+  folder_id: string
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+  documents: number
+  chunks: number
+  size_bytes: number
+  /** 需要处理的份数(三处不一致 + 在途/失败)。**不是"错误数"**:在途的也算。 */
+  issues: number
+  restricted: number
+  /** 目录里最新一份文档的登记时间(空串 = 还没有文档)。 */
+  last_activity: string
+  /** 是不是"未分类"那个虚拟目录(它的 `folder_id` 是 `unfiled`)。 */
+  unfiled: boolean
+}
+
+/** 目录页汇总。与 `DocumentSummary` 分开:那个数**状态**,这个数**组织**。 */
+export interface FolderSummary {
+  folders: number
+  used: number
+  unfiled: number
+}
+
+export interface FoldersOut {
+  folders: FolderRecord[]
+  /** 未分类那一格**恒定给出**(哪怕 0 份):前端少一支"有没有它"的分支。 */
+  unfiled: FolderRecord
+  summary: FolderSummary
+}
+
+/** 二级页面:目录 + 里面的文档 + 这份清单的汇总(一次往返)。 */
+export interface FolderDetail {
+  folder: FolderRecord
+  documents: DocumentRecord[]
+  summary: DocumentSummary
 }
 
 /** 清单的一句话汇总(与逐行 `state` 同一个口径:后端数一遍,前端不再自己数)。 */

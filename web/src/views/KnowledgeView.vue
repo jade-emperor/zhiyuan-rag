@@ -1,211 +1,203 @@
 <script setup lang="ts">
 /**
- * 知识库管理页。**只对管理员可见**(路由守卫 + 后端各自 `require_admin`)。
+ * 知识库**一级页面**:目录清单。点一格进二级页面(那一格里的文档)。
  *
- * 每张卡片有一个「权限」按钮:给这份文档选**某个人**或**某一类人**(组)。
- * 没配规则的文档人人可见,配了就只给名单里的人 + 管理员。
+ * 两条口径:
  *
- * 数据来源一眼看清:清单 `GET /api/v1/documents`、上传 `POST /api/v1/documents?filename=…`、
- * 删除 `DELETE /api/v1/documents/{id}`、预览 `GET /api/v1/documents/{id}/chunks`;
- * 上传框的 `accept` 与大小上限来自 `GET /api/v1/capabilities`。
+ * - **读数来自后端一次对账**(`GET /api/v1/folders`):份数 / 库内块数 / 需要处理的份数
+ *   都是登记表、磁盘、向量库对完之后算的 —— 前端不拿列表长度自己数(那会漏掉
+ *   语料目录里还没入库的文件);
+ * - **未分类恒定出现**:磁盘上刚放进来、还没登记的文件只能归它。它是兜底格子,
+ *   不是错误状态,所以画成虚线边框而不是告警色。
  *
- * 四条口径:
- * - **清单是实时视图**:后端每次都把登记表、磁盘、向量库对一遍,每行带 `state` ——
- *   所以"后端删了 / 后端更新了"在这里当场看得出来(卡片显示的是 `state`,不是登记状态);
- * - **只要还有 pending/processing 就自动轮询**(3 秒),全落定就停 —— 见 `stores/documents.ts`;
- * - **窗口重新可见 / 拿到焦点时重拉一次**:页面开着不动时,别处的改动(CLI 灌完、
- *   有人往语料目录里放了文件)要等下一次操作才可见 —— 那正是"前端不是实时"的体感来源;
- *   刷新时间也摆在标题栏上,过期不过期一眼看得出来;
- * - **删除两步确认**,删完如实转述后端结果(删了几块 / 原件在不在 / 源材料留没留 / 登记行在不在)。
+ * 页面本身不轮询:目录的计数只在"文档有增删/入库完成"时变,而那两件事都发生在二级页面,
+ * 它会自己轮询并在回来时重拉。这一页在窗口重新可见 / 拿到焦点时刷一次就够了。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
-import DocumentAclDialog from '../components/DocumentAclDialog.vue'
-import DocumentCard from '../components/DocumentCard.vue'
-import PreviewDialog from '../components/PreviewDialog.vue'
-import UploadPanel from '../components/UploadPanel.vue'
-import {
-  documentsState,
-  openPreview,
-  refreshDocuments,
-  removeDocument,
-  stopPolling,
-} from '../stores/documents'
+import FolderCard from '../components/FolderCard.vue'
+import FolderDialog from '../components/FolderDialog.vue'
+import Icon from '../components/Icon.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import PageShell from '../components/ui/PageShell.vue'
+import { foldersState, refreshFolders } from '../stores/folders'
+import { humanBytes } from '../utils/format'
 
-const docs = documentsState()
+const router = useRouter()
+const folders = foldersState()
 
-/** 正在改权限的那份文档。一次只开一个弹层。 */
-const aclFor = ref('')
+const creating = ref(false)
+const query = ref('')
 
-const active = computed(
-  () => docs.docs.filter((doc) => doc.status === 'pending' || doc.status === 'processing').length,
-)
-
-const lastDeleted = computed(() => docs.lastDeleted)
-
-/** 汇总那一行:**只列非零的项** —— 一排 `0` 读不出信息,反而把真问题淹了。 */
-const summaryParts = computed(() => {
-  const s = docs.summary
-  const parts: string[] = [`共 ${s.total} 份`]
-  if (s.ok) parts.push(`一致 ${s.ok}`)
-  if (s.not_indexed) parts.push(`库内没块 ${s.not_indexed}`)
-  if (s.file_missing) parts.push(`文件不在 ${s.file_missing}`)
-  if (s.changed) parts.push(`文件已变更 ${s.changed}`)
-  if (s.unregistered) parts.push(`未入库 ${s.unregistered}`)
-  if (s.in_flight) parts.push(`处理中/失败 ${s.in_flight}`)
-  return parts.join(' · ')
+/** 这份清单的读数(含未分类那一格)。 */
+const totals = computed(() => {
+  const all = [...folders.folders, ...(folders.unfiled ? [folders.unfiled] : [])]
+  return {
+    documents: all.reduce((sum, folder) => sum + folder.documents, 0),
+    chunks: all.reduce((sum, folder) => sum + folder.chunks, 0),
+    size: all.reduce((sum, folder) => sum + folder.size_bytes, 0),
+    issues: all.reduce((sum, folder) => sum + folder.issues, 0),
+  }
 })
 
-/** 有"对不上"的项时就把它点出来:一致的时候不该让这行显得像告警。 */
-const hasMismatch = computed(
-  () =>
-    docs.summary.not_indexed +
-      docs.summary.file_missing +
-      docs.summary.changed +
-      docs.summary.unregistered >
-    0,
+/** 搜索只过滤**真实目录**:未分类是兜底格子,不该因为搜不到关键词就消失。 */
+const visible = computed(() => {
+  const needle = query.value.trim().toLowerCase()
+  if (!needle) return folders.folders
+  return folders.folders.filter(
+    (folder) =>
+      folder.name.toLowerCase().includes(needle) ||
+      folder.description.toLowerCase().includes(needle),
+  )
+})
+
+const empty = computed(
+  () => folders.folders.length === 0 && (folders.unfiled?.documents ?? 0) === 0,
 )
 
+function open(folderId: string): void {
+  void router.push({ name: 'folder', params: { folder: folderId } })
+}
+
 function onVisible(): void {
-  if (document.visibilityState === 'visible') void refreshDocuments()
+  if (document.visibilityState === 'visible') void refreshFolders()
 }
 
 onMounted(() => {
-  void refreshDocuments()
-  // 回到这个窗口 / 从别的标签页切回来时重拉:后端那边刚发生的事,不该等用户想起来点刷新
+  void refreshFolders()
   window.addEventListener('focus', onVisible)
   document.addEventListener('visibilitychange', onVisible)
 })
 
 onUnmounted(() => {
-  // 离开页面就停轮询:不然切到聊天页还在每 3 秒打一次清单
-  stopPolling()
   window.removeEventListener('focus', onVisible)
   document.removeEventListener('visibilitychange', onVisible)
 })
 </script>
 
 <template>
-  <div class="page">
-    <UploadPanel />
+  <PageShell title="知识库" :meta="`${folders.summary.folders} 个目录`">
+    <template #actions>
+      <span v-if="folders.refreshedAt" class="faint">上次刷新 {{ folders.refreshedAt }}</span>
+      <button class="ghost" type="button" :disabled="folders.loading" @click="refreshFolders">
+        <Icon name="refresh" :size="14" />
+        {{ folders.loading ? '刷新中…' : '刷新' }}
+      </button>
+      <button class="primary" type="button" @click="creating = true">
+        <Icon name="plus" :size="14" /> 新建目录
+      </button>
+    </template>
 
-    <main class="main">
-      <header class="head">
-        <h1>知识库文件</h1>
-        <div class="head-right">
-          <span v-if="docs.polling" class="faint">
-            <span class="spin"></span> 有 {{ active }} 份在入库,每 3 秒自动刷新
-          </span>
-          <span v-if="docs.refreshedAt" class="faint" title="后端每次都拿登记表、磁盘、向量库对一遍">
-            上次刷新 {{ docs.refreshedAt }}
-          </span>
-          <button class="ghost" type="button" :disabled="docs.loading" @click="refreshDocuments">
-            {{ docs.loading ? '刷新中…' : '刷新清单' }}
-          </button>
-        </div>
-      </header>
+    <p v-if="!empty" class="totals">
+      共 {{ totals.documents }} 份 · {{ totals.chunks }} 块 · {{ humanBytes(totals.size) }}
+      <span v-if="totals.issues > 0" class="warn-text">· {{ totals.issues }} 份需要处理</span>
+    </p>
 
-      <p v-if="docs.docs.length > 0" class="summary" :class="{ warn: hasMismatch }">
-        {{ summaryParts }}
-        <span v-if="hasMismatch" class="faint">
-          —— 对不上的那几张卡片下面写了该怎么办(未入库的文件在 {{ docs.corpusDir }})
-        </span>
-      </p>
+    <p v-if="folders.error" class="alert error">{{ folders.error }}</p>
 
-      <p v-if="docs.error" class="alert error">{{ docs.error }}</p>
+    <div v-if="!empty" class="toolbar">
+      <label class="search">
+        <Icon name="search" :size="14" />
+        <input v-model="query" type="search" placeholder="搜索目录" aria-label="搜索目录" />
+      </label>
+      <span v-if="query.trim()" class="faint">{{ visible.length }} / {{ folders.folders.length }}</span>
+    </div>
 
-      <p v-if="lastDeleted" class="alert info">
-        已删除 <code>{{ lastDeleted.document_id }}</code>:向量
-        {{ lastDeleted.deleted_chunks }} 块 · 原文件
-        {{
-          lastDeleted.removed_file
-            ? '已删'
-            : lastDeleted.kept_source
-              ? '语料源材料,保留'
-              : '本来就不在'
-        }}
-        · 登记行 {{ lastDeleted.removed_record ? '已删' : '本来就不在' }}。
-      </p>
+    <EmptyState
+      v-if="empty"
+      title="还没有目录"
+      hint="目录是一级分类。建一个,再把文档传进去;也可以直接用 project-rag ingest --folder <名字> 灌。"
+    >
+      <button class="primary" type="button" @click="creating = true">
+        <Icon name="plus" :size="14" /> 新建目录
+      </button>
+    </EmptyState>
 
-      <div v-if="docs.docs.length === 0 && !docs.loading" class="empty card">
-        <p class="muted">
-          知识库里还没有文档。左边上传一份试试;已经在语料目录里的文件会显示成「未入库」,
-          用 `project-rag ingest --path …` 灌进来。
-        </p>
-      </div>
+    <div v-else class="grid">
+      <FolderCard
+        v-for="folder in visible"
+        :key="folder.folder_id"
+        :folder="folder"
+        @open="open(folder.folder_id)"
+      />
+      <!-- 未分类是兜底格子:**空的就不占位置**("0 份"的一张虚线圈看着像坏了)。
+           一旦有磁盘上的孤儿文件,它会自己出现。 -->
+      <FolderCard
+        v-if="folders.unfiled && folders.unfiled.documents > 0"
+        :folder="folders.unfiled"
+        @open="open(folders.unfiled.folder_id)"
+      />
+    </div>
 
-      <div class="grid">
-        <DocumentCard
-          v-for="doc in docs.docs"
-          :key="`${doc.source}/${doc.document_id}`"
-          :doc="doc"
-          :deleting="docs.deleting === doc.document_id"
-          @preview="openPreview(doc.document_id)"
-          @remove="removeDocument(doc.document_id)"
-          @acl="aclFor = doc.document_id"
-        />
-      </div>
-    </main>
+    <p v-if="!empty && visible.length === 0 && query.trim()" class="faint">
+      没有匹配「{{ query.trim() }}」的目录。
+    </p>
 
-    <PreviewDialog v-if="docs.previewFor" />
-    <DocumentAclDialog v-if="aclFor !== ''" :document-id="aclFor" @close="aclFor = ''" />
-  </div>
+    <FolderDialog v-if="creating" @close="creating = false" @done="creating = false" />
+  </PageShell>
 </template>
 
 <style scoped>
-.page {
-  flex: 1;
-  display: flex;
-  gap: 20px;
-  padding: 20px;
-  min-height: 0;
-  overflow-y: auto;
+.totals {
+  margin: -10px 0 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
 
-.main {
-  flex: 1;
+.warn-text {
+  color: var(--warn);
+}
+
+.toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 14px;
+  align-items: center;
+  gap: 10px;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(320px, 100%);
+  padding: 0 9px;
+  height: 32px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.search input {
+  flex: 1;
   min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  height: 100%;
+  font-size: 12.5px;
+  color: var(--text);
 }
 
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.head-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-h1 {
-  font-size: 18px;
-}
-
-.summary {
-  margin: 0;
-  font-size: 13px;
-  color: var(--fg-soft, #9aa4b2);
-}
-
-.summary.warn {
-  color: var(--warn, #d9a441);
+.search input:focus {
+  outline: none;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
-  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(264px, 1fr));
+  gap: 12px;
 }
 
-.empty {
-  padding: 24px;
-  text-align: center;
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

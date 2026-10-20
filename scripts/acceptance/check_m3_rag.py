@@ -136,7 +136,9 @@ EXPECTED_MILVUS = {
     "host": "127.0.0.1",
     "port": 10086,
     "database": "default",
-    "collection": "rag_chunks",
+    # 图片模态新增 image_keys 列;schema 建集合那一刻定格,所以换新集合名重灌。
+    # 老 rag_chunks 留着回滚,不再是当前契约指向的集合。
+    "collection": "rag_chunks_img_v1",
 }
 # 只钉「模型在哪」这类跨机器不变的东西。
 # device / use_f16 **故意不在这里**：那是**部署选择**（本机 cuda、别人的机器 cpu），不是契约。

@@ -85,6 +85,13 @@ class AuthStore(Protocol):
         """输入:令牌哈希。行为:删掉它(登出)。输出:无。"""
         ...
 
+    def revoke_all_tokens(self, user_id: str) -> int:
+        """输入:用户 ID。行为:删掉他的**全部**令牌。输出:删掉的行数。
+
+        改密必须走这一条:只换密码不撤令牌,已登录的设备会一直有效到 TTL 结束。
+        """
+        ...
+
     def bind_session(self, session_id: str, user_id: str) -> None:
         """输入:会话 ID、用户 ID。行为:记下归属(**幂等**:重复绑定同一对不报错)。输出:无。"""
         ...

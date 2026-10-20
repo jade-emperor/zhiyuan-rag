@@ -407,6 +407,26 @@ class CostConfig(BaseModel):
         return dict(self.models)
 
 
+class CaptchaConfig(BaseModel):
+    """登录/注册前置的图形验证码。"""
+
+    enabled: bool = True
+    # 一张图的有效期(秒)。太短用户来不及输入,太长等于给爆破窗口。
+    ttl_s: int = 120
+    # 字符数。4 位 + 一次性 + 限流,足以挡住脚本化爆破。
+    length: int = 4
+
+
+class RegistrationConfig(BaseModel):
+    """员工自助注册。"""
+
+    enabled: bool = True
+    # 非空 = 注册要填邀请码(发放给部门负责人的一次性口令)。
+    invite_code: str = ""
+    # 自助注册的口令下限(比管理员建号的 8 位更严:这条入口无人值守)。
+    min_password_chars: int = 10
+
+
 class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
@@ -442,6 +462,11 @@ class ApiConfig(BaseModel):
     cors_origins: list[str] = ["*"]
     # 限流。**它同时是"防滥用"与"防爆破"**:问答烧 token、上传烧 CPU、登录烧口令。
     rate_limit: RateLimitConfig = RateLimitConfig()
+    # 图形验证码。关掉它 = 登录/注册只剩限流一道闸(仅限纯内网、无对外入口的部署)。
+    captcha: CaptchaConfig = CaptchaConfig()
+    # 自助注册。默认开着 = 员工用企业邮箱前缀自己开通;要审批制就关掉它,
+    # 改由管理员 `project-rag user add` 建号。``invite_code`` 非空时还要填邀请码。
+    registration: RegistrationConfig = RegistrationConfig()
 
 
 class MilvusIndexConfig(BaseModel):
@@ -694,6 +719,157 @@ class RewriteConfig(BaseModel):
         return self
 
 
+class OssConfig(BaseModel):
+    """阿里云 OSS:图片对象的上传与临时 URL 签名。
+
+    **只存 image_key,不存临时 URL**:签名 URL 会过期,把它写进向量库或历史表,
+    第二天回看就全是死链。``image_key`` 是对象在桶里的稳定身份(内容 SHA-256),
+    每次响应/每次调模型前现签一个短链即可。
+
+    字段名刻意用 ``accesskey_id`` / ``accesskey_secret``(不带下划线),与现有
+    ``.env`` 的 ``RAG_OSS__ACCESSKEY_ID`` 对齐;换成 ``ACCESS_KEY_ID`` 会让
+    已经写好的环境变量**静默读不到**。
+    """
+
+    accesskey_id: SecretStr = SecretStr("")
+    accesskey_secret: SecretStr = SecretStr("")
+    region: str = "cn-guangzhou"
+    bucket: str = ""
+    # 后端上传/HEAD 用的 endpoint。本机/WSL 必须是公网地址;
+    # 同地域 ECS 才可以用 ``-internal``(内网)。浏览器/模型取图用的是签名 URL,
+    # 它不能指向内网地址 —— 那一条由 ``public_endpoint`` 兜住。
+    endpoint: str = ""
+    # 签名 URL 用的公网 endpoint。留空 = 与 endpoint 相同。
+    public_endpoint: str = ""
+    # 对象前缀。图片统一放在 ``<prefix>/<hash前2位>/<hash>.<ext>``。
+    prefix: str = "rag/images"
+    # 当前只实现 signed;proxy 是保留档(需要额外的图片代理路由)。
+    url_mode: Literal["signed", "proxy"] = "signed"
+    # 临时 URL 的有效期(秒)。太短模型还没取到就过期;太长等于把私有对象变相公开。
+    sign_expires_s: int = 300
+    connect_timeout_s: float = 5.0
+    upload_timeout_s: float = 30.0
+    max_retries: int = 3
+
+    @property
+    def configured(self) -> bool:
+        """输入:无。行为:判断上传所需的最小字段是否齐全。输出:布尔。"""
+        return bool(
+            self.accesskey_id.get_secret_value()
+            and self.accesskey_secret.get_secret_value()
+            and self.bucket
+            and self.endpoint
+        )
+
+    @field_validator("prefix")
+    @classmethod
+    def _clean_prefix(cls, value: str) -> str:
+        """输入:对象前缀。行为:去掉首尾斜杠并拦住空值。输出:规范化前缀。"""
+        cleaned = value.strip().strip("/")
+        if not cleaned:
+            raise ValueError("oss.prefix 不能为空")
+        return cleaned
+
+    @field_validator("endpoint", "public_endpoint")
+    @classmethod
+    def _check_endpoint(cls, value: str) -> str:
+        """输入:endpoint。行为:非空时必须带 http(s) 方案。输出:原值。"""
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError(
+                f"OSS endpoint 必须带 http:// 或 https://,收到 {value!r}"
+            )
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _check_knobs(self) -> OssConfig:
+        """输入:无。行为:把签名有效期与内网 endpoint 的组合当场拦住。输出:self。"""
+        if not 30 <= self.sign_expires_s <= 86400:
+            raise ValueError(
+                f"oss.sign_expires_s 必须在 [30, 86400] 内,收到 {self.sign_expires_s}"
+            )
+        if self.connect_timeout_s <= 0 or self.upload_timeout_s <= 0:
+            raise ValueError("OSS 的 connect/upload timeout 必须为正")
+        if self.max_retries < 0:
+            raise ValueError(f"oss.max_retries 不能为负,收到 {self.max_retries}")
+        effective_public = self.public_endpoint or self.endpoint
+        if self.url_mode == "signed" and "-internal." in effective_public:
+            raise ValueError(
+                "oss.url_mode=signed 但签名 URL 指向 -internal endpoint —— "
+                "浏览器和模型都访问不到。请把 RAG_OSS__PUBLIC_ENDPOINT 设为公网地址,"
+                "或者把 url_mode 改成 proxy(需要额外的图片代理路由)"
+            )
+        return self
+
+
+class ImagesConfig(BaseModel):
+    """图片模态的总开关与资源边界。
+
+    ``allowed_types`` 是逗号分隔的字符串而不是 ``list[str]``:pydantic-settings 对
+    ``list`` 字段默认按 **JSON** 解析,``image/jpeg,image/png`` 会被当成非法 JSON
+    当场炸。这里在配置边界转成 ``frozenset``,别让环境变量的形状漏进业务代码。
+    """
+
+    enabled: bool = False
+    max_per_doc: int = 50
+    min_bytes: int = 2048
+    max_bytes: int = 10 * 1024 * 1024
+    allowed_types: str = "image/jpeg,image/png,image/webp"
+
+    @property
+    def allowed_type_set(self) -> frozenset[str]:
+        """输入:无。行为:把逗号分隔的 MIME 白名单拆开。输出:小写 MIME 集合。"""
+        return frozenset(
+            item.strip().lower() for item in self.allowed_types.split(",") if item.strip()
+        )
+
+    @model_validator(mode="after")
+    def _check_bounds(self) -> ImagesConfig:
+        """输入:无。行为:校验数量/大小/类型白名单不是无意义的取值。输出:self。"""
+        if self.max_per_doc < 1:
+            raise ValueError(f"images.max_per_doc 至少为 1,收到 {self.max_per_doc}")
+        if self.min_bytes < 0 or self.max_bytes <= 0:
+            raise ValueError("images.min_bytes/max_bytes 不能为负")
+        if self.min_bytes > self.max_bytes:
+            raise ValueError(
+                f"images.min_bytes({self.min_bytes}) 不能大于 max_bytes({self.max_bytes})"
+            )
+        if not self.allowed_type_set:
+            raise ValueError("images.allowed_types 不能为空")
+        return self
+
+
+class MinerUConfig(BaseModel):
+    """独立 MinerU 解析服务的客户端配置。
+
+    MinerU 不跟着 app 进程走:它吃 CPU/GPU、单份 PDF 可能跑几分钟,而且模型依赖
+    与 Web 服务不是一套。app 只提交任务、轮询结果,再把解析产物切成 Document。
+    """
+
+    base_url: str = "http://mineru:8000"
+    token: SecretStr = SecretStr("")
+    timeout_s: int = 3600
+    poll_interval_s: float = 2.0
+    cache_dir: str = "data/mineru"
+
+    @field_validator("base_url")
+    @classmethod
+    def _clean_base_url(cls, value: str) -> str:
+        """输入:服务地址。行为:去掉尾部斜杠并拦住空值。输出:规范化地址。"""
+        cleaned = value.strip().rstrip("/")
+        if not cleaned:
+            raise ValueError("mineru.base_url 不能为空")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _check_timing(self) -> MinerUConfig:
+        """输入:无。行为:校验超时/轮询间隔。输出:self。"""
+        if self.timeout_s <= 0:
+            raise ValueError(f"mineru.timeout_s 必须为正,收到 {self.timeout_s}")
+        if self.poll_interval_s <= 0:
+            raise ValueError(f"mineru.poll_interval_s 必须为正,收到 {self.poll_interval_s}")
+        return self
+
+
 # pydantic的写法,也是配置类的标准写法,比__init__(self.env="dev"....)强大的多,可以设置内部去读取.env和yaml文件中的配置
 # 优先级是根据SettingsConfigDict写的关键字顺序定的,越靠前的优先级越高
 # 关于字段名的匹配,显式传入的参数字段名必须一一对应,.env中的字段大小写不敏感,但是要对应上.__表示层级
@@ -736,6 +912,38 @@ class Settings(BaseSettings):
     # 消耗报表的单价表(见 CostConfig)。**与 llm 分开**:llm 说的是"怎么调模型",
     # cost 说的是"这些 token 值多少钱" —— 换代理/换套餐时只动后者。
     cost: CostConfig = CostConfig()
+    # 图片模态。总开关默认关:关掉时 PDF 仍走原来的 PyMuPDF,MinerU/OSS 一次都不碰。
+    images: ImagesConfig = ImagesConfig()
+    oss: OssConfig = OssConfig()
+    mineru: MinerUConfig = MinerUConfig()
+
+    @model_validator(mode="after")
+    def _check_image_stack(self) -> Settings:
+        """输入:无。行为:图片模态开启时,把 OSS 必需字段一次性点齐。输出:self。
+
+        为什么不是每个字段各写一个 validator:缺一个字段时,报错应该是一条能照着填的
+        清单,而不是"启动到一半发现 bucket 为空"。关掉 ``images.enabled`` 时一个都不要求 ——
+        纯文本部署不该被图片配置拦住。
+        """
+        if not self.images.enabled:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("RAG_OSS__ACCESSKEY_ID", self.oss.accesskey_id.get_secret_value()),
+                ("RAG_OSS__ACCESSKEY_SECRET", self.oss.accesskey_secret.get_secret_value()),
+                ("RAG_OSS__BUCKET", self.oss.bucket),
+                ("RAG_OSS__ENDPOINT", self.oss.endpoint),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(
+                "images.enabled=true,但这些 OSS 配置是空的:"
+                + "、".join(missing)
+                + "。不想接图片就把 RAG_IMAGES__ENABLED 设成 false"
+            )
+        return self
 
     # 这个类方法,是用来定义配置的来源和优先级顺序的
     @classmethod
@@ -779,9 +987,12 @@ __all__ = [
     "ConversationConfig",
     "EmbeddingConfig",
     "FaqConfig",
+    "ImagesConfig",
     "LLMConfig",
     "MilvusConfig",
+    "MinerUConfig",
     "MySQLConfig",
+    "OssConfig",
     "RagConfig",
     "RedisConfig",
     "Settings",

@@ -5,8 +5,8 @@ import { RouterView, useRoute } from 'vue-router'
 import AppHeader from './components/AppHeader.vue'
 
 const route = useRoute()
-// 登录页不显示顶部导航:那时候还没有"我是谁",导航上的每一项都可能 403
-const showHeader = computed(() => route.name !== 'login')
+// 登录/注册页不显示顶部导航:那时还没有"我是谁",导航上的每一项都可能 403
+const showHeader = computed(() => route.name !== 'login' && route.name !== 'register')
 </script>
 
 <template>

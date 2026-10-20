@@ -19,6 +19,7 @@
 import { computed, onMounted } from 'vue'
 
 import MetricCard from '../components/MetricCard.vue'
+import Surface from '../components/ui/Surface.vue'
 import { capabilitiesState } from '../stores/capabilities'
 import { loadMetrics, metricsState, setWindow } from '../stores/metrics'
 
@@ -50,7 +51,7 @@ function periodRuleText(cost: { peak_weekdays: number[]; peak_windows: string[][
         ? '工作日'
         : cost.peak_weekdays.map((day) => WEEKDAY_NAMES[day - 1] ?? `星期${day}`).join('、')
   const windows = cost.peak_windows.map(([start, end]) => `${start}–${end}`).join(' / ')
-  return `北京时间 ${days} 的 ${windows} 为高峰(法定节假日除外);其余时段半价`
+  return `高峰 ${days} ${windows}`
 }
 
 function periodLabel(period: string): string {
@@ -99,358 +100,271 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <header class="head">
-      <div>
-        <h1>报表</h1>
-        <p class="faint">
-          延迟账本按请求一行;下面是
-          <strong>{{ metrics.window || '—' }}</strong> 窗口里的汇总
-          <span v-if="metrics.fetchedAt">· 取数于 {{ metrics.fetchedAt }}</span>
-          <span v-if="metrics.loading"> · <span class="spin"></span> 读取中…</span>
-        </p>
-      </div>
-      <div class="controls">
-        <div class="windows">
-          <button
-            v-for="item in windows"
-            :key="item"
-            type="button"
-            :class="{ primary: item === metrics.window }"
-            @click="setWindow(item)"
-          >
-            {{ item }}
+  <main class="page">
+    <div class="page-inner">
+      <header class="page-head">
+        <div class="page-title">
+          <h1>报表</h1>
+          <span class="page-meta">
+            {{ metrics.window || '—' }}
+            <template v-if="metrics.fetchedAt"> · {{ metrics.fetchedAt }}</template>
+            <template v-if="metrics.loading"> · 读取中…</template>
+          </span>
+        </div>
+        <div class="page-actions">
+          <div class="windows segmented">
+            <button
+              v-for="item in windows"
+              :key="item"
+              type="button"
+              :class="{ active: item === metrics.window }"
+              @click="setWindow(item)"
+            >
+              {{ item }}
+            </button>
+          </div>
+          <button class="ghost" type="button" :disabled="metrics.loading" @click="loadMetrics">
+            刷新
           </button>
         </div>
-        <button class="ghost" type="button" :disabled="metrics.loading" @click="loadMetrics">
-          刷新
-        </button>
-      </div>
-    </header>
+      </header>
 
-    <p v-if="metrics.error" class="alert error">{{ metrics.error }}</p>
+      <p v-if="metrics.error" class="alert error">{{ metrics.error }}</p>
 
-    <div v-if="data && rows === 0" class="alert info">
-      这个窗口里还没有请求 —— 去「对话」页问几个问题,回来刷新就有了。
-      (报表读不到数据与报表是空的不是一回事:没接账本表时接口给 503,不会拿空表冒充。)
+      <div v-if="data && rows === 0" class="alert info">这个窗口里还没有请求</div>
+
+      <template v-if="data">
+        <section class="kpis">
+          <MetricCard
+            label="请求数"
+            :value="String(data.rows)"
+            :detail="`冷启动 ${data.cold_rows} · 热 ${data.warm_rows}`"
+          />
+          <MetricCard
+            label="拒答率"
+            :value="rate(data.warm.refused, data.warm.rows)"
+            :detail="`${share(data.warm.refused, data.warm.rows)} 条`"
+          />
+          <MetricCard
+            label="截断率"
+            :value="rate(data.warm.truncated, data.warm.rows)"
+            :detail="`${share(data.warm.truncated, data.warm.rows)} 条`"
+            :tone="data.warm.truncated > 0 ? 'warn' : 'plain'"
+          />
+          <MetricCard
+            label="中断率"
+            :value="rate(data.warm.aborted, data.warm.rows)"
+            :detail="`${share(data.warm.aborted, data.warm.rows)} 条`"
+            :tone="data.warm.aborted > 0 ? 'warn' : 'plain'"
+          />
+          <MetricCard
+            label="FAQ 命中率"
+            :value="rate(data.warm.faq_hits, data.warm.rows)"
+            :detail="`${share(data.warm.faq_hits, data.warm.rows)} 条`"
+          />
+          <MetricCard
+            label="知识库回答"
+            :value="String(data.warm.rag_answers)"
+            detail="热行"
+          />
+        </section>
+
+        <p v-if="data.cold_rows > 0" class="faint cold-note">
+          只数热行 · 冷启动 {{ data.cold_rows }} 次：拒答 {{ data.cold.refused }} ·
+          截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·
+          FAQ {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}
+        </p>
+
+        <Surface title="消耗">
+          <template #actions>
+            <span class="faint">{{ periodRuleText(cost ?? { peak_weekdays: [], peak_windows: [] }) }}</span>
+          </template>
+
+          <p v-if="metrics.costError" class="alert error">{{ metrics.costError }}</p>
+          <p v-if="cost" class="cost-line">
+            模型调用 <strong>{{ cost.metered_calls }}</strong> 次
+            <span v-if="cost.unmetered_calls > 0"> · 未计量 {{ cost.unmetered_calls }} 次</span>
+            <span class="faint"> · {{ cost.currency }}</span>
+          </p>
+
+          <div v-if="cost" class="kpis">
+            <MetricCard
+              label="输入 token"
+              :value="tokens(cost.input_tokens)"
+              :detail="`其中命中缓存 ${tokens(cost.cached_input_tokens)}`"
+            />
+            <MetricCard label="输出 token" :value="tokens(cost.output_tokens)" detail="含思考" />
+            <MetricCard
+              label="合计消耗"
+              :value="money(cost.total_cost)"
+              :detail="cost.all_priced ? '已定价' : '部分未定价'"
+              :tone="cost.all_priced ? 'plain' : 'warn'"
+            />
+          </div>
+
+          <div v-if="cost" class="gaps">
+            <span v-if="cost.unmetered_calls > 0" class="tag warn">未计量 {{ cost.unmetered_calls }}</span>
+            <span v-if="cost.cache_unknown_calls > 0" class="tag warn">缓存未知 {{ cost.cache_unknown_calls }}</span>
+            <span v-if="cost.period_unknown_calls > 0" class="tag warn">时段未知 {{ cost.period_unknown_calls }}</span>
+            <span v-if="cost.zone_unknown_calls > 0" class="tag warn">时区未知 {{ cost.zone_unknown_calls }}</span>
+            <span v-if="cost.calendar_unknown_calls > 0" class="tag warn">日历未知 {{ cost.calendar_unknown_calls }}</span>
+            <span v-if="cost.unpriced_models.length > 0" class="tag info">
+              未定价 {{ cost.unpriced_models.join(' / ') }}
+            </span>
+          </div>
+
+          <table v-if="cost && cost.periods.length > 0" class="data-table">
+            <thead>
+              <tr>
+                <th>时段</th>
+                <th class="num">调用</th>
+                <th class="num">输入 token</th>
+                <th class="num">输出 token</th>
+                <th class="num">金额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in cost.periods" :key="item.period">
+                <td>{{ periodLabel(item.period) }}</td>
+                <td class="num">{{ item.calls }}</td>
+                <td class="num">{{ tokens(item.input_tokens) }}</td>
+                <td class="num">{{ tokens(item.output_tokens) }}</td>
+                <td class="num">{{ money(item.total_cost) }}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <table v-if="cost && cost.lines.length > 0" class="data-table">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>时段</th>
+                <th class="num">调用</th>
+                <th class="num">输入</th>
+                <th class="num">命中缓存</th>
+                <th class="num">输出</th>
+                <th class="num">金额</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="line in cost.lines" :key="`${line.model}-${line.period}`">
+                <td><code>{{ line.model }}</code></td>
+                <td>{{ periodLabel(line.period) }}</td>
+                <td class="num">{{ line.calls }}</td>
+                <td class="num">{{ tokens(line.input_tokens) }}</td>
+                <td class="num">{{ tokens(line.cached_input_tokens) }}</td>
+                <td class="num">{{ tokens(line.output_tokens) }}</td>
+                <td class="num">{{ line.total_cost === null ? '未配置单价' : money(line.total_cost) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else-if="cost" class="faint">暂无调用</p>
+        </Surface>
+
+        <Surface title="分段延迟">
+          <template #actions>
+            <span class="faint">ms · 热行 · — = 样本不够</span>
+          </template>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>分段</th>
+                <th class="num">n</th>
+                <th class="num">p50</th>
+                <th class="num">p95</th>
+                <th class="num">p99</th>
+                <th class="num">最大</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="segment in data.segments"
+                :key="segment.name"
+                :class="{ total: segment.name === 'total_ms' }"
+              >
+                <td>
+                  <code>{{ segment.name }}</code>
+                  <span v-if="segment.name === 'total_ms'" class="tag info">端到端</span>
+                </td>
+                <td class="num">{{ segment.n }}</td>
+                <td class="num" :title="segment.p50 === null ? whyMissing('p50', segment.n) : ''">
+                  {{ ms(segment.p50) }}
+                </td>
+                <td class="num" :title="segment.p95 === null ? whyMissing('p95', segment.n) : ''">
+                  {{ ms(segment.p95) }}
+                </td>
+                <td class="num" :title="segment.p99 === null ? whyMissing('p99', segment.n) : ''">
+                  {{ ms(segment.p99) }}
+                </td>
+                <td class="num">{{ ms(segment.maximum) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </Surface>
+
+        <Surface title="最慢的几条">
+          <template #actions>
+            <span class="faint">含冷启动</span>
+          </template>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>请求</th>
+                <th>渠道</th>
+                <th>冷热</th>
+                <th class="num">总耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in data.slowest" :key="row.request_id">
+                <td><code>{{ row.request_id }}</code></td>
+                <td>{{ row.channel }}</td>
+                <td>
+                  <span class="tag" :class="row.cold ? 'warn' : 'soft'">
+                    {{ row.cold ? '冷启动' : '热' }}
+                  </span>
+                </td>
+                <td class="num">{{ ms(row.total_ms) }}</td>
+              </tr>
+              <tr v-if="data.slowest.length === 0">
+                <td colspan="4" class="faint">还没有请求</td>
+              </tr>
+            </tbody>
+          </table>
+        </Surface>
+      </template>
     </div>
-
-    <template v-if="data">
-      <section class="kpis">
-        <MetricCard
-          label="请求数"
-          :value="String(data.rows)"
-          :detail="`冷启动 ${data.cold_rows} · 热 ${data.warm_rows}`"
-        />
-        <MetricCard
-          label="拒答率"
-          :value="rate(data.warm.refused, data.warm.rows)"
-          :detail="`${share(data.warm.refused, data.warm.rows)} 条拒答(检索为空直接拒答,不调模型)`"
-        />
-        <MetricCard
-          label="截断率"
-          :value="rate(data.warm.truncated, data.warm.rows)"
-          :detail="`${share(data.warm.truncated, data.warm.rows)} 条撞到 max_tokens`"
-          :tone="data.warm.truncated > 0 ? 'warn' : 'plain'"
-        />
-        <MetricCard
-          label="中断率"
-          :value="rate(data.warm.aborted, data.warm.rows)"
-          :detail="`${share(data.warm.aborted, data.warm.rows)} 条被客户端断开(用户没耐心了)`"
-          :tone="data.warm.aborted > 0 ? 'warn' : 'plain'"
-        />
-        <MetricCard
-          label="FAQ 命中率"
-          :value="rate(data.warm.faq_hits, data.warm.rows)"
-          :detail="`${share(data.warm.faq_hits, data.warm.rows)} 条直答(这些连模型都没调)`"
-        />
-        <MetricCard
-          label="知识库回答"
-          :value="String(data.warm.rag_answers)"
-          detail="热行里走知识库通道并给出答案的条数"
-        />
-      </section>
-
-      <p v-if="data.cold_rows > 0" class="faint cold-note">
-        上面六项都<strong>只数热行</strong>。冷启动 {{ data.cold_rows }} 次不计入它们
-        (那几次用户等的是模型加载):拒答 {{ data.cold.refused }} ·
-        截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·
-        FAQ 直答 {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}。
-      </p>
-
-      <section class="card block">
-        <h2>消耗</h2>
-        <p class="faint">
-          模型调用 <strong>{{ cost?.metered_calls ?? 0 }} 次</strong>(量到 token)
-          <span v-if="(cost?.unmetered_calls ?? 0) > 0">
-            · <strong>{{ cost?.unmetered_calls }} 次没量到 token</strong>(provider 没回报用量,
-            或那一轮中途断了 —— 这部分<strong>没有算进金额</strong>)
-          </span>
-          ;FAQ 命中与检索为空都不调模型,所以不花钱。
-          <span v-if="cost"> · 币种 {{ cost.currency }}</span>
-        </p>
-        <p v-if="metrics.costError" class="alert error">{{ metrics.costError }}</p>
-        <div v-if="cost" class="kpis">
-          <MetricCard
-            label="输入 token"
-            :value="tokens(cost.input_tokens)"
-            :detail="`其中命中缓存 ${tokens(cost.cached_input_tokens)}(命中比未命中便宜 50 倍)`"
-          />
-          <MetricCard
-            label="输出 token"
-            :value="tokens(cost.output_tokens)"
-            detail="含思考内容(provider 的计费口径)"
-          />
-          <MetricCard
-            label="合计消耗"
-            :value="money(cost.total_cost)"
-            :detail="
-              cost.all_priced
-                ? `${cost.currency} · 单价来自 config.yaml 的 cost.models`
-                : '还有模型没配单价 —— 这个数只是已知的部分'
-            "
-            :tone="cost.all_priced ? 'plain' : 'warn'"
-          />
-        </div>
-
-        <!-- 缺口六连:每一种"算不出来"都要有话说,否则那个总数会被当成完整的账 -->
-        <p v-if="cost && cost.unmetered_calls > 0" class="alert warn">
-          有 <strong>{{ cost.unmetered_calls }}</strong> 次调用没量到 token ——
-          这部分<strong>没有算进金额</strong>。
-        </p>
-        <p v-if="cost && cost.cache_unknown_calls > 0" class="alert warn">
-          有 <strong>{{ cost.cache_unknown_calls }}</strong> 次没回报缓存命中数,
-          整段输入按<strong>未命中价</strong>计 —— 这是<strong>上界</strong>,实际可能更低。
-        </p>
-        <p v-if="cost && cost.period_unknown_calls > 0" class="alert warn">
-          有 <strong>{{ cost.period_unknown_calls }}</strong> 次读不到发生时间,
-          按<strong>高峰价</strong>计(偏保守,不会少报)。
-        </p>
-        <p v-if="cost && cost.zone_unknown_calls > 0" class="alert warn">
-          有 <strong>{{ cost.zone_unknown_calls }}</strong> 次的时间戳<strong>没带时区</strong>
-          (老账,或后端镜像还没重建),判不出高峰/空闲,一律按<strong>高峰价</strong>计 ——
-          这部分是上界。
-        </p>
-        <p v-if="cost && cost.calendar_unknown_calls > 0" class="alert warn">
-          有 <strong>{{ cost.calendar_unknown_calls }}</strong> 次落在那一年
-          <strong>没填法定节假日</strong>的日子里,按<strong>高峰价</strong>计 ——
-          把那一年的放假通知填进 <code>config.yaml</code> 的 <code>cost.holidays</code> 就能判准。
-        </p>
-        <p v-if="cost && cost.unpriced_models.length > 0" class="alert info">
-          这些模型<strong>没配单价</strong>,所以只报了 token、没报钱:
-          <code v-for="model in cost.unpriced_models" :key="model">{{ model }}</code>
-          —— 把名字填进 <code>config.yaml</code> 的 <code>cost.models</code> 就有金额了。
-        </p>
-
-        <!-- 时段合计:与 provider 价目表一行行对得上(高峰/空闲差 2 倍) -->
-        <p v-if="cost" class="faint">时段口径:{{ periodRuleText(cost) }}</p>
-
-        <table v-if="cost && cost.periods.length > 0">
-          <thead>
-            <tr>
-              <th>时段</th>
-              <th class="num">调用</th>
-              <th class="num">输入 token</th>
-              <th class="num">输出 token</th>
-              <th class="num">金额</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in cost.periods" :key="item.period">
-              <td>{{ periodLabel(item.period) }}</td>
-              <td class="num">{{ item.calls }}</td>
-              <td class="num">{{ tokens(item.input_tokens) }}</td>
-              <td class="num">{{ tokens(item.output_tokens) }}</td>
-              <td class="num">{{ money(item.total_cost) }}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <table v-if="cost && cost.lines.length > 0">
-          <thead>
-            <tr>
-              <th>模型</th>
-              <th>时段</th>
-              <th class="num">调用</th>
-              <th class="num">输入 token</th>
-              <th class="num">其中命中缓存</th>
-              <th class="num">输出 token</th>
-              <th class="num">金额</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="line in cost.lines" :key="`${line.model}-${line.period}`">
-              <td><code>{{ line.model }}</code></td>
-              <td>{{ periodLabel(line.period) }}</td>
-              <td class="num">{{ line.calls }}</td>
-              <td class="num">{{ tokens(line.input_tokens) }}</td>
-              <td class="num">{{ tokens(line.cached_input_tokens) }}</td>
-              <td class="num">{{ tokens(line.output_tokens) }}</td>
-              <td class="num" :title="line.total_cost === null ? '这个模型没配单价(不是花了 0 元)' : ''">
-                {{ line.total_cost === null ? '未配置单价' : money(line.total_cost) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-else-if="cost" class="faint">
-          这个窗口里没有可算的模型调用 —— 走 FAQ 直答、检索为空拒答、寒暄的请求都不调模型。
-        </p>
-      </section>
-
-      <section class="card block">
-        <h2>分段延迟</h2>
-        <p class="faint">
-          单位毫秒(≥1 秒显示成秒)。只统计<strong>热行</strong> —— 冷启动那几次被模型加载主导,
-          混进来 p95 就变成"冷启动有多慢"。分段顺序就是一次回答里的先后顺序。
-          <code>—</code> = 样本不够(<code>p95</code> 要 n≥{{ minN.p95 }}、<code>p99</code> 要
-          n≥{{ minN.p99 }})或这一轮没量到,<strong>不折算成 0</strong>。
-        </p>
-        <table>
-          <thead>
-            <tr>
-              <th>分段</th>
-              <th class="num">n</th>
-              <th class="num">p50</th>
-              <th class="num">p95</th>
-              <th class="num">p99</th>
-              <th class="num">最大</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="segment in data.segments"
-              :key="segment.name"
-              :class="{ total: segment.name === 'total_ms' }"
-            >
-              <td>
-                <code>{{ segment.name }}</code>
-                <span v-if="segment.name === 'total_ms'" class="tag info">端到端</span>
-              </td>
-              <td class="num">{{ segment.n }}</td>
-              <td class="num" :title="segment.p50 === null ? whyMissing('p50', segment.n) : ''">
-                {{ ms(segment.p50) }}
-              </td>
-              <td class="num" :title="segment.p95 === null ? whyMissing('p95', segment.n) : ''">
-                {{ ms(segment.p95) }}
-              </td>
-              <td class="num" :title="segment.p99 === null ? whyMissing('p99', segment.n) : ''">
-                {{ ms(segment.p99) }}
-              </td>
-              <td class="num">{{ ms(segment.maximum) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section class="card block">
-        <h2>最慢的几条</h2>
-        <p class="faint">
-          含冷启动 —— 那是用户真实等到的;行数不够时这一榜会比上面的表更"难看",那是正常的。
-        </p>
-        <table>
-          <thead>
-            <tr>
-              <th>请求</th>
-              <th>渠道</th>
-              <th>冷热</th>
-              <th class="num">总耗时</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in data.slowest" :key="row.request_id">
-              <td><code>{{ row.request_id }}</code></td>
-              <td>{{ row.channel }}</td>
-              <td>
-                <span class="tag" :class="row.cold ? 'warn' : 'soft'">
-                  {{ row.cold ? '冷启动' : '热' }}
-                </span>
-              </td>
-              <td class="num">{{ ms(row.total_ms) }}</td>
-            </tr>
-            <tr v-if="data.slowest.length === 0">
-              <td colspan="4" class="faint">这个窗口里没有请求。</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-    </template>
-  </div>
+  </main>
 </template>
 
 <style scoped>
-.page {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 24px;
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.cost-line {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.gaps {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-h1 {
-  font-size: 18px;
-}
-
-h2 {
-  font-size: 15px;
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.windows {
-  display: flex;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 10px;
 }
 
 .cold-note {
-  margin-top: -6px;
+  margin: -8px 0 0;
 }
 
-.kpis {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-
-.block {
-  padding: 14px 16px;
+:deep(.surface-body) {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-variant-numeric: tabular-nums;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-th {
-  color: var(--text-faint);
-  font-weight: 500;
-  font-size: 12px;
-}
-
-.num {
-  text-align: right;
+  gap: 10px;
 }
 
 tr.total td {
@@ -460,5 +374,22 @@ tr.total td {
 
 td .tag {
   margin-left: 6px;
+}
+
+@media (max-width: 768px) {
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .page-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .windows {
+    max-width: 100%;
+    overflow-x: auto;
+  }
 }
 </style>

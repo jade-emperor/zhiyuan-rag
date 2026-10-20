@@ -245,6 +245,18 @@ class MySQLAuthStore(AuthStore):
         finally:
             conn.close()
 
+    def revoke_all_tokens(self, user_id: str) -> int:
+        """输入:用户 ID。行为:删掉他的全部令牌。输出:删掉的行数。"""
+        conn = self._connect(autocommit=True)
+        try:
+            with conn.cursor() as cur:
+                affected = cur.execute(
+                    f"DELETE FROM {self._tokens} WHERE user_id = %s", (user_id,)
+                )
+                return int(affected or 0)
+        finally:
+            conn.close()
+
     def bind_session(self, session_id: str, user_id: str) -> None:
         """输入:会话 ID、用户 ID。行为:绑定归属;已绑过**不改**(``INSERT IGNORE``)。输出:无。
 

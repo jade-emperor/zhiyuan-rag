@@ -65,7 +65,9 @@ CASES: list[tuple[str, Path, str, str, str, str]] = [
     (
         "RT-2 装载不排序(同一份语料两次顺序可能不同 → chunk_id 幂等没了)",
         LOADER,
-        "for file in sorted(candidates, key=lambda found: doc_id_of(root, found)):",
+        # 锚点跟着"登记根"那轮改动走:排序键从 `root` 换成了每个文件自己的登记根
+        # (`anchor_of`),否则从语料根灌与从子目录灌的顺序会不一样。
+        "for file in sorted(candidates, key=lambda found: doc_id_of(anchor_of(found), found)):",
         "for file in candidates:",
         "装载：混合目录",
         SCRIPT,

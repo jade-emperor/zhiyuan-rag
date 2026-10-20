@@ -88,8 +88,10 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-6  清单不按可见范围过滤(点开预览却 404 —— 用户以为系统坏了)",
         target=API / "app.py",
-        old="    visible = [view for view in views if access.allows(view.document_id)]",
-        new="    visible = list(views)",
+        # 锚点跟着 `_documents` 的拆函数走:过滤那一行现在住在 `_visible_views` 里
+        # (`_documents` 与目录页共用同一次对账 —— 两边各过滤一次就会有人漏掉)。
+        old="    return tuple(view for view in views if access.allows(view.document_id))",
+        new="    return tuple(views)  # 反向测试:不过滤可见范围",
         needle="落地 清单：员工看不到受限文档",
     ),
     Case(

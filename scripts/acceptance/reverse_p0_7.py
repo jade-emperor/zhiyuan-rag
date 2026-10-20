@@ -114,6 +114,7 @@ CASES: tuple[Case, ...] = (
             history=history,
             timing=timing,
             rewriter=rewriter,
+            image_signer=image_signer,
         )
         return
     own = StreamTiming(label="rag", channel="rag", thinking=thinking)""",

@@ -35,6 +35,7 @@ from project_rag.domain.documents import (
     STATE_IN_FLIGHT,
     STATE_MISMATCHES,
     STATE_OK,
+    UNFILED,
     DocRecord,
     DocState,
     DocStatus,
@@ -152,6 +153,9 @@ class DocumentView:
     on_disk: bool
     disk_size_bytes: int
     indexed_chunks: int
+    # 归在哪一级目录下(空串 = 未分类)。**未登记的文件必然是未分类** —— 它没有行可写,
+    # 而"把它归到某处"这件事需要一次写库,读接口不做(与 ``unregistered`` 只读同一条口径)。
+    folder: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +228,7 @@ def document_views(
                 on_disk=True,
                 disk_size_bytes=file.size_bytes,
                 indexed_chunks=counts.get(file.doc_id, 0),
+                folder=UNFILED,
             )
         )
     return tuple(views)
@@ -245,6 +250,7 @@ def _view_of(record: DocRecord, file: DiskFile | None, indexed_chunks: int) -> D
         on_disk=file is not None,
         disk_size_bytes=0 if file is None else file.size_bytes,
         indexed_chunks=indexed_chunks,
+        folder=record.folder,
     )
 
 
@@ -294,6 +300,8 @@ def register_ingested(
     chunks: Sequence[Any],
     sizes: Mapping[str, int],
     created_at: str,
+    folder: str = UNFILED,
+    folders: Mapping[str, str] | None = None,
     on_write: Callable[[DocRecord], None] | None = None,
 ) -> tuple[DocRecord, ...]:
     """输入:登记表、这次入库的文档、切出来的块、``doc_id -> 磁盘字节数``、登记时间。
@@ -306,6 +314,10 @@ def register_ingested(
 
     ``sizes`` 是**磁盘上的真实字节数**,不是正文长度:登记表要靠它判"文件后来改没改"
     (见 ``_state_of`` 的 ``changed``)。给 0 就等于放弃这个判据 —— 老的回填行就是这么来的。
+
+    ``folders`` 是**逐份**的目录(``doc_id -> folder_id``),给了就按它来、``folder`` 只当兜底:
+    一次灌整个语料根时,里面的文档分属不同的一级目录 —— 用同一个 ``folder`` 会把它们
+    全塞进一格(而那一格的名字会是语料根本身,那是"所有格的父亲",不该出现)。
     """
     per_doc: dict[str, int] = {}
     for chunk in chunks:
@@ -313,6 +325,17 @@ def register_ingested(
 
     written: list[DocRecord] = []
     for document in documents:
+        target = folder if folders is None else folders.get(document.doc_id, folder)
+        # 同名文档已经在**另一个目录**里:登记行会被这次覆盖(``document_id`` 就是文件名)。
+        # 这是数据层面的限制,不是这次可以静默过去的事 —— 记一条 WARNING 点名两个目录。
+        existing = store.get(document.doc_id)
+        if existing is not None and existing.folder != target:
+            _logger.warning(
+                "文档 %s 原来在目录 %r,这次入到 %r —— 两个目录不能有同名文件,登记行跟着这次走",
+                document.doc_id,
+                existing.folder or "未分类",
+                target or "未分类",
+            )
         record = DocRecord(
             document_id=document.doc_id,
             source=document.source,
@@ -321,6 +344,7 @@ def register_ingested(
             chunks=per_doc.get(document.doc_id, 0),
             size_bytes=int(sizes.get(document.doc_id, 0)),
             created_at=created_at,
+            folder=target,
         )
         store.upsert(record)
         if on_write is not None:
@@ -330,7 +354,12 @@ def register_ingested(
 
 
 def register_document(
-    store: DocumentStore, *, source: str, filename: str, size_bytes: int
+    store: DocumentStore,
+    *,
+    source: str,
+    filename: str,
+    size_bytes: int,
+    folder: str = UNFILED,
 ) -> DocRecord:
     """输入:登记表、来源、文件名、字节数。行为:登记一份 ``pending`` 文档。输出:记录。
 
@@ -342,7 +371,12 @@ def register_document(
     登记用哈希、装载用文件名,入库成功但删除报 ``deleted_chunks=0``。
 
     **不用内容哈希**:内容一改 ID 就该变(那是 ``chunk_id`` 的口径),而登记行要跟着
-    "这个文件"走 —— 同名文件重传即覆盖登记。
+    "这个文件"走 —— 同名文件重传即覆盖登记(走 ``upsert``:状态回到 ``pending``、大小按这一次的、
+    ``created_at`` 保留 —— 那是它第一次出现的时间)。
+
+    **同名但换目录不允许**(接口层回 409):``document_id`` 就是文件名,而删块、挪目录、
+    幂等清理都按这一个键 —— 两个目录各有一份同名文件时,它们会互相删对方的块。
+    这是"文档 ID = 文件名"这条老口径带来的限制,目录这一层没能消除它,只把它变成一次**当场报错**。
     """
     from datetime import datetime
 
@@ -355,8 +389,9 @@ def register_document(
         chunks=0,
         size_bytes=size_bytes,
         created_at=datetime.now().isoformat(timespec="seconds"),
+        folder=folder,
     )
-    store.add(record)
+    store.upsert(record)
     return record
 
 

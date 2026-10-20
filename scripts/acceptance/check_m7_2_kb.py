@@ -310,17 +310,26 @@ def _() -> str:
 
 
 # ══ 二、知识库页（静态契约） ═════════════════════════════════════════════════
-@check("知识库页：真的接上了四条文档接口（不再是路线图页）")
+@check("知识库两级页面：一级列目录、二级接上四条文档接口（不再是路线图页）")
 def _() -> str:
-    view = _read("views/KnowledgeView.vue")
+    """**这一批把页面拆成了两层**:一级是目录清单,二级是某一格里的文档。
+
+    所以"页面接上了哪条接口"这条断言也跟着拆 —— 一级只读 `/folders`,
+    四条文档接口全在二级(``views/FolderView.vue``)。断言本身没变松:四个 action 一个不少。
+    """
+    index = _read("views/KnowledgeView.vue")
+    folder = _read("views/FolderView.vue")
     endpoints = _read("api/endpoints.ts")
-    for name in ("documents", "uploadDocument", "deleteDocument", "documentPreview"):
+    for name in ("documents", "uploadDocument", "deleteDocument", "documentPreview", "folders"):
         assert f"export function {name}" in endpoints, f"endpoints.ts 少了 {name}"
+    assert "refreshFolders" in index, "一级页面没有拉目录清单"
+    assert "FolderCard" in index, "一级页面没有用目录卡片(那它是按什么分两级的?)"
     for call in ("refreshDocuments", "removeDocument", "openPreview"):
-        assert call in view, f"KnowledgeView 没有调 {call}"
+        assert call in folder, f"二级页面没有调 {call}"
+    assert "DocumentTable" in folder, "二级页面的主体不是文档表格"
     assert "uploadFiles" in _read("components/UploadPanel.vue"), "上传面板没有接上传"
-    assert "路线图" not in view, "路线图页的文案还在 —— 这一页现在应该是真页面"
-    return "四个 action 都接上;路线图文案已清掉"
+    assert "路线图" not in index and "路线图" not in folder, "路线图页的文案还在 —— 这两页现在都是真页面"
+    return "一级拉 /folders 并渲染目录卡;二级接上清单/删除/预览/上传四个 action"
 
 
 @check("上传：accept 与大小上限来自 capabilities；拖放与点选走同一条路")
@@ -338,20 +347,27 @@ def _() -> str:
 
 @check("删除：两步确认，且不用 window.confirm（删除会连带删向量,不该一键就没）")
 def _() -> str:
-    card = _read("components/DocumentCard.vue")
-    assert re.search(r'@click="confirming = true"', card), (
-        "第一步的按钮没有把状态切到「确认」—— 直接 emit('remove') 就是一键删除"
+    """卡片换成了表格(二级页面),**但"两步确认"这条口径一个字都没变**。
+
+    断言从"卡片里有一个 ``confirming = true``"变成"表格里有一个 ``askRemove`` 把这一行
+    记进待确认集合":判据仍是"第一次点击只进确认态、真正发删除的地方只有一处、
+    而且它在「确认删除?」之后"。
+    """
+    table = _read("components/DocumentTable.vue")
+    assert re.search(r'@click="askRemove\(doc\)"', table), (
+        "第一步的按钮没有把这一行切到「待确认」—— 直接 emit('remove') 就是一键删除"
     )
-    calls = [match.start() for match in re.finditer(r"emit\('remove'\)", card)]
+    assert "confirming" in table, "没有待确认状态(那一行点一下就直接删了)"
+    calls = [match.start() for match in re.finditer(r"emit\('remove'", table)]
     assert len(calls) == 1, f"真正发删除的地方应该只有一处,实际 {len(calls)} 处"
-    assert "确认删除?" in card, "第二步的按钮文案不在"
-    assert calls[0] > card.index("确认删除?"), "发删除的按钮出现在确认那一步之前"
+    assert "确认删除?" in table, "第二步的按钮文案不在"
+    assert calls[0] > table.index("确认删除?"), "发删除的按钮出现在确认那一步之前"
     # 去注释之后再看 `window.confirm`:组件的 docstring 里正 在解释「为什么不用它」——
     # 不剥注释的话,解释禁令的那句话本身会把检查判红(注释被当成代码)
-    assert "window.confirm" not in _strip_comments(card), (
+    assert "window.confirm" not in _strip_comments(table), (
         "用了阻塞式 confirm:没法测、也没法显示后端返回的细节"
     )
-    view = _read("views/KnowledgeView.vue")
+    view = _read("views/FolderView.vue")
     assert "deleted_chunks" in view and "removed_file" in view and "removed_record" in view, (
         "删完没有如实转述后端的结果(删了几块 / 文件在不在 / 登记行在不在)"
     )
@@ -365,7 +381,7 @@ def _() -> str:
         "轮询没有开/关两端"
     )
     assert "pending" in store and "processing" in store, "轮询条件没有覆盖两种在途状态"
-    view = _read("views/KnowledgeView.vue")
+    view = _read("views/FolderView.vue")
     assert re.search(r"onUnmounted\(\(\) => \{[^}]*stopPolling\(\)", view, re.S), (
         "onUnmounted 里没有真的调 stopPolling —— 只 import 不算(切走之后还在打清单)"
     )

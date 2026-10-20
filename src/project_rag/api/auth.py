@@ -24,9 +24,11 @@ from __future__ import annotations
 from fastapi import Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 
+from project_rag.application.accounts import check_new_account, check_registration_password
 from project_rag.application.security import (
     TOKEN_TTL_SECONDS,
     bearer_token,
+    hash_password,
     new_token,
     token_fingerprint,
     verify_password,
@@ -81,6 +83,68 @@ class Authenticator:
             store.issue_token, user, token_fingerprint(token), TOKEN_TTL_SECONDS
         )
         return token, user
+
+    async def register(
+        self, *, username: str, password: str, min_password_chars: int
+    ) -> tuple[str, User]:
+        """输入:登录名、明文密码、口令下限。行为:建一个 ``employee`` 并直接签发令牌。
+
+        输出:``(令牌, 用户)``。重名 / 口令不合规 → 400;并发重名 → 409。
+        """
+        store = self._require_store()
+        existing = await run_in_threadpool(store.list_users)
+        try:
+            name = check_new_account(
+                existing, username=username, password=password, role="employee"
+            )
+            check_registration_password(
+                password, username=name, min_chars=min_password_chars
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        try:
+            await run_in_threadpool(store.create_user, name, hash_password(password), "employee")
+        except Exception as exc:  # noqa: BLE001 - 唯一约束是并发下的正常竞争
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=f"登录名 {name!r} 已经被占用"
+            ) from exc
+        return await self.login(name, password)
+
+    async def change_password(
+        self, *, username: str, old_password: str, new_password: str, min_password_chars: int
+    ) -> str:
+        """输入:登录名、原密码、新密码、口令下限。行为:验原密码 → 改密 → **撤全部令牌** → 发新令牌。
+
+        输出:新令牌。原密码不对 → 401;新密码不合规 → 400。
+        """
+        store = self._require_store()
+        found = await run_in_threadpool(store.find_by_username, username)
+        if found is None or not verify_password(old_password, found[1]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="原密码不对"
+            )
+        user = found[0]
+        try:
+            check_registration_password(
+                new_password, username=username, min_chars=min_password_chars
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        if verify_password(new_password, found[1]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="新密码不能与原密码相同"
+            )
+        await run_in_threadpool(store.set_password, user.user_id, hash_password(new_password))
+        await run_in_threadpool(store.revoke_all_tokens, user.user_id)
+        token = new_token()
+        await run_in_threadpool(
+            store.issue_token, user, token_fingerprint(token), TOKEN_TTL_SECONDS
+        )
+        return token
 
     async def user(self, authorization: str | None = Header(default=None)) -> User | None:
         """输入:``Authorization`` 头(FastAPI 注入)。行为:换出当前用户。输出:用户;无认证模式给 None。

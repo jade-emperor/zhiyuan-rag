@@ -31,6 +31,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path  # 假件签名里要用(函数内的 _Path 只是为了不和它重名)
 
+from _fakes import NoFolders
 from _harness import SkipCheck, check, report
 # domain 只用标准库,顶层 import 不会拖起 torch/pymilvus,而假件要在运行期造 User
 from project_rag.domain.auth import User, UserRole
@@ -86,6 +87,12 @@ class _FakeAuthStore:
 
     def revoke_token(self, token_hash: str) -> None:
         self.tokens.pop(token_hash, None)
+
+    def revoke_all_tokens(self, user_id: str) -> int:
+        doomed = [h for h, (owner, _) in self.tokens.items() if owner == user_id]
+        for token_hash in doomed:
+            self.tokens.pop(token_hash, None)
+        return len(doomed)
 
     def bind_session(self, session_id: str, user_id: str) -> None:
         self.owners.setdefault(session_id, user_id)
@@ -388,7 +395,7 @@ def _ws_open_without_auth() -> str:
     return "无认证模式：不带令牌也能连（老契约因此全绿）"
 
 
-class _RecordingDocs:
+class _RecordingDocs(NoFolders):
     """假登记表:记下**调用顺序**(顺序本身就是契约) + 造一个待删的文档。"""
 
     def __init__(self, record=None, *, delete_raises: bool = False) -> None:
@@ -475,6 +482,9 @@ def _doc(tmp: Path, name: str = "手册.pdf"):
     store = _RecordingDocs()
     record = register_document(store, source="demo", filename=name, size_bytes=6)
     store.record = record
+    # **登记不属于删除序列**:``register_document`` 现在走 ``upsert``(重传同名即覆盖),
+    # 会在这里留下一条 ``upsert:…``。断言的是"删除第一步是标记 deleting",所以把登记那一步清掉。
+    store.calls.clear()
     return store, record
 
 
@@ -861,7 +871,7 @@ def _doctor_cli() -> str:
     ]
     vectors.upsert(rows, HashingEmbedder(dim=64).embed([row.text for row in rows]))
 
-    class _TwoRows:
+    class _TwoRows(NoFolders):
         """两条登记行:**a.md(有块,健康)** 与 gone.md(缺块)。
 
         为什么不用单条的 ``_RecordingDocs``:那种假件里 a.md 没登记,于是它自己也是个孤儿 ——

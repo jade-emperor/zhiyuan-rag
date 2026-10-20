@@ -47,7 +47,7 @@ docker compose up -d app          # 或者整份用容器跑（宿主 8080，页
 ## 三、提交前自检（和 CI 跑的一样）
 
 ```bash
-./scripts/dev.sh ci        # pyright + 23 套契约 + 24 份反向 runner（= CI 的 contracts 任务）
+./scripts/dev.sh ci        # pyright + 26 套契约 + 26 份反向 runner（= CI 的 contracts 任务）
 ./scripts/dev.sh frontend  # 改了 web/ 才需要：typecheck + build（产物要一起提交）
 
 # 只想跑你改到的那一块时：

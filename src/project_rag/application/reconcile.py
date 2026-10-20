@@ -92,6 +92,10 @@ def backfill_records(
     **为什么状态是 processed 而不是 pending**:``pending`` 的含义是"等入库",
     而这些块**已经在库里了** —— 标成 pending 会让前端显示"处理中",
     还会被对账报成缺块(自己造出一批假问题)。
+
+    **归属留空(未分类)**:这批文档在登记表存在之前就入库了,库里只有 ``doc_id`` 与
+    ``source`` —— 拿 ``source`` 猜一个目录比留空糟(猜错了没人会去核对)。它们会落在
+    「未分类」里,由人决定归到哪一格(``PATCH /api/v1/documents/{id}``)。
     """
     return tuple(
         DocRecord(

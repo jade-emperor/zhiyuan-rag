@@ -79,7 +79,7 @@ MIDDLEWARES: dict[str, tuple[str, str]] = {
 }
 # 宿主侧映射出来的端口：容器里出现这些数字，说明地址还是按宿主写的
 HOST_PORTS = {"10086", "10087", "10088", "10089", "10090", "10091", "10092", "10093"}
-# 这一档必须待在 optional-dependencies 里（理由见 docstring 第 3 条）
+# 这些包曾经进过一个只有 GitHub 来源的可选档;现在整档删除,它们**任何时候**都不许回主依赖
 OPTIONAL_ONLY = {"unstructured", "langchain-unstructured", "en-core-web-sm"}
 
 
@@ -160,10 +160,14 @@ def _service_env_values() -> list[tuple[str, str]]:
 
 
 # ── 一、文件与构建入口 ────────────────────────────────────────────────────────
-@check("compose 是合法 YAML，服务集合 = 中间件 6 个 + app")
+@check("compose 是合法 YAML，服务集合 = 中间件 6 个 + app + MinerU 解析服务")
 def _services() -> str:
     services = _compose()["services"]
-    expected = {"etcd", "minio", "standalone", "redis", "mysql", "attu", "app"}
+    expected = {
+        "etcd", "minio", "standalone", "redis", "mysql", "attu", "app",
+        # 图片模态的独立解析服务。它不进 app 进程(见 services/mineru/README.md)。
+        "mineru",
+    }
     if set(services) != expected:
         raise AssertionError(
             f"服务集合对不上：多了 {sorted(set(services) - expected)}，"
@@ -320,6 +324,8 @@ def _mounts() -> str:
         f"{workdir}/models": "ro",
         f"{workdir}/data": "ro",
         f"{workdir}/{uploads}": "rw",
+        # MinerU 结果缓存:下载的 zip 要解压到这里,而 /app/data 是只读的。
+        f"{workdir}/data/mineru": "rw",
         f"{workdir}/logs": "rw",
     }
     if mounts != want:
@@ -386,67 +392,27 @@ def _app_has_gpu() -> bool:
     return False
 
 
-@check("静态元数据：direct-URL 依赖声明了元数据，且 uv.lock 的 [manifest] 段带着它（解析期不去 github）")
-def _static_metadata() -> str:
-    """加。完整背景与 `pyproject.toml` 那段注释。
-
-    `en-core-web-sm` 的 wheel 只有 GitHub 一个来源，而 uv **即使没选中那个 extra** 也要它的
-    元数据来校验锁 —— 取一次实测：宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次
-    重试 → **46s 就失败**。于是 `docker build` 与**日常 `uv run project-rag-api`** 会随机死在这一步
-    （一天内各一次）。修法两半，缺一不可：
-
-    ① `pyproject.toml` 的 `[tool.uv] dependency-metadata` **静态声明**它的元数据
-       （wheel 的 METADATA 里只有 Name/Version，如实声明即可）；
-    ② `uv lock` 把这份声明写进 `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked`
-       校验**零网络**（实测 0 秒）。
-
-    这条盯三件事：direct-URL 依赖都有静态元数据 / 版本与 URL 对得上 / **锁里确实有那段 manifest**。
-    第三条最容易漏：少了它本地可能照样跑（走缓存），**只有构建或换机器时才暴露**。
+@check("依赖源：pyproject 里没有任何 direct-URL 源（任何一次重新解析都不会碰 GitHub）")
+def _no_direct_url() -> str:
+    """历史:`en-core-web-sm` 的 wheel 只有 GitHub 一个来源,uv 每次重新解析都要取它
+    (实测取一次 172s,默认 46s 放弃),`uv run` 与 `docker build` 会随机死在网络上。
+    它只被一个用不上的可选档引用,那一档已整块删除 —— 这条盯住"别再回来"。
     """
-    uv = _pyproject().get("tool", {}).get("uv", {})
-    if not isinstance(uv, dict):
-        raise AssertionError("pyproject 里没有 [tool.uv] 表")
-    sources = uv.get("sources") or {}
-    entries = uv.get("dependency-metadata") or []
-    if not isinstance(sources, dict) or not isinstance(entries, list):
-        raise AssertionError("pyproject 的 [tool.uv] 结构不对（sources 要是表、dependency-metadata 要是数组）")
-    direct = {
-        str(name): str(spec.get("url", ""))
-        for name, spec in sources.items()
-        if isinstance(spec, dict) and spec.get("url")
+    data = _pyproject()
+    uv = data.get("tool", {}).get("uv", {})
+    sources = uv.get("sources") or {} if isinstance(uv, dict) else {}
+    offenders = {
+        str(name): spec
+        for name, spec in (sources or {}).items()
+        if isinstance(spec, dict) and ("url" in spec or "path" in spec)
     }
-    if not direct:
+    if offenders:
         raise AssertionError(
-            "[tool.uv.sources] 里没有 direct-URL 依赖了 —— 那这条检查与 pyproject 里那段注释该一起删"
+            f"这些依赖从 URL / 本地路径取包：{offenders} —— 首次解析必然联外网，"
+            f"`uv run` 与 `docker build` 会随机超时。放回 PyPI 镜像，或把 wheel vendored 进仓库"
         )
-    declared = {
-        str(entry.get("name")): str(entry.get("version"))
-        for entry in entries
-        if isinstance(entry, dict)
-    }
-    missing = sorted(set(direct) - set(declared))
-    if missing:
-        raise AssertionError(
-            f"这些 direct-URL 依赖没声明静态元数据：{missing} —— uv 解析时会去取它的元数据，"
-            f"而那份 wheel 在 github 上（实测取一次 172s，uv 默认 46s 就放弃）："
-            f"`docker build` 与日常 `uv run` 都会随机死在这一步。见 pyproject 的 dependency-metadata 注释"
-        )
-    for name, url in direct.items():
-        version = declared.get(name, "")
-        if version and version not in url:
-            raise AssertionError(
-                f"{name} 的静态元数据版本 `{version}` 与 [tool.uv.sources] 的 URL 对不上：{url}"
-            )
-    lock_text = LOCK.read_text(encoding="utf-8")
-    for name in direct:
-        marker = f'[[manifest.dependency-metadata]]\nname = "{name}"'
-        if marker not in lock_text:
-            raise AssertionError(
-                f"uv.lock 里没有 `[[manifest.dependency-metadata]] name = \"{name}\"` —— "
-                f"重新跑一次 `uv lock`。没有它，`uv sync --locked` 的校验仍会回源取元数据"
-                f"（实测 172s）；而且这一条**只有构建/换机器时才暴露**，本地走缓存看着一切正常"
-            )
-    return f"静态元数据 {sorted(declared)}；uv.lock 的 [manifest] 段齐"
+    count = len(data.get("project", {}).get("dependencies", []))
+    return f"[tool.uv.sources] 为空，{count} 个主依赖全部来自 PyPI 镜像"
 
 
 @check("Dockerfile 拷齐了 pyproject 声明的 readme / license 文件（缺了要到构建最后一层才报错）")
@@ -528,54 +494,44 @@ def _optional_not_runtime() -> str:
     return f"主依赖 {len(names)} 个，不含 {sorted(OPTIONAL_ONLY)}"
 
 
-@check("那一档在 optional-dependencies 里，且 GitHub 轮子只被它引用")
-def _optional_group() -> str:
+@check("那个只有 GitHub 来源的可选档已删除（留着它 = 每次重新解析都要碰 GitHub）")
+def _extra_removed() -> str:
+    """`unstructured` 一档（含 `en-core-web-sm`）已整块删掉：`src/` 里 0 处 import，
+    而它让解析阶段常驻一个 GitHub 依赖。要用时由人显式加回并接受那条网络风险。
+    """
     data = _pyproject()
     extras = data.get("project", {}).get("optional-dependencies", {})
-    if "unstructured" not in extras:
+    if "unstructured" in extras:
         raise AssertionError(
-            "project.optional-dependencies 里没有 unstructured 这一档（要 uv sync --extra unstructured 就该有它）"
+            "optional-dependencies 里又有 unstructured 了 —— 那一档会重新把 GitHub 轮子带进解析，"
+            "`uv run` 会再次随机超时"
         )
-    declared = _names(extras["unstructured"])
-    if not OPTIONAL_ONLY <= declared:
-        raise AssertionError(f"这一档还缺 {sorted(OPTIONAL_ONLY - declared)}")
-    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
-    source = sources.get("en-core-web-sm")
-    if not isinstance(source, dict) or "github.com" not in str(source.get("url", "")):
-        raise AssertionError(
-            f"[tool.uv.sources] 里 en-core-web-sm 的 GitHub 地址没了或不是 GitHub：{source!r}"
-        )
-    return f"optional-dependencies = {sorted(extras)}；en-core-web-sm ← GitHub"
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {}) or {}
+    if "en-core-web-sm" in sources:
+        raise AssertionError("en-core-web-sm 又被声明成依赖源了")
+    return f"extras = {sorted(extras)}（无 unstructured）"
 
 
-@check("uv.lock 与 pyproject 一致：三个包都带 extra == 'unstructured' 标记")
+@check("uv.lock 已跟着重锁：GitHub 轮子没有残留，且 extras 与 pyproject 一致")
 def _lock_consistent() -> str:
+    """锁是**产物**:pyproject 删掉的包,锁里不清掉等于"下次解析还会去取它"。
+    `provides-extras` 用集合比对,新增档位不必改这里 —— 钉的是"锁与 pyproject 不漂"。
+    """
     lock = tomllib.loads(LOCK.read_text(encoding="utf-8"))
-    root = next((p for p in lock["package"] if p["name"] == "project-rag"), None)
+    packages = {str(item.get("name")) for item in lock.get("package", [])}
+    stale = sorted(packages & OPTIONAL_ONLY)
+    if stale:
+        raise AssertionError(
+            f"uv.lock 里还有 {stale} —— 它们已从 pyproject 删除，跑一次 `uv lock` 清掉；"
+            f"留着的话下次重新解析仍会去 GitHub 取那个 wheel"
+        )
+    root = next((item for item in lock["package"] if item.get("name") == "project-rag"), None)
     if root is None:
         raise AssertionError("uv.lock 里没有 project-rag 自己的条目")
-    main = {d["name"] for d in root["dependencies"]}
+    main = {str(d.get("name")) for d in root.get("dependencies", [])}
     leaked = sorted(main & OPTIONAL_ONLY)
     if leaked:
         raise AssertionError(f"锁的默认依赖里还有 {leaked} —— 与 pyproject 不一致，忘了 uv lock")
-    grouped = {d["name"] for d in root.get("optional-dependencies", {}).get("unstructured", [])}
-    if not OPTIONAL_ONLY <= grouped:
-        raise AssertionError(
-            f"锁的 unstructured 档里缺 {sorted(OPTIONAL_ONLY - grouped)} —— 忘了 uv lock"
-        )
-    markers = {
-        d["name"]: d.get("marker")
-        for d in root.get("metadata", {}).get("requires-dist", [])
-        if d["name"] in OPTIONAL_ONLY
-    }
-    wrong = {n: m for n, m in markers.items() if m != "extra == 'unstructured'"}
-    if wrong or set(markers) != OPTIONAL_ONLY:
-        raise AssertionError(
-            f"requires-dist 的 extra 标记不对：{markers}（应为三个都是 extra == 'unstructured'）"
-        )
-    # provides-extras 要与 pyproject 里**实际的档位集合**一致(集合,不是写死一个元素的列表):
-    # 加了 `desktop` 那一档（的桌面壳),写死的列表当场变红 ——
-    # 而真正要钉的是"锁与 pyproject 不漂",不是"只有一个档"。
     declared_extras = set(_pyproject().get("project", {}).get("optional-dependencies", {}))
     locked_extras = set(root.get("metadata", {}).get("provides-extras") or [])
     if locked_extras != declared_extras:
@@ -583,10 +539,7 @@ def _lock_consistent() -> str:
             f"provides-extras 与 pyproject 的档位不一致：锁 {sorted(locked_extras)} vs "
             f"pyproject {sorted(declared_extras)} —— 忘了 uv lock"
         )
-    return (
-        f"主依赖不含三者；extras={sorted(declared_extras)}；"
-        f"provides-extras 与之一致"
-    )
+    return f"锁里无 {sorted(OPTIONAL_ONLY)}；extras = {sorted(declared_extras)} 与锁一致"
 
 
 # ── 五、镜像卫生 ──────────────────────────────────────────────────────────────

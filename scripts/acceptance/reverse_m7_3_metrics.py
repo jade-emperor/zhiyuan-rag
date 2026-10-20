@@ -123,8 +123,8 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-9  空窗口不给话术（空白表格被读成「坏了」）",
         target=VIEW,
-        old="      这个窗口里还没有请求 —— 去「对话」页问几个问题,回来刷新就有了。",
-        new="      无数据。",
+        old='      <div v-if="data && rows === 0" class="alert info">这个窗口里还没有请求</div>',
+        new='      <div v-if="data && rows === 0" class="alert info">无数据。</div>',
         needle="窗口选项来自 capabilities",
     ),
     Case(
@@ -181,12 +181,11 @@ CASES: tuple[Case, ...] = (
         title="RT-15  冷启动那一套数不画出来（「不算」变成「看不见」）",
         target=VIEW,
         old=(
-            "      <p v-if=\"data.cold_rows > 0\" class=\"faint cold-note\">\n"
-            "        上面六项都<strong>只数热行</strong>。冷启动 {{ data.cold_rows }} 次不计入它们\n"
-            "        (那几次用户等的是模型加载):拒答 {{ data.cold.refused }} ·\n"
-            "        截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·\n"
-            "        FAQ 直答 {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}。\n"
-            "      </p>\n"
+            '        <p v-if="data.cold_rows > 0" class="faint cold-note">\n'
+            "          只数热行 · 冷启动 {{ data.cold_rows }} 次：拒答 {{ data.cold.refused }} ·\n"
+            "          截断 {{ data.cold.truncated }} · 中断 {{ data.cold.aborted }} ·\n"
+            "          FAQ {{ data.cold.faq_hits }} · 知识库 {{ data.cold.rag_answers }}\n"
+            "        </p>\n"
         ),
         new="",
         needle="看板按冷热分层读数",

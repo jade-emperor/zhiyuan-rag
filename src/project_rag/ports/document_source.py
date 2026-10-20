@@ -18,8 +18,36 @@ PDF 的书签、PPT 的一页),适配器的活儿就是把它翻成 ``#`` / ``##
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class SourceImage:
+    """解析器从文档里抽出来的一张图(本地文件,**还没上传**)。
+
+    ``offset`` 是它在正文里的锚点(字符位置),loader 用它把 key 挂到父块;
+    ``page`` 从 1 开始,None = 不知道。URL 不在这里 —— 上传是另一个端口的职责。
+    """
+
+    path: Path
+    offset: int
+    page: int | None = None
+    alt: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedDocument:
+    """带结构的正文 + 页码区间 + 本地图片清单。
+
+    ``read()`` 只回正文,拿不到图片;MinerU 这类"正文里夹着图"的源走
+    ``read_with_assets()``,把三样一起交回来。loader 负责把图上传成 key。
+    """
+
+    text: str
+    pages: tuple[tuple[int, int, int], ...] = ()
+    images: tuple[SourceImage, ...] = ()
 
 
 class DocumentSource(Protocol):

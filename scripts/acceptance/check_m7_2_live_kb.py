@@ -78,6 +78,7 @@ class _FakeDocs:
     def __init__(self, rows=()) -> None:
         self.rows = {row.document_id: row for row in rows}
         self.calls: list[str] = []
+        self.folders: dict[str, Folder] = {}
 
     def init_schema(self) -> None: ...
 
@@ -113,6 +114,42 @@ class _FakeDocs:
 
     def remove(self, document_id) -> int:
         return 1 if self.rows.pop(document_id, None) is not None else 0
+
+    # ── 目录(``ingest --folder`` 默认按来源标签建同名目录)────────────────────
+    def list_folders(self) -> tuple[Folder, ...]:
+        return tuple(sorted(self.folders.values(), key=lambda item: item.name))
+
+    def get_folder(self, folder_id: str) -> Folder | None:
+        return self.folders.get(folder_id)
+
+    def folder_named(self, name: str) -> Folder | None:
+        return next((item for item in self.folders.values() if item.name == name), None)
+
+    def add_folder(self, folder: Folder) -> None:
+        self.folders[folder.folder_id] = folder
+
+    def update_folder(self, folder: Folder) -> None:
+        self.folders[folder.folder_id] = folder
+
+    def remove_folder(self, folder_id) -> int:
+        return 1 if self.folders.pop(folder_id, None) is not None else 0
+
+    def set_folder(self, document_id, folder_id) -> int:
+        record = self.rows.get(document_id)
+        if record is None:
+            return 0
+        self.rows[document_id] = type(record)(
+            document_id=record.document_id,
+            source=record.source,
+            filename=record.filename,
+            status=record.status,
+            chunks=record.chunks,
+            size_bytes=record.size_bytes,
+            created_at=record.created_at,
+            error=record.error,
+            folder=folder_id,
+        )
+        return 1
 
 
 class _FakeVectors(FakeVectorStore):
@@ -255,7 +292,7 @@ def _chunk(doc_id: str, index: int = 0, *, source: str = "uploads"):
 
 
 if True:  # 只为类型:``RetrievedChunk`` 在 `_FakeVectors.__init__` 里就把块包好了
-    from project_rag.domain import RetrievedChunk
+    from project_rag.domain import Folder, RetrievedChunk
 
 
 def _client(*, docs=(), chunks=(), files=(), auth=False):
@@ -648,14 +685,20 @@ def _delete_keeps_source() -> str:
 
 
 # ══ 四、前端（静态契约） ═════════════════════════════════════════════════════
-@check("前端：卡片按 state 显示，不是按 status 直接显示「已入库」")
+@check("前端：表格按 state 显示，不是按 status 直接显示「已入库」")
 def _card_uses_state() -> str:
-    card = _strip_comments(_read("components/DocumentCard.vue"))
+    """卡片换成了二级页面的表格,口径没变:显示的是 **state**。
+
+    断言从 ``STATE_LABELS[props.doc.state]`` 改成 ``STATE_LABELS[doc.state]`` 是因为
+    表格把"按 state 查表"收进了一个 ``label(doc)`` 函数(行级组件不再 props 化)——
+    "拿 state 去查标签表"这一点仍然是判据。
+    """
+    card = _strip_comments(_read("components/DocumentTable.vue"))
     # 精确到"标签表是按 state 查的":只判 `doc.state` 出现过的话,`props.doc.status as DocState`
     # 这种写法也含这个子串,而 `STATE_TONES[props.doc.state]` 那种无关行也会让它为真
     # (反向测试就是这么发现这条断言是摆设的 —— 两次)
-    assert re.search(r"STATE_LABELS\[\s*props\.doc\.state\s*\]", card), (
-        "卡片没有拿 state 去查标签表 —— 那就还是「登记表说什么就显示什么」"
+    assert re.search(r"STATE_LABELS\[\s*doc\.state\s*\]", card), (
+        "表格没有拿 state 去查标签表 —— 那就还是「登记表说什么就显示什么」"
     )
     for state in ("not_indexed", "file_missing", "unregistered", "changed"):
         assert state in card, f"卡片没有处理 {state} 这个状态"
@@ -669,7 +712,7 @@ def _card_uses_state() -> str:
 
 @check("前端：不一致的话术指向可执行的下一步（未入库/文件不在/库内没块都要有）")
 def _hints() -> str:
-    card = _strip_comments(_read("components/DocumentCard.vue"))
+    card = _strip_comments(_read("components/DocumentTable.vue"))
     assert "HINTS" in card, "没有每种状态的「怎么办」话术表"
     for needle in ("project-rag ingest", "删除"):
         assert needle in card, f"话术里没有 `{needle}` —— 用户看完不知道下一步做什么"

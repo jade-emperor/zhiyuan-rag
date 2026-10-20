@@ -205,7 +205,9 @@ def _() -> str:
         "视图里出现了写死的窗口字面量"
     )
     assert "default_window" in store, "默认窗口不是从 capabilities 取的"
-    assert "还没有请求" in view, "空窗口没有话术(空白表格会被读成「坏了」)"
+    # 判据是**那句话本身**(不是「还没有请求」这个短语):表格里的空白行也含这四个字,
+    # 拿短语判的话,提示语删掉了照样绿 —— 反向测试当场抓到了这一点。
+    assert "这个窗口里还没有请求" in view, "空窗口没有话术(空白表格会被读成「坏了」)"
     assert not re.search(r"sort\(.*p95", view), "按 p95 重排了分段 —— 分段顺序是链路顺序,有意义"
     return "窗口/默认窗口都来自 capabilities;空窗口有话术;分段不重排"
 

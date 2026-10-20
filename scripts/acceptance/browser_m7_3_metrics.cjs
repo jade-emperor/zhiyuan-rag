@@ -70,7 +70,7 @@ async function main() {
   await page.getByLabel('用户名').fill('admin')
   await page.getByLabel('密码').fill('admin-pass')
   await page.getByRole('button', { name: '登录' }).click()
-  await page.waitForSelector('text=Configuration', { timeout: 15000 })
+  await page.waitForSelector('.workspace', { timeout: 15000 })
 
   await page.getByRole('link', { name: '报表' }).click()
   await page.waitForSelector('table', { timeout: 15000 })

@@ -93,12 +93,26 @@ class QueryRequest(BaseModel):
         return self
 
 
+class CitationImageOut(BaseModel):
+    """引用里的一张图:稳定 key + **本次响应现签的**临时 URL。
+
+    ``key`` 是落库/进历史的那个事实;``url`` 只活这一次响应(默认 300 秒)。
+    不要把 ``url`` 存回数据库,也不要在日志里打它 —— 签名参数就是访问凭证。
+    """
+
+    key: str
+    url: str
+
+
 class CitationOut(BaseModel):
     """引用清单里的一条(给人核对答案出处)。
 
     ``page`` 是给 PDF 用的:引用要能直接告诉用户"翻到第几页"。
     **None = 不知道**(md/txt 没有页码概念,早期入库的老块也可能没有),
     前端按 ``null`` 显示"页码未知" —— 不许拿 0 或 1 顶上,那是在编。
+
+    ``images`` 是这一条引用所属父块里的图片。空列表 = 没有图/图片功能没开;
+    **不是"图丢了"** —— 老历史没有 image_keys 列时也是空。
     """
 
     index: int
@@ -108,6 +122,7 @@ class CitationOut(BaseModel):
     score: float
     rerank_score: float | None = None
     page: int | None = None
+    images: list[CitationImageOut] = []
 
 
 class QueryResponse(BaseModel):
@@ -395,6 +410,9 @@ class DocumentOut(BaseModel):
     on_disk: bool
     created_at: str
     error: str | None = None
+    # 归在哪一级目录下(空串 = 未分类)。**未登记的文件必然是未分类**:它没有登记行,
+    # 而归属是要写库的,读接口不写库。
+    folder: str = ""
     # **按库内实际块数算**:登记表说 processed 不算数 —— 那正是"显示已入库却搜不到"的成因。
     searchable: bool
     indexed_chunks: int
@@ -427,6 +445,90 @@ class DocumentsOut(BaseModel):
     corpus_dir: str
 
 
+class FolderOut(BaseModel):
+    """目录列表上的一格:**目录自己的名字** + 里面文档的真实读数。
+
+    ``documents`` / ``chunks`` / ``size_bytes`` 都是从**清单那一份行**聚合出来的
+    (``chunks`` 是库内实际块数)—— 让目录另查一次库,两个页面上的"共 N 份"就会在
+    两次点击之间对不上。
+    """
+
+    folder_id: str
+    name: str
+    description: str
+    created_at: str
+    updated_at: str
+    documents: int
+    chunks: int
+    size_bytes: int
+    # 需要处理的份数(三处不一致 + 在途/失败)。**不是"错误数"**:在途的文档也会计数。
+    issues: int
+    restricted: int
+    # 目录里最新一份文档的登记时间(空串 = 还没有文档)。目录自身的 updated_at 是"改名时间",
+    # 拿它当"最近更新"会让一个刚改名的空目录看起来比谁都新。
+    last_activity: str
+    unfiled: bool = False
+
+
+class FolderSummaryOut(BaseModel):
+    """目录页的一句话汇总。与 ``DocumentSummaryOut`` 分开:那个数**状态**,这个数**组织**。"""
+
+    folders: int  # 真实目录数(不含未分类)
+    used: int  # 其中有文档的
+    unfiled: int  # 未分类的文档份数
+
+
+class FoldersOut(BaseModel):
+    """一级页面:全部目录 + 未分类那一格 + 汇总。
+
+    ``unfiled`` **恒定给出**(哪怕一份都没有):前端少一支"有没有这一格"的分支,
+    而"未分类 0 份"本来也是实话。
+    """
+
+    folders: list[FolderOut]
+    unfiled: FolderOut
+    summary: FolderSummaryOut
+
+
+class FolderDetailOut(BaseModel):
+    """二级页面:目录本身 + 它里面的文档 + 这份清单的汇总(一次往返)。"""
+
+    folder: FolderOut
+    documents: list[DocumentOut]
+    summary: DocumentSummaryOut
+
+
+class CreateFolderRequest(BaseModel):
+    """新建目录。名字规则在 ``domain/documents.check_folder_name``(命令行与接口共用一处)。"""
+
+    name: str
+    description: str = ""
+
+
+class UpdateFolderRequest(BaseModel):
+    """改名 / 改说明:两个字段都可以不给,给哪个改哪个。
+
+    名字改成 ``None`` 与"不改名"是同一件事 —— 但**清空说明**得能表达,所以说明用 ``None``
+    当"别动",空串当"清空"(pydantic 分得清这两者)。
+    """
+
+    name: str | None = None
+    description: str | None = None
+
+
+class MoveDocumentRequest(BaseModel):
+    """把一份文档挪到另一个目录。``folder_id`` 给空串 = 挪回未分类。"""
+
+    folder_id: str
+
+
+class DocumentFolderOut(BaseModel):
+    """挪动/归属的回执:文档 ID 与它现在所在的目录。"""
+
+    document_id: str
+    folder: str
+
+
 class DeletedDocumentOut(BaseModel):
     """删除结果:**把做了什么如实说清**(删了几块 / 文件在不在 / 登记行在不在)。
 
@@ -439,6 +541,13 @@ class DeletedDocumentOut(BaseModel):
     removed_file: bool
     removed_record: bool
     kept_source: bool = False
+
+
+class DeletedFolderOut(BaseModel):
+    """删目录的回执。``deleted=0`` = 本来就没有(删除是幂等的,重复点不该报错)。"""
+
+    folder_id: str
+    deleted: int
 
 
 class ChunkPreviewOut(BaseModel):
@@ -493,6 +602,15 @@ class MetricsCapabilitiesOut(BaseModel):
     min_n: MetricsMinNOut
 
 
+class RegistrationCapabilitiesOut(BaseModel):
+    """自助注册的可用性。前端据此决定显示还是隐藏注册入口。"""
+
+    enabled: bool
+    captcha_required: bool
+    invite_required: bool
+    min_password_chars: int
+
+
 class CapabilitiesOut(BaseModel):
     """后端能吃什么、吃多大、会什么 —— **前端不许写死这些**。
 
@@ -509,6 +627,33 @@ class CapabilitiesOut(BaseModel):
     retrieval: RetrievalOut
     metrics: MetricsCapabilitiesOut
     roles: list[str]
+    registration: RegistrationCapabilitiesOut
+
+
+class CaptchaOut(BaseModel):
+    """一张验证码。``ticket`` 随注册/登录请求回传;``image`` 是 data URI。"""
+
+    ticket: str
+    image: str
+    expires_in: int
+
+
+class RegisterRequest(BaseModel):
+    """自助注册。角色由服务端固定为 ``employee`` —— 请求体里没有 role 字段。"""
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+    captcha_ticket: str = Field(min_length=1, max_length=256)
+    captcha_answer: str = Field(min_length=1, max_length=16)
+    invite_code: str = Field(default="", max_length=256)
+
+
+class ChangePasswordRequest(BaseModel):
+    """改密。成功返回**新令牌**(旧令牌连同其它设备的一并作废)。"""
+
+    old_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
 
 
 class ModelOut(BaseModel):

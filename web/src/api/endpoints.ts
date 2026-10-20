@@ -8,6 +8,7 @@
 import { request } from './client'
 import type {
   Capabilities,
+  CaptchaOut,
   CostOut,
   CreateUserOut,
   DeletedSubjectOut,
@@ -17,6 +18,9 @@ import type {
   DocumentPreview,
   DocumentRecord,
   DocumentsOut,
+  FolderDetail,
+  FolderRecord,
+  FoldersOut,
   GroupDocumentsOut,
   GroupOut,
   GroupsOut,
@@ -87,9 +91,66 @@ export function clearSession(sessionId: string): Promise<DeletedOut> {
   })
 }
 
+// ── 一级目录(知识库的两层结构)──────────────────────────────────────────
+/** 全部目录 + 未分类那一格 + 汇总。读是「知识库」这一档(员工也能看)。 */
+export function folders(): Promise<FoldersOut> {
+  return request<FoldersOut>(`${API_PREFIX}/folders`)
+}
+
+/** 一个目录 + 里面的文档 + 汇总(二级页面只发这一条)。`unfiled` 也认。 */
+export function folderDetail(folderId: string): Promise<FolderDetail> {
+  return request<FolderDetail>(`${API_PREFIX}/folders/${encodeURIComponent(folderId)}`)
+}
+
+/** 新建目录(仅管理员)。重名 409、名字不合法 400 —— 两种错各有各的下一步。 */
+export function createFolder(name: string, description = ''): Promise<FolderRecord> {
+  return request<FolderRecord>(`${API_PREFIX}/folders`, {
+    method: 'POST',
+    body: { name, description },
+  })
+}
+
+/** 改名 / 改说明(仅管理员)。**改名不改 ID**,目录里的文档不会脱钩。 */
+export function updateFolder(
+  folderId: string,
+  patch: { name?: string; description?: string },
+): Promise<FolderRecord> {
+  return request<FolderRecord>(`${API_PREFIX}/folders/${encodeURIComponent(folderId)}`, {
+    method: 'PATCH',
+    body: patch,
+  })
+}
+
+/** 删一个**空**目录(仅管理员)。里面还有文档时 409,回执里带份数。 */
+export function deleteFolder(folderId: string): Promise<{ folder_id: string; deleted: number }> {
+  return request<{ folder_id: string; deleted: number }>(
+    `${API_PREFIX}/folders/${encodeURIComponent(folderId)}`,
+    { method: 'DELETE' },
+  )
+}
+
+/** 把一份文档挪到另一个目录(`folderId` 给空串 = 挪回未分类)。仅管理员,只动归属。 */
+export function moveDocument(
+  documentId: string,
+  folderId: string,
+): Promise<{ document_id: string; folder: string }> {
+  return request<{ document_id: string; folder: string }>(
+    `${API_PREFIX}/documents/${encodeURIComponent(documentId)}`,
+    { method: 'PATCH', body: { folder_id: folderId } },
+  )
+}
+
 // ── 文档治理(知识库管理页)──────────────────────────────────────────────
-export function documents(): Promise<DocumentsOut> {
-  return request<DocumentsOut>(`${API_PREFIX}/documents`)
+/**
+ * 文档清单。`folder` 给目录 ID(或 `unfiled`)就只看那一格;给空串 = 全部。
+ *
+ * 两条**分开写**而不是拼一个 `${query}`:拼接会让"路径"这个模板字符串在 `?` 之前
+ * 就出现一个 `${…}`,而 `check_m7_frontend` 正是靠"`${API_PREFIX}` 后面到 `?` 为止"
+ * 来认路径的 —— 那样它读到的是 `/documents{}`(一条不存在的路由)。
+ */
+export function documents(folder = ''): Promise<DocumentsOut> {
+  if (!folder) return request<DocumentsOut>(`${API_PREFIX}/documents`)
+  return request<DocumentsOut>(`${API_PREFIX}/documents?folder=${encodeURIComponent(folder)}`)
 }
 
 /**
@@ -100,10 +161,14 @@ export function documents(): Promise<DocumentsOut> {
  *    那要后端多一个依赖;而浏览器的 `fetch(url, {body: file})` 原生就发原始字节;
  * 2. 返回的是 `202 + pending`,入库在后台跑(539 页 PDF 在 CPU 上要 8 分钟)。
  *    **拿到 202 不等于入库完成** —— 界面靠轮询清单看状态。
+ *
+ * `folder` 是这一份要进的**那一格**(二级页面把当前目录带上;空 = 未分类)。
+ * 目录不存在时后端 404 —— 不自动新建,名字写错一个字的后果该是当场被看见。
  */
-export function uploadDocument(file: File): Promise<DocumentRecord> {
+export function uploadDocument(file: File, folder = ''): Promise<DocumentRecord> {
+  const target = folder ? `&folder=${encodeURIComponent(folder)}` : ''
   return request<DocumentRecord>(
-    `${API_PREFIX}/documents?filename=${encodeURIComponent(file.name)}`,
+    `${API_PREFIX}/documents?filename=${encodeURIComponent(file.name)}${target}`,
     {
       method: 'POST',
       raw: file,
@@ -258,3 +323,30 @@ export function query(payload: QueryRequest): Promise<QueryResponse> {
 }
 
 export type { StreamFrame }
+
+export function captcha(): Promise<CaptchaOut> {
+  return request<CaptchaOut>(`${API_PREFIX}/auth/captcha`, { auth: false })
+}
+
+export interface RegisterPayload {
+  username: string
+  password: string
+  captcha_ticket: string
+  captcha_answer: string
+  invite_code?: string
+}
+
+export function register(payload: RegisterPayload): Promise<LoginOut> {
+  return request<LoginOut>(`${API_PREFIX}/auth/register`, {
+    method: "POST",
+    auth: false,
+    body: payload,
+  })
+}
+
+export function changePassword(oldPassword: string, newPassword: string): Promise<LoginOut> {
+  return request<LoginOut>(`${API_PREFIX}/auth/password`, {
+    method: "POST",
+    body: { old_password: oldPassword, new_password: newPassword },
+  })
+}

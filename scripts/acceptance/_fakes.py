@@ -375,3 +375,47 @@ class PacedFakeLLM:
                 )
             ),
         )
+
+
+class NoFolders:
+    """``DocumentStore`` 的**目录那半**的空实现 —— 给"只关心文档"的假件补端口形状。
+
+    **为什么要有它**:目录(``documents.folder`` + ``document_folders``)是登记表的另一半,
+    端口 ``DocumentStore`` 因此多了七个方法。而三十多份检查里有二十来处只写了文档那半的假件 ——
+    每处补七个 no-op 会漂成二十个版本(这个项目已经为"同一段壳子抄很多遍"付过一次代价,
+    见 ``_harness.py`` 的 docstring)。
+
+    **为什么端口不拆成两个**:目录与文档在真适配器里是同一族表、同一次连接 ——
+    "登记一行时顺带写目录"拆开就要跨适配器,那才是真的糟。
+
+    **它什么都不记、也不报错**:这些假件所在的检查**不碰目录接口**。真碰了的话,读会得到空、
+    写会静默成功 —— 所以**验目录的检查不许用它**(``check_m7_5_folders.py`` 里那份是完整实现)。
+    """
+
+    def list_folders(self):
+        """输入:无。行为:没有目录。输出:空元组。"""
+        return ()
+
+    def get_folder(self, folder_id):
+        """输入:目录 ID。行为:没有目录。输出:``None``。"""
+        return None
+
+    def folder_named(self, name):
+        """输入:目录名。行为:没有目录。输出:``None``。"""
+        return None
+
+    def add_folder(self, folder) -> None:
+        """输入:目录。行为:不做。输出:无。"""
+        return None
+
+    def update_folder(self, folder) -> None:
+        """输入:目录。行为:不做。输出:无。"""
+        return None
+
+    def remove_folder(self, folder_id) -> int:
+        """输入:目录 ID。行为:不做。输出:0。"""
+        return 0
+
+    def set_folder(self, document_id, folder_id) -> int:
+        """输入:文档 ID + 目录 ID。行为:不做。输出:0。"""
+        return 0

@@ -1,5 +1,9 @@
 /**
- * 知识库管理:清单、上传、删除、预览。
+ * 知识库二级面页的数据:一个目录里的清单、上传、删除、预览、挪目录。
+ *
+ * **`scope` 是这一页的目录**(空串 = 全部清单)。二级页面把它设成当前目录,于是
+ * 轮询、删除后的重拉、上传的落点都自动是那一格 —— 三处各传一个目录参数的话,
+ * 迟早有一处漏掉,而症状是"删完那份还在"(它重拉的是全部清单)。
  *
  * 四件刻意的事:
  *
@@ -24,6 +28,7 @@ import type {
   DocumentPreview,
   DocumentRecord,
   DocumentSummary,
+  FolderRecord,
 } from '../api/types'
 
 export interface UploadTask {
@@ -45,6 +50,10 @@ const EMPTY_SUMMARY: DocumentSummary = {
 }
 
 const state = reactive({
+  /** 这一页的目录:空串 = 全部清单;`unfiled` = 未分类。 */
+  scope: '' as string,
+  /** `scope` 那一格的目录信息(名字/说明/计数),来自 `GET /folders/{id}`;全部清单时是 null。 */
+  folder: null as FolderRecord | null,
   docs: [] as DocumentRecord[],
   summary: { ...EMPTY_SUMMARY },
   uploadsDir: '',
@@ -60,6 +69,8 @@ const state = reactive({
   previewError: '',
   deleting: '' as string,
   lastDeleted: null as DeletedDocument | null,
+  /** 批量删除的回执(逐份的结果会被合成一行"删了几份、清了几块")。 */
+  lastBatch: null as { documents: number; chunks: number } | null,
   polling: false,
 })
 
@@ -97,14 +108,35 @@ export function stopPolling(): void {
   state.polling = false
 }
 
+/**
+ * 切到某一格(空串 = 全部清单)。**换目录必须先清掉旧的清单**:不清的话,新目录的请求
+ * 回来之前界面上是上一个目录的文档 —— 而"点进去看到的是别人的文件"比空屏糟得多。
+ */
+export function setScope(folderId: string): void {
+  if (state.scope === folderId) return
+  state.scope = folderId
+  state.docs = []
+  state.folder = null
+  state.lastDeleted = null
+  state.lastBatch = null
+  state.error = ''
+}
+
 export async function refreshDocuments(): Promise<void> {
   state.loading = true
   try {
-    const result = await api.documents()
-    state.docs = result.documents
-    state.summary = result.summary
-    state.uploadsDir = result.uploads_dir
-    state.corpusDir = result.corpus_dir
+    if (state.scope === '') {
+      const result = await api.documents()
+      state.docs = result.documents
+      state.summary = result.summary
+      state.uploadsDir = result.uploads_dir
+      state.corpusDir = result.corpus_dir
+    } else {
+      const detail = await api.folderDetail(state.scope)
+      state.docs = detail.documents
+      state.summary = detail.summary
+      state.folder = detail.folder
+    }
     state.refreshedAt = new Date().toLocaleTimeString('zh-CN', { hour12: false })
     state.error = ''
   } catch (error) {
@@ -120,7 +152,7 @@ export async function refreshDocuments(): Promise<void> {
  * (嵌入是 CPU 密集的,并发跑只会两边都慢十倍),一次提交一堆只会让队列更长;
  * 而且串行时每个文件的状态是一一对应的,用户看得懂。
  */
-export async function uploadFiles(files: File[]): Promise<void> {
+export async function uploadFiles(files: File[], folder = ''): Promise<void> {
   for (const file of files) {
     const task: UploadTask = {
       name: file.name,
@@ -130,9 +162,9 @@ export async function uploadFiles(files: File[]): Promise<void> {
     }
     state.uploads.unshift(task)
     try {
-      await api.uploadDocument(file)
+      await api.uploadDocument(file, folder)
       task.state = 'submitted'
-      task.detail = '已提交,后台入库中(状态见下方卡片)'
+      task.detail = '已提交,后台入库中(状态见下方列表)'
     } catch (error) {
       task.state = 'failed'
       task.detail = (error as Error).message
@@ -146,8 +178,51 @@ export async function removeDocument(documentId: string): Promise<void> {
   try {
     const outcome = await api.deleteDocument(documentId)
     state.lastDeleted = outcome
+    state.lastBatch = null
     state.error = ''
     if (state.previewFor === documentId) closePreview()
+  } catch (error) {
+    state.error = (error as Error).message
+  } finally {
+    state.deleting = ''
+    await refreshDocuments()
+  }
+}
+
+/**
+ * 批量删除。**逐份串行**发:后端的删除是"标记 → 删向量 → 删文件 → 删行"四步,
+ * 并发跑只会让每一步都更慢,而且失败时说不清是哪一份。中途失败的份数如实报出来 ——
+ * 静默跳过会让用户以为删干净了。
+ */
+export async function removeDocuments(documentIds: string[]): Promise<void> {
+  if (documentIds.length === 0) return
+  let done = 0
+  let chunks = 0
+  const failed: string[] = []
+  for (const documentId of documentIds) {
+    state.deleting = documentId
+    try {
+      const outcome = await api.deleteDocument(documentId)
+      done += 1
+      chunks += outcome.deleted_chunks
+      if (state.previewFor === documentId) closePreview()
+    } catch (error) {
+      failed.push(`${documentId}:${(error as Error).message}`)
+    }
+  }
+  state.deleting = ''
+  state.lastDeleted = null
+  state.lastBatch = { documents: done, chunks }
+  state.error = failed.length > 0 ? `有 ${failed.length} 份没删成 —— ${failed[0]}` : ''
+  await refreshDocuments()
+}
+
+/** 把一份文档挪到另一个目录(空串 = 未分类)。只动归属,不重切、不重灌。 */
+export async function moveDocument(documentId: string, folderId: string): Promise<void> {
+  state.deleting = documentId
+  try {
+    await api.moveDocument(documentId, folderId)
+    state.error = ''
   } catch (error) {
     state.error = (error as Error).message
   } finally {

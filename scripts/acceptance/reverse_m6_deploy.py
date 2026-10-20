@@ -115,25 +115,25 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-10 unstructured 回到运行时依赖（构建期又要碰 GitHub）",
         "pyproject.toml",
-        '    "pdfminer-six>=20260107",\n]',
-        '    "pdfminer-six>=20260107",\n    "unstructured>=0.16,<1.0",\n]',
+        '    "oss2>=2.19,<3.0",\n]',
+        '    "oss2>=2.19,<3.0",\n    "unstructured>=0.16,<1.0",\n]',
         "运行时依赖里没有",
     ),
     (
-        "RT-11 可选档被改名（`uv sync --extra unstructured` 失效）",
+        "RT-11 把一个 GitHub URL 依赖加回 pyproject（解析期又得联外网，`uv run` 会超时）",
         "pyproject.toml",
-        # 锚点只取那一行:原来带着 `[project.optional-dependencies]` 头一起匹配,
-        # 加 `desktop` 那一档时插在头与它之间,锚点当场漂了(机制抓到了)
-        "unstructured = [\n",
-        "unused = [\n",
-        "那一档在 optional-dependencies 里",
+        "[[tool.uv.index]]",
+        '[tool.uv.sources]\n'
+        'en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/x/x.whl" }\n\n'
+        "[[tool.uv.index]]",
+        "这些依赖从 URL / 本地路径取包",
     ),
     (
         "RT-12 锁没跟着重锁（provides-extras 丢了）",
         "uv.lock",
-        'provides-extras = ["desktop", "unstructured"]',
+        'provides-extras = ["desktop"]',
         'provides-extras = []',
-        "uv.lock 与 pyproject 一致",
+        "provides-extras",
     ),
     (
         "RT-13 .dockerignore 漏掉 .env（密钥会进镜像层）",
@@ -173,16 +173,16 @@ CASES: list[tuple[str, str, str, str, str]] = [
     (
         "RT-18 把 GPU 预约删掉、只留 device=cuda（/health 照样绿，第一次真提问才炸）",
         "docker-compose.yaml",
-        "    gpus: all\n",
-        "",
+        "    gpus: all\n    environment:\n      # 覆盖 .env 里给「宿主上的服务」准备的那套地址",
+        "    environment:\n      # 覆盖 .env 里给「宿主上的服务」准备的那套地址",
         "推理设备与 GPU 预约",
     ),
     (
-        "RT-19 删掉静态元数据声明（解析期又得去 github 取那个 wheel，46s 就失败）",
+        "RT-19 把 unstructured 那一档加回来（只有 GitHub 来源的轮子重新进解析）",
         "pyproject.toml",
-        '    { name = "en-core-web-sm", version = "3.8.0" },\n',
-        "",
-        "静态元数据",
+        'desktop = [\n    "pywebview>=5.0",\n]\n',
+        'desktop = [\n    "pywebview>=5.0",\n]\nunstructured = [\n    "unstructured>=0.16,<1.0",\n]\n',
+        "那个只有 GitHub 来源的可选档已删除",
     ),
     (
         "RT-20 Dockerfile 不拷 README/LICENSE（构建死在最后一层：Readme file does not exist）",

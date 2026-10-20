@@ -1,37 +1,178 @@
 /**
- * 设计变量。取值对齐作者给的两张参考图(浅色、留白多、圆角卡片、绿色主按钮)。
+ * 设计变量：中性灰阶打底，单一强调色只用于关键交互（主按钮、选中态、引用标签）。
+ * 深色主题同名覆盖，组件不感知主题。
  *
- * 为什么不引组件库:目标界面只有三栏 + 一列卡片,而组件库会带一整套主题
- * (还要再覆写一遍才能变成这个样子)。
+ * 这一版是为「企业级问答工作台」重写的：颜色、间距、圆角、阴影、层级全部收在变量里，
+ * 组件只引用变量 —— 换肤与统一调整不需要翻组件。语义色的用法是硬约束：
+ *   success 只给「高置信 / 已完成」；warn 只给「需要核实」；danger 只给「停止 / 失败」。
  */
 
 :root {
+  color-scheme: light;
+
+  /* ── 背景与表面 ─────────────────────────────────────────────────── */
   --bg: #ffffff;
-  --bg-muted: #f6f8fa;
-  --bg-sunken: #f0f3f6;
-  --border: #e2e6ea;
-  --border-strong: #cfd6dd;
+  --bg-muted: #f7f8fa;
+  --bg-sunken: #f1f3f5;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(15, 23, 42, 0.045);
 
-  --text: #1f2328;
-  --text-muted: #667079;
-  --text-faint: #8b949e;
+  /* ── 描边 ───────────────────────────────────────────────────────── */
+  --border: #e4e7ec;
+  --border-strong: #d0d5dd;
+  --border-subtle: #eef0f3;
 
-  --accent: #1f883d;
-  --accent-hover: #1a7f37;
-  --accent-soft: #eaf6ec;
+  /* ── 文字 ───────────────────────────────────────────────────────── */
+  --text: #101828;
+  --text-muted: #475467;
+  --text-faint: #5f6b7a;
+  --fg-soft: #475467;
+  --text-inverse: #ffffff;
+
+  /* ── 强调色（只在关键交互上用）───────────────────────────────────── */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-soft-hover: #e0e7ff;
+  --accent-ring: rgba(79, 70, 229, 0.26);
+
+  /* ── 语义色 ─────────────────────────────────────────────────────── */
   --danger: #cf222e;
-  --danger-soft: #fdeced;
+  --danger-hover: #a40e26;
+  --danger-soft: #fff1f0;
   --warn: #9a6700;
-  --warn-soft: #fff8c5;
+  --warn-soft: #fff8e6;
+  --warn-border: #f2d08a;
   --info: #0969da;
-  --info-soft: #ddf4ff;
+  --info-soft: #eff6ff;
+  --success: #1a7f37;
+  --success-soft: #eaf7ee;
+  --success-border: #b4e0c0;
 
-  --radius: 10px;
+  /* ── 字体 ───────────────────────────────────────────────────────── */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --lh-tight: 1.35;
+  --lh-base: 1.6;
+
+  /* ── 4px 网格 ───────────────────────────────────────────────────── */
+  --sp-0-5: 2px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* ── 圆角 / 阴影 / 层级 ─────────────────────────────────────────── */
+  --radius-xs: 4px;
   --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
-  --shadow-lg: 0 8px 24px rgba(31, 35, 40, 0.12);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
 
-  --sidebar: 264px;
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(16, 24, 40, 0.1), 0 2px 6px -2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 16px 40px -12px rgba(16, 24, 40, 0.22), 0 4px 12px -4px rgba(16, 24, 40, 0.1);
+
+  --overlay: rgba(16, 24, 40, 0.36);
+
+  --z-sticky: 10;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+  --z-tooltip: 70;
+
+  /* ── 布局 ───────────────────────────────────────────────────────── */
+  --sidebar: 260px;
+  --sidebar-collapsed: 0px;
   --panel: 320px;
-  --header-h: 56px;
+  --header-h: 52px;
+  --topbar-h: 48px;
+  --composer-max-h: 200px;
+  --content-max: 780px;
+
+  /* ── 代码高亮（GitHub Primer 的语义色阶，暗色单独覆盖）──────────── */
+  --code-bg: #f6f8fa;
+  --code-border: #e4e7ec;
+  --code-head-bg: #eef1f4;
+  --hl-text: #24292f;
+  --hl-comment: #6e7781;
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-function: #8250df;
+  --hl-type: #953800;
+  --hl-variable: #953800;
+  --hl-punct: #57606a;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0d1117;
+  --bg-muted: #010409;
+  --bg-sunken: #161b22;
+  --bg-elevated: #161b22;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+
+  --border: #21262d;
+  --border-strong: #30363d;
+  --border-subtle: #1b2027;
+
+  --text: #e6edf3;
+  --text-muted: #9aa4b2;
+  --text-faint: #7d8590;
+  --fg-soft: #9aa4b2;
+  --text-inverse: #0d1117;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: #1e1b4b;
+  --accent-soft-hover: #2b2768;
+  --accent-ring: rgba(129, 140, 248, 0.32);
+
+  --danger: #f85149;
+  --danger-hover: #ff7b72;
+  --danger-soft: #2a1315;
+  --warn: #e3b341;
+  --warn-soft: #2a2313;
+  --warn-border: #4d3d12;
+  --info: #58a6ff;
+  --info-soft: #0d2339;
+  --success: #3fb950;
+  --success-soft: #12261a;
+  --success-border: #1f4d2c;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 16px 40px -12px rgba(0, 0, 0, 0.75);
+
+  --overlay: rgba(0, 0, 0, 0.62);
+
+  --code-bg: #161b22;
+  --code-border: #30363d;
+  --code-head-bg: #1c2128;
+  --hl-text: #e6edf3;
+  --hl-comment: #8b949e;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-function: #d2a8ff;
+  --hl-type: #ffa657;
+  --hl-variable: #ffa657;
+  --hl-punct: #8b949e;
 }

@@ -11,6 +11,7 @@ Milvus 向量库适配器(**只管稠密一路**)。
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -48,6 +49,11 @@ _OUTPUT_FIELDS = ["text", "source", "doc_id", "parent_id", "parent_content"]
 _PAGE_FIELD = "page"
 _PAGE_NONE = -1
 
+# 图片 key 列(JSON 数组字符串)。**存 key 不存 URL**:签名 URL 会过期。
+# 一个父块的所有子块共用同一份 key 列表;上限按 UTF-8 字节算,超了在写入前点名报错。
+_IMAGE_FIELD = "image_keys"
+_MAX_IMAGE_KEYS = 8192
+
 # 两档读一致性,**分工是刻意的**:
 #
 # * ``search`` 那一路用**配置里的** ``milvus.read_consistency``（用户热路径，那档的差价与代价
@@ -72,7 +78,9 @@ _FINGERPRINT_FIELDS = ["chunk_id", "parent_id"]
 _DOC_ID_FIELD = "doc_id"
 
 # 重算稀疏向量时要连稠密向量一起读回来(upsert 是整行替换,见 load_with_vectors)。
-_DENSE_OUTPUT_FIELDS = ["text", "source", "doc_id", "parent_id", "parent_content", _DENSE_FIELD]
+_DENSE_OUTPUT_FIELDS = [
+    "text", "source", "doc_id", "parent_id", "parent_content", _DENSE_FIELD, _IMAGE_FIELD,
+]
 
 # Milvus 单次 query 的条数上限。到顶就报错,**不静默截断** ——
 # 少喂一半语料给 BM25 是一种没有报错的质量损失,最难查。
@@ -125,7 +133,17 @@ class MilvusVectorStore(VectorStore):
 
         self._ensure_collection(len(embeddings[0].dense))
         self._require_page_column()
-        has_sparse = _SPARSE_FIELD in self._fields()
+        fields = self._fields()
+        has_sparse = _SPARSE_FIELD in fields
+        has_images = _IMAGE_FIELD in fields
+        if any(chunk.image_keys for chunk in chunks) and not has_images:
+            raise RuntimeError(
+                f"集合 {self._collection} 没有 {_IMAGE_FIELD} 列(加图片之前建的旧集合)"
+                " —— 现在写进去,图片 key 会被静默丢掉。三条路:"
+                "① 换一个新集合名(改 config 的 milvus.collection)再 ingest,最省事也可回滚;"
+                f"② 原地重建:`project-rag drop --collection {self._collection} --yes` 之后再 ingest;"
+                "③ 先 `project-rag collections` 看一眼集合的 schema。"
+            )
         if has_sparse and sparse is None:
             raise RuntimeError(
                 f"集合 {self._collection} 有 {_SPARSE_FIELD} 列,但这次写入没给稀疏向量 —— "
@@ -141,7 +159,12 @@ class MilvusVectorStore(VectorStore):
                 "③ 确认 `keyword.backend` 与集合是哪一档,别把两档混着用。"
             )
         rows = [
-            self._to_row(chunk, embedding, None if sparse is None else sparse[i])
+            self._to_row(
+                chunk,
+                embedding,
+                None if sparse is None else sparse[i],
+                include_image=has_images,
+            )
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
         self._client.upsert(collection_name=self._collection, data=rows)
@@ -225,10 +248,18 @@ class MilvusVectorStore(VectorStore):
         """
         if not self._client.has_collection(self._collection):
             return ()
+        present = self._fields()
+        # 旧集合没有 image_keys 列时别请求它 —— 否则整条 sparse 重算会因为一个
+        # 不存在的字段失败,而这次重算本该与图片无关。
+        dense_fields = [
+            field
+            for field in _DENSE_OUTPUT_FIELDS
+            if field != _IMAGE_FIELD or _IMAGE_FIELD in present
+        ]
         rows = self._client.query(
             collection_name=self._collection,
             filter="",
-            output_fields=[_PRIMARY_KEY, *_DENSE_OUTPUT_FIELDS],
+            output_fields=[_PRIMARY_KEY, *dense_fields],
             limit=_MAX_QUERY_ROWS,
             consistency_level=_WRITE_READ_CONSISTENCY,
         )
@@ -418,9 +449,12 @@ class MilvusVectorStore(VectorStore):
         与「父子分层之前入库的扁平块 parent_id 为空串」是同一个约定:旧数据也得能跑。
         硬要 page 只会让整份语料在迁移完成之前一句都答不出来。
         """
+        present = self._fields()
         fields = list(_OUTPUT_FIELDS)
-        if _PAGE_FIELD in self._fields():
+        if _PAGE_FIELD in present:
             fields.append(_PAGE_FIELD)
+        if _IMAGE_FIELD in present:
+            fields.append(_IMAGE_FIELD)
         return fields
 
     def _require_page_column(self) -> None:
@@ -490,6 +524,9 @@ class MilvusVectorStore(VectorStore):
         # 页码(1 起)。**建不出 nullable 的列**(2.4.4 不支持,见 _PAGE_NONE),
         # 所以每一行都必须带这个字段:没有页码时写哨兵 -1。
         schema.add_field(_PAGE_FIELD, DataType.INT64)
+        # 图片 key(JSON 数组字符串)。老集合没有这一列时由 _to_row/_output_fields 兼容;
+        # 新集合一律带上,免得以后再加一次 schema。
+        schema.add_field(_IMAGE_FIELD, DataType.VARCHAR, max_length=_MAX_IMAGE_KEYS)
         if self._sparse:
             # 关键字那一路的稀疏列(词哈希维度 → BM25 权重)。见 adapters/bm25_sparse.py。
             schema.add_field(_SPARSE_FIELD, DataType.SPARSE_FLOAT_VECTOR)
@@ -514,9 +551,14 @@ class MilvusVectorStore(VectorStore):
         _logger.info("已创建集合 %s(dim=%d)", self._collection, dim)
 
     def _to_row(
-        self, chunk: Chunk, embedding: Embedding, sparse: SparseVector | None
+        self,
+        chunk: Chunk,
+        embedding: Embedding,
+        sparse: SparseVector | None,
+        *,
+        include_image: bool,
     ) -> dict:
-        """输入:子块 + 稠密向量 + 稀疏向量(没有就给 None)。行为:转成 Milvus 的行。输出:行字典。
+        """输入:子块 + 稠密向量 + 稀疏向量(没有给 None)+ 集合有没有图片列。行为:转成 Milvus 行。输出:行字典。
 
         超长字段在这里提前拦(报错能点名是哪个子块),而不是等 Milvus 回一句英文错误。
         """
@@ -542,6 +584,21 @@ class MilvusVectorStore(VectorStore):
             # 没有页码写哨兵:Milvus 要求每一行都带上所有非 nullable 的字段
             _PAGE_FIELD: chunk.page if chunk.page is not None else _PAGE_NONE,
         }
+        image_raw = json.dumps(list(chunk.image_keys), ensure_ascii=False)
+        if len(image_raw.encode("utf-8")) > _MAX_IMAGE_KEYS:
+            raise ValueError(
+                f"子块 {chunk.chunk_id} 的图片 key 太多/太长"
+                f"({len(image_raw.encode('utf-8'))} 字节 > {_MAX_IMAGE_KEYS});"
+                "调小 images.max_per_doc 或缩短 key 前缀"
+            )
+        if include_image:
+            row[_IMAGE_FIELD] = image_raw
+        elif chunk.image_keys:
+            # 正常由 upsert 的预检拦住;这里是最后一道,避免有人绕过 upsert 直接调 _to_row。
+            raise RuntimeError(
+                f"集合没有 {_IMAGE_FIELD} 列,但子块 {chunk.chunk_id} 带了图片 key —— "
+                "写进去会被静默丢掉,先换新集合/重建 schema"
+            )
         if sparse is not None:
             # 空稀疏行会被 Milvus 拒收(`empty sparse float vector row`)—— 编码器已经保证
             # 非空(保留维度 0 兜底),这里再挡一道:报错点名是哪个块,别让它变成一句英文异常
@@ -567,6 +624,28 @@ class MilvusVectorStore(VectorStore):
         return page if page > 0 else None
 
     @staticmethod
+    def _image_keys_of_row(row: dict) -> tuple[str, ...]:
+        """输入:一行(可能来自没有 image_keys 列的老集合)。行为:把 JSON 翻回 key 元组。输出:key 元组。
+
+        **坏数据当场炸**:这一列只由 `_to_row` 写,读不出来说明有人手改过库,
+        静默给空会让"图片凭空消失"变成一个查不出来的谜。
+        """
+        raw = row.get(_IMAGE_FIELD)
+        if raw is None or raw == "":
+            return ()
+        try:
+            items = json.loads(str(raw))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"image_keys 列不是合法 JSON(有人手改过库?):{str(raw)[:120]!r}"
+            ) from exc
+        if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+            raise RuntimeError(
+                f"image_keys 列的形状不对(应为字符串数组):{str(raw)[:120]!r}"
+            )
+        return tuple(items)
+
+    @staticmethod
     def _row_to_chunk(row: dict) -> Chunk:
         """输入:Milvus query 返回的一行。行为:还原成领域对象。输出:子块。"""
         return Chunk(
@@ -577,6 +656,7 @@ class MilvusVectorStore(VectorStore):
             parent_id=str(row.get("parent_id", "")),
             parent_content=str(row.get("parent_content", "")),
             page=MilvusVectorStore._page_of_row(row),
+            image_keys=MilvusVectorStore._image_keys_of_row(row),
         )
 
     @staticmethod
@@ -591,6 +671,7 @@ class MilvusVectorStore(VectorStore):
             parent_id=str(entity.get("parent_id", "")),
             parent_content=str(entity.get("parent_content", "")),
             page=MilvusVectorStore._page_of_row(entity),
+            image_keys=MilvusVectorStore._image_keys_of_row(entity),
         )
 
 

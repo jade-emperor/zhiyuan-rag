@@ -79,6 +79,45 @@ def _page_of_child(
     return page_of(document.pages, group.child_starts[child_index])
 
 
+def _image_keys_of_parent(
+    document: Document, groups: Sequence[ChunkGroup], index: int
+) -> tuple[str, ...]:
+    """输入:文档 + 全部父块分组 + 当前父块序号。行为:取落在该父块区间内的图片 key。输出:去重后的 key 元组。
+
+    区间是 ``[parent_start, 下一个 parent_start)``;最后一个父块到正文末尾。
+    为什么结束位置取**下一个父块的起点**而不是 ``start + len(parent_text)``:
+    切分器可能在父块之间留下 ``\\n\\n`` 或 overlap,图片的锚点落在缝隙里时
+    也得有归属 —— 归给前一个父块,而不是静默丢掉。
+
+    ``parent_start`` 为 None(旧切分器/验收夹具)时**不挂图**:没有可信位置就不猜,
+    与页码那句「宁可不给,也不能给一个看着合法的错页号」是同一条口径。
+    """
+    group = groups[index]
+    start = group.parent_start
+    if start is None or not document.images:
+        return ()
+
+    if index + 1 < len(groups):
+        next_start = groups[index + 1].parent_start
+        end = (
+            next_start
+            if next_start is not None and next_start > start
+            else start + len(group.parent_text)
+        )
+    else:
+        # +1 让正好落在正文末尾的图也归最后一个父块
+        end = len(document.text) + 1
+
+    keys = [
+        image.key
+        for image in document.images
+        if start <= image.offset < end
+    ]
+    # 同一张图在父块里出现两次(或两个 DocumentImage 指向同一 key)只留一份;
+    # dict.fromkeys 保序去重,前端/模型看到的顺序与文档一致。
+    return tuple(dict.fromkeys(keys))
+
+
 def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list[Chunk]:
     """输入:文档序列 + 切分器。行为:按父子分层切块并生成稳定 id。输出:子块列表。
 
@@ -98,7 +137,8 @@ def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list
     """
     chunks: list[Chunk] = []
     for document in documents:
-        for parent_index, group in enumerate(chunker.split(document.text)):
+        groups = list(chunker.split(document.text))
+        for parent_index, group in enumerate(groups):
             starts = group.child_starts
             # 偏移与子块必须一一对应:少一个就会让后面所有子块的页码**整体错位**(静默),
             # 多一个说明切分器数错了块。这是端口契约(见 ports/chunker.py),当场驳回。
@@ -107,6 +147,11 @@ def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list
                     f"{document.doc_id} 第 {parent_index} 个父块:切分器报了 {len(starts)} 个偏移,"
                     f"却有 {len(group.children)} 个子块 —— 页码会张冠李戴,先修切分器"
                 )
+            # 图片按父块在整篇正文里的区间归属。**不拿图注去正文 find**:重复句子
+            # 会给出看着合法的错位置;位置只认切分器报的 parent_start。
+            image_keys = _image_keys_of_parent(
+                document, groups, parent_index
+            )
             # 位置部分先在前面拼好,父块和子块共用同一份
             where = (document.source, document.doc_id, f"p{parent_index}")
             parent_id = _digest(*where, group.parent_text)
@@ -121,6 +166,7 @@ def chunk_documents(documents: Sequence[Document], chunker: TextChunker) -> list
                         parent_id=parent_id,
                         parent_content=group.parent_text,
                         page=_page_of_child(document, group, child_index),
+                        image_keys=image_keys,
                     )
                 )
     return chunks

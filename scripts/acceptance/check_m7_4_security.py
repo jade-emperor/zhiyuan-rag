@@ -593,6 +593,8 @@ def _() -> str:
     #   /health            探活(容器 healthcheck 用,不能要令牌)
     #   /capabilities      能力自述,不含任何数据;登录页要用它渲染上传提示
     #   /auth/login        拿令牌的入口,当然不能先要令牌
+    #   /auth/captcha     登录/注册前置的图,**必须**在拿到账号之前就能取(否则注册先要有账号)
+    #   /auth/register    自助注册:入口本身就是"还没有账号"的人用的,鉴权靠验证码 + 口令策略 + 限流
     #   /auth/logout       幂等退出(没令牌也给 200 + revoked=false),令牌本身在头里
     #   /api/v1/stream     WebSocket:**浏览器不能给 WS 设头**,令牌只能走 ?token=(路由里手验)
     #   /docs /redoc /openapi.json  FastAPI 自带的接口文档:暴露的是**形状**不是数据
@@ -601,6 +603,8 @@ def _() -> str:
         "/health",
         "/api/v1/capabilities",
         "/api/v1/auth/login",
+        "/api/v1/auth/captcha",
+        "/api/v1/auth/register",
         "/api/v1/auth/logout",
         "/api/v1/stream",
         "/docs",

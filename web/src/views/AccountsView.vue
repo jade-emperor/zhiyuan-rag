@@ -15,6 +15,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import GroupDocumentsDialog from '../components/GroupDocumentsDialog.vue'
+import PageShell from '../components/ui/PageShell.vue'
+import Surface from '../components/ui/Surface.vue'
 import { authState } from '../stores/auth'
 import {
   accountsState,
@@ -48,9 +50,9 @@ const passwordFor = ref('')
 const passwordDraft = ref('')
 
 const roles = computed(() => [
-  { value: 'employee', label: '员工(检索与问答)' },
-  { value: 'ops', label: '运维(问答 + 报表)' },
-  { value: 'admin', label: '管理员(全部)' },
+  { value: 'employee', label: '员工' },
+  { value: 'ops', label: '运维' },
+  { value: 'admin', label: '管理员' },
 ])
 
 onMounted(() => {
@@ -109,42 +111,25 @@ function userNameOf(userId: string): string {
 </script>
 
 <template>
-  <div class="page">
-    <header class="head">
-      <div>
-        <h1>账号与权限</h1>
-        <p class="faint">
-          建号 / 删号 / 分组都在这里;<strong>文档给谁看</strong>在「知识库」页每张卡片的
-          「权限」按钮上(授权时盯着的是那份文档,不是这张名单)。
-          <span v-if="accounts.loading"> · <span class="spin"></span> 读取中…</span>
-        </p>
-      </div>
-      <div class="controls">
-        <button class="ghost" type="button" :disabled="accounts.loading" @click="loadAccounts">
-          刷新
-        </button>
-      </div>
-    </header>
+  <PageShell title="账号与权限" :meta="`${accounts.users.length} 个账号 · ${accounts.groups.length} 个组`">
+    <template #actions>
+      <span v-if="accounts.loading" class="spin"></span>
+      <button class="ghost" type="button" :disabled="accounts.loading" @click="loadAccounts">
+        刷新
+      </button>
+    </template>
 
     <p v-if="accounts.error" class="alert error">{{ accounts.error }}</p>
     <p v-if="accounts.notice" class="alert info">{{ accounts.notice }}</p>
 
-    <section class="card block">
-      <h2>账号</h2>
-      <p class="faint">
-        三种角色:<strong>员工</strong>(检索与问答)、<strong>运维</strong>(检索与问答 + 报表:延迟 + 消耗,
-        但管不了文档与账号)、<strong>管理员</strong>(全部 + 建号删号授权)。
-        <br />
-        <strong>不能删自己的账号,也不能删掉最后一个管理员</strong> ——
-        删了自己这枚令牌立刻失效(你会被踢出去),而管理员删光了就没人能再建号了。
-      </p>
-      <table>
+    <Surface title="账号">
+      <table class="data-table">
         <thead>
           <tr>
             <th>登录名</th>
             <th>角色</th>
-            <th>所属组(哪几类员工)</th>
-            <th class="num">操作</th>
+            <th>组</th>
+            <th class="actions">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -156,19 +141,23 @@ function userNameOf(userId: string): string {
               </span>
             </td>
             <td>
-              <span v-if="user.group_ids.length === 0" class="faint">—(不属于任何组)</span>
+              <span v-if="user.group_ids.length === 0" class="faint">—</span>
               <span v-for="groupId in user.group_ids" :key="groupId" class="tag soft">
                 {{ groupName(groupId) }}
               </span>
             </td>
-            <td class="num actions">
-              <button class="ghost" type="button" @click="passwordFor = user.user_id; passwordDraft = ''">
+            <td class="actions">
+              <button
+                class="ghost"
+                type="button"
+                @click="passwordFor = user.user_id; passwordDraft = ''"
+              >
                 改密码
               </button>
               <button
                 class="ghost danger"
                 type="button"
-                :title="isSelf(user.user_id) ? '不能删自己的账号' : ''"
+                :title="isSelf(user.user_id) ? '不能删自己' : ''"
                 @click="deleteUser(user)"
               >
                 删除
@@ -176,78 +165,70 @@ function userNameOf(userId: string): string {
             </td>
           </tr>
           <tr v-if="accounts.users.length === 0">
-            <td colspan="4" class="faint">还没有账号 —— 用下面的表单建第一个。</td>
+            <td colspan="4" class="faint">暂无账号</td>
           </tr>
         </tbody>
       </table>
 
-      <div v-if="passwordFor !== ''" class="inline-form">
-        <strong>改密码:</strong>
-        <code>{{ userNameOf(passwordFor) }}</code>
-        <input v-model="passwordDraft" type="password" placeholder="新密码(至少 8 位)" />
+      <div v-if="passwordFor !== ''" class="quick-row">
+        <span class="quick-label">改密码 · {{ userNameOf(passwordFor) }}</span>
+        <input v-model="passwordDraft" type="password" placeholder="新密码" />
         <button class="primary" type="button" @click="submitPassword">保存</button>
         <button class="ghost" type="button" @click="passwordFor = ''">取消</button>
-        <span class="faint">改完他手上的令牌仍然有效 —— 这条路径是给"本人忘了密码"用的。</span>
       </div>
 
-      <div class="inline-form">
-        <strong>建号:</strong>
+      <div class="quick-row">
+        <span class="quick-label">新建账号</span>
         <input v-model="draft.username" type="text" placeholder="登录名" />
-        <input v-model="draft.password" type="password" placeholder="密码(至少 8 位)" />
+        <input v-model="draft.password" type="password" placeholder="密码" />
         <select v-model="draft.role">
           <option v-for="item in roles" :key="item.value" :value="item.value">
             {{ item.label }}
           </option>
         </select>
-        <button class="primary" type="button" :disabled="draft.username === '' || draft.password === ''" @click="submitUser">
+        <button
+          class="primary"
+          type="button"
+          :disabled="draft.username === '' || draft.password === ''"
+          @click="submitUser"
+        >
           建号
         </button>
       </div>
-    </section>
+    </Surface>
 
-    <section class="card block">
-      <h2>分组(一类员工)</h2>
-      <p class="faint">
-        组用来做<strong>文档授权</strong>:一份文档可以授权给"某个人"或"某一类人"。
-        同一个人可以属于多个组,权限取<strong>并集</strong>(任一命中即可见)。
-        <br />
-        删组会<strong>连带清掉授权给这个组的所有规则</strong> ——
-        否则将来建一个同名的新组会凭空继承旧权限。
-        <br />
-        「文档权限」按<strong>组</strong>配这个组能看哪些文档（与「知识库」页每份文档上的
-        「权限」按钮是同一张规则表的两个方向）。
-      </p>
-      <table>
+    <Surface title="分组">
+      <table class="data-table">
         <thead>
           <tr>
             <th>组名</th>
             <th>成员</th>
-            <th class="num">操作</th>
+            <th class="actions">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="group in accounts.groups" :key="group.group_id">
             <td><code>{{ group.name }}</code></td>
             <td>
-              <span v-if="group.member_ids.length === 0" class="faint">—(还没有人)</span>
+              <span v-if="group.member_ids.length === 0" class="faint">—</span>
               <span v-for="userId in group.member_ids" :key="userId" class="tag soft">
                 {{ userNameOf(userId) }}
               </span>
             </td>
-            <td class="num actions">
-              <button class="ghost" type="button" @click="startEditMembers(group)">改成员</button>
+            <td class="actions">
+              <button class="ghost" type="button" @click="startEditMembers(group)">成员</button>
               <button class="ghost" type="button" @click="documentsFor = group">文档权限</button>
               <button class="ghost danger" type="button" @click="deleteGroup(group)">删除</button>
             </td>
           </tr>
           <tr v-if="accounts.groups.length === 0">
-            <td colspan="3" class="faint">还没有组 —— 建一个(例如「销售」「售后」)。</td>
+            <td colspan="3" class="faint">暂无分组</td>
           </tr>
         </tbody>
       </table>
 
-      <div v-if="editingGroup !== null" class="inline-form column">
-        <strong>「{{ editingGroup.name }}」的成员</strong>
+      <div v-if="editingGroup !== null" class="quick-block">
+        <span class="quick-label">{{ editingGroup.name }} · 成员</span>
         <div class="checks">
           <label v-for="user in accounts.users" :key="user.user_id" class="check">
             <input
@@ -258,122 +239,91 @@ function userNameOf(userId: string): string {
             {{ user.username }}
           </label>
         </div>
-        <div class="actions">
-          <button class="primary" type="button" @click="saveMembers">保存(整份名单)</button>
+        <div class="quick-actions">
+          <button class="primary" type="button" @click="saveMembers">保存</button>
           <button class="ghost" type="button" @click="editingGroup = null">取消</button>
         </div>
       </div>
 
-      <div class="inline-form">
-        <strong>建组:</strong>
-        <input v-model="newGroup" type="text" placeholder="组名(例如 销售)" />
+      <div class="quick-row">
+        <span class="quick-label">新建分组</span>
+        <input v-model="newGroup" type="text" placeholder="组名" />
         <button class="primary" type="button" :disabled="newGroup.trim() === ''" @click="submitGroup">
           建组
         </button>
       </div>
-    </section>
+    </Surface>
+
     <GroupDocumentsDialog
       v-if="documentsFor !== null"
       :group-id="documentsFor.group_id"
       :group-name="documentsFor.name"
       @close="documentsFor = null"
     />
-  </div>
+  </PageShell>
 </template>
 
 <style scoped>
-.page {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-h1 {
-  font-size: 18px;
-}
-
-h2 {
-  font-size: 15px;
-}
-
-.block {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-
-th {
-  font-weight: 600;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.num {
-  text-align: right;
-}
-
-.actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-
-.inline-form {
+.quick-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding-top: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
 }
 
-.inline-form.column {
+.quick-row input,
+.quick-row select {
+  width: auto;
+  min-width: 130px;
+  flex: 0 1 180px;
+  height: 30px;
+}
+
+.quick-label {
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.quick-block {
+  display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-muted);
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .checks {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 14px;
 }
 
 .check {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 13px;
+  font-size: 12.5px;
+  color: var(--text);
 }
 
-input,
-select {
-  padding: 6px 8px;
-}
-
-.tag {
-  margin-right: 4px;
+@media (max-width: 768px) {
+  .quick-row input,
+  .quick-row select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 </style>

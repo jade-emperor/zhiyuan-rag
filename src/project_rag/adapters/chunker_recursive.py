@@ -143,6 +143,8 @@ class ChineseRecursiveChunker(TextChunker):
                             parent_start + _start_of(parent_text, piece, "子块")
                             for piece in children
                         ),
+                        # 图片锚点用"父块在整篇正文里的起点",不是子块的。
+                        parent_start=parent_start,
                     )
                 )
         return groups

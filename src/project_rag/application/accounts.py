@@ -72,6 +72,52 @@ def check_new_password(password: str) -> None:
         raise ValueError(f"密码至少 {MIN_PASSWORD_CHARS} 位,收到 {len(password)} 位")
 
 
+WEAK_PASSWORDS: tuple[str, ...] = (
+    "12345678",
+    "123456789",
+    "1234567890",
+    "password",
+    "password1",
+    "qwerty123",
+    "admin123",
+    "abcd1234",
+    "11111111",
+    "88888888",
+)
+
+
+def password_rules(password: str, *, username: str, min_chars: int) -> list[str]:
+    """输入:密码、用户名、下限。行为:逐条检查。输出:**没满足的**规则说明(空列表 = 通过)。
+
+    自助注册与改密共用这一份 —— 这两条入口是用户自己设密码,必须比管理员建号更严:
+    长度下限更高,且要求字母 + 数字、不许包含登录名、不许是常见弱口令。
+    返回列表而不是抛异常:前端要逐条显示"哪条没满足"。
+    """
+    unmet: list[str] = []
+    if len(password) < min_chars:
+        unmet.append(f"至少 {min_chars} 位")
+    if not any(character.isdigit() for character in password):
+        unmet.append("包含数字")
+    if not any(character.isalpha() for character in password):
+        unmet.append("包含字母")
+    if username and username.casefold() in password.casefold():
+        unmet.append("不要包含登录名")
+    if password.casefold() in WEAK_PASSWORDS:
+        unmet.append("不要用常见弱口令")
+    return unmet
+
+
+def check_registration_password(password: str, *, username: str, min_chars: int) -> None:
+    """输入:密码、用户名、长度下限。行为:校验自助注册/改密的口令策略。输出:无。
+
+    不合规抛 ``ValueError``,消息把**所有**没满足的规则一次说清。
+    """
+    unmet = password_rules(password, username=username, min_chars=max(min_chars, MIN_PASSWORD_CHARS))
+    if unmet:
+        raise ValueError("密码不合规:" + "、".join(unmet))
+
+
+
 def check_delete_account(
     existing: Sequence[User], *, user_id: str, actor_id: str
 ) -> User:

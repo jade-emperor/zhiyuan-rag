@@ -83,6 +83,8 @@ def _() -> str:
         # 认证与授权(用户/令牌/会话归属)。默认 None = **无认证模式**
         # —— 只可能来自显式注入(验收/本机),`build_real_deps` 永远接上。
         "auth_store_factory",
+        "captcha_store_factory",
+        "captcha_renderer_factory",
         # 文档登记表。默认 None = 不接(纯检索路径与老契约用不上)。
         "document_store_factory",
         # 上传入库要用的三样(切分器/装载函数/后缀表)。
@@ -90,6 +92,9 @@ def _() -> str:
         "chunker_factory",
         "loader_factory",
         "suffixes_factory",
+        # 图片对象存储:入库上传、出参签临时 URL。默认 None = 图片功能没开
+        # (纯文本部署与注入式验收不该被 OSS 配置拦住)。
+        "image_store_factory",
         # 稀疏那一路（keyword.backend=milvus）与知识库清单的磁盘索引 —— 各自那次改动
         # 都往 Deps 加了字段，而这条契约没跟着改（check_m2_faq 只在 local 档跑，
         # 于是"红的契约"躺了很久）。加字段时**必须**同步这张表。

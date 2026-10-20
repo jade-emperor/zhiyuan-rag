@@ -34,8 +34,8 @@ from _harness import patched_source, restore_stale_patches
 ROOT = Path(__file__).resolve().parents[2]
 DOCS_APP = ROOT / "src" / "project_rag" / "application" / "documents.py"
 API_APP = ROOT / "src" / "project_rag" / "api" / "app.py"
-KB_VIEW = ROOT / "web" / "src" / "views" / "KnowledgeView.vue"
-CARD = ROOT / "web" / "src" / "components" / "DocumentCard.vue"
+FOLDER_VIEW = ROOT / "web" / "src" / "views" / "FolderView.vue"
+TABLE = ROOT / "web" / "src" / "components" / "DocumentTable.vue"
 DIALOG = ROOT / "web" / "src" / "components" / "PreviewDialog.vue"
 PANEL = ROOT / "web" / "src" / "components" / "UploadPanel.vue"
 SCRIPT = "check_m7_2_kb.py"
@@ -90,14 +90,14 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         title="RT-6  删除一步到位（点一下就删,连带删向量,没有确认）",
-        target=CARD,
-        old='        <button class="danger" type="button" :disabled="deleting" @click="confirming = true">',
-        new='        <button class="danger" type="button" :disabled="deleting" @click="emit(\'remove\')">',
+        target=TABLE,
+        old='                @click="askRemove(doc)"',
+        new='                @click="emit(\'remove\', doc.document_id)"',
         needle="删除：两步确认",
     ),
     Case(
         title="RT-7  离开页面不停轮询（切到聊天页还在每 3 秒打一次清单）",
-        target=KB_VIEW,
+        target=FOLDER_VIEW,
         old="""onUnmounted(() => {
   // 离开页面就停轮询:不然切到聊天页还在每 3 秒打一次清单
   stopPolling()""",
@@ -116,8 +116,8 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-9  预览只显示一个数（用户把「入库 N 块 / 预览 M 段」读成丢数据）",
         target=DIALOG,
-        old="            入库 {{ docs.preview.child_chunks }} 块(子块) · 预览 {{ docs.preview.parent_blocks }} 段(父块)",
-        new="            入库 {{ docs.preview.child_chunks }} 块",
+        old="      入库 {{ docs.preview.child_chunks }} 块（子块） · 预览 {{ docs.preview.parent_blocks }} 段（父块）",
+        new="      入库 {{ docs.preview.child_chunks }} 块",
         needle="预览界面：同时显示子块与父块两个数",
     ),
 )

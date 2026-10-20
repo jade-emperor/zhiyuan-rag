@@ -93,9 +93,18 @@ uv run project-rag-api        # 或 ./scripts/dev.sh serve；端口取 api.host 
 | `POST` | `/api/v1/auth/login` | 账号密码换令牌 | — |
 | `GET` | `/api/v1/auth/me` | 当前账号 + 三个能力布尔值 | Bearer |
 | `POST` | `/api/v1/auth/logout` | 撤销当前令牌（幂等） | Bearer（可缺） |
+| `GET` | `/api/v1/auth/captcha` | 图形验证码（PNG data URI + 票据） | — |
+| `POST` | `/api/v1/auth/register` | 自助注册（验证码 + 口令策略），直接回令牌 | — |
+| `POST` | `/api/v1/auth/password` | 改密：撤销全部旧令牌并发新令牌 | Bearer |
 | `GET` | `/api/v1/capabilities` | 后缀/上限/模型/检索选项（前端能力的唯一来源） | — |
-| `POST` | `/api/v1/documents?filename=…` | 上传文档（原始 body，`202`） | admin |
-| `GET` | `/api/v1/documents` | 知识库清单（登记表×磁盘×向量库三处对账） | Bearer |
+| `GET` | `/api/v1/folders` | 一级目录清单（含"未分类"与汇总） | Bearer |
+| `POST` | `/api/v1/folders` | 建目录（`201`） | admin |
+| `GET` | `/api/v1/folders/{folder_id}` | 一个目录 + 它里面的文档 | Bearer |
+| `PATCH` | `/api/v1/folders/{folder_id}` | 改名 / 改说明（**不改 ID**） | admin |
+| `DELETE` | `/api/v1/folders/{folder_id}` | 删**空**目录（非空 `409`） | admin |
+| `POST` | `/api/v1/documents?filename=…&folder=…` | 上传文档（原始 body，`202`） | admin |
+| `GET` | `/api/v1/documents?folder=…` | 知识库清单（登记表×磁盘×向量库三处对账） | Bearer |
+| `PATCH` | `/api/v1/documents/{document_id}` | 把一份文档挪到另一个目录 | admin |
 | `DELETE` | `/api/v1/documents/{document_id}` | 删文档（登记行 + 向量 + 上传的原件） | admin |
 | `GET` | `/api/v1/documents/{document_id}/chunks` | 预览入库后的父块 | Bearer |
 | `GET` | `/api/v1/reports/metrics` | 延迟报表 | 运维/admin |
@@ -164,7 +173,9 @@ GET /api/v1/capabilities
   },
   "metrics": { "windows": ["1h", "6h", "24h", "7d", "30d"], "default_window": "24h",
                "top_max": 50, "min_n": { "p50": 1, "p95": 20, "p99": 100 } },
-  "roles": ["employee", "ops", "admin"]
+  "roles": ["employee", "ops", "admin"],
+  "registration": { "enabled": true, "captcha_required": true,
+                    "invite_required": false, "min_password_chars": 10 }
 }
 ```
 
@@ -249,8 +260,86 @@ POST /api/v1/auth/logout
 
 | 场景 | 行为 |
 |---|---|
-| 没带令牌 / 无认证模式 | `503`（`/api/v1/auth/*` 三条都是） |
+| 没带令牌 / 无认证模式 | `503`（`/api/v1/auth/*` 都是） |
 | WebSocket 认证失败 | 先回一帧 `error` 说明原因，再 `close(1008)` |
+
+### 5.4 图形验证码
+
+**请求**
+
+```
+GET /api/v1/auth/captcha
+```
+
+按 IP 限流（与登录同档，`api.rate_limit.login`）。`api.captcha.enabled=false` → `404`。
+
+**响应**
+
+```json
+{ "ticket": "J0d…", "image": "data:image/png;base64,iVBORw0…", "expires_in": 120 }
+```
+
+| 字段 | 说明 |
+|---|---|
+| `ticket` | 不透明票据，随注册请求回传；**一次一票**，校验失败也作废 |
+| `image` | PNG data URI，直接给 `<img src>`；答案不在响应里 |
+| `expires_in` | 有效期（秒），`api.captcha.ttl_s` |
+
+### 5.5 自助注册
+
+**请求**
+
+```
+POST /api/v1/auth/register
+```
+
+```json
+{ "username": "alice", "password": "Str0ngPass!",
+  "captcha_ticket": "J0d…", "captcha_answer": "K7MQ", "invite_code": "" }
+```
+
+| 字段 | 说明 |
+|---|---|
+| `username` | 1..64 字符，不能含空格；重名报 `400` |
+| `password` | 需满足 `api.registration.min_password_chars`，且含字母与数字、不含登录名、不在常见弱口令表里 |
+| `captcha_ticket` / `captcha_answer` | 上一步那张图；大小写不敏感 |
+| `invite_code` | 仅当 `api.registration.invite_code` 非空时必填 |
+
+**响应**（`201`，与登录同形）
+
+```json
+{ "token": "…", "username": "alice", "role": "employee", "expires_in": 43200 }
+```
+
+| 场景 | 状态码 |
+|---|---|
+| 成功 | `201` + 令牌（角色固定 `employee`，请求体里没有 `role`） |
+| 验证码过期 / 已用 / 不对 | `400` |
+| 口令不合规 / 重名 | `400`（`detail` 逐条点名缺什么） |
+| 邀请码不对 | `403` |
+| 没开自助注册 | `403` |
+| 同一 IP 超限 | `429` |
+
+### 5.6 改密
+
+**请求**
+
+```
+POST /api/v1/auth/password
+```
+
+```json
+{ "old_password": "Str0ngPass!", "new_password": "Fresh0Pass!" }
+```
+
+**响应**
+
+```json
+{ "token": "…", "username": "alice", "role": "employee", "expires_in": 43200 }
+```
+
+成功后**该用户的全部旧令牌立刻作废**（其它设备下次请求 `401`），响应里的新令牌给当前设备继续用。
+原密码不对 → `401`；新密码不合规或与原密码相同 → `400`。
 
 ---
 
@@ -310,7 +399,11 @@ POST /api/v1/query
   "truncated": false,
   "citations": [
     { "index": 1, "source": "bagu_ai", "doc_id": "JBL常见AI面试题-潜艇.md",
-      "preview": "……父块正文的前 120 字……", "score": 0.83, "rerank_score": 4.12, "page": 37 }
+      "preview": "……父块正文的前 120 字……", "score": 0.83, "rerank_score": 4.12, "page": 37,
+      "images": [
+        { "key": "rag/images/ab/ab12…e6.png",
+          "url": "https://bucket.oss-cn-guangzhou.aliyuncs.com/rag/images/ab/…?Expires=…&Signature=…" }
+      ] }
   ],
   "faq_score": null,
   "session_id": null
@@ -326,6 +419,7 @@ POST /api/v1/query
 | `citations[].preview` | 父块正文前 120 字 —— 与模型真正读到的那段一致 |
 | `citations[].score` | 融合分；`rerank_score` 为 `null` = 没重排或只有 1 条候选。**单路检索时 `score` 是那一路的原始分**，与融合分不同量纲，别互相比 |
 | `citations[].page` | 源文件页码，**从 1 开始**；`null` = 不知道（md/txt 没有页码，或老块），**别拿 0 或 1 顶** |
+| `citations[].images` | 这一条引用所属父块里的图：`key` 是稳定身份（图片字节 SHA-256），`url` 是**本次响应现签**的临时 URL（默认 300 秒）。`url` 为空 = 这次签不出来/图片功能没开；**不要把 `url` 存回库或历史** |
 | `faq_score` | 仅 FAQ 命中时有值：`top1 原始分 ÷ 该条问自己的分`，夹到 0~1（1.000 = 近乎一字不差） |
 
 **路由规则**（HTTP 与 WS 共用一份）：
@@ -365,7 +459,7 @@ WS /api/v1/stream?token=<令牌>
 **帧示例**
 
 ```json
-{ "type": "sources", "citations": [ { "index": 1, "source": "bagu_ai", "page": 37 } ] }
+{ "type": "sources", "citations": [ { "index": 1, "source": "bagu_ai", "page": 37, "images": [ { "key": "…", "url": "…" } ] } ] }
 { "type": "token", "text": "装饰器是" }
 { "type": "done", "answer": "装饰器是……", "channel": "rag", "refused": false,
   "truncated": false, "citations": [ … ], "session_id": "b7f0…" }
@@ -484,12 +578,21 @@ GET /api/v1/sources
 
 ## 9. 文档治理
 
+知识库是**两层**：一级是**目录**（`folder`），目录里才是文档。目录只是组织方式，**不承载可见范围**——
+授权仍然按 `document_id` 逐份收窄（§11.3）。**未分类**（`folder` 为空串）是一个合法归属，
+不是错误状态：磁盘上有、登记表没有的文件只能是它。目录的读写端点见 §9.5–§9.8。
+
+**目录从哪来**：`data/corpus/` 下的每个一级子目录对应一格（进程启动时同步，幂等；
+目录名去掉 `_data` 后缀），`corpus` 自己是"所有格的父亲"、不是一格。`project-rag ingest`
+默认按文件在语料根下的一级目录落格，语料之外的路径落未分类；管理员也可以显式建目录
+（§9.7），那一格不要求磁盘上有同名目录 —— 它是上传时的落点。
+
 ### 9.1 上传
 
 **请求**
 
 ```
-POST /api/v1/documents?filename=lecture01.pdf
+POST /api/v1/documents?filename=lecture01.pdf&folder=f_523f8bb13dc6
 Content-Type: application/octet-stream
 ```
 
@@ -500,6 +603,8 @@ Content-Type: application/octet-stream
 | 后缀不在 `capabilities.suffixes` | `400` |
 | 超过 `max_upload_mb` | `413`（**边收边写**，不会先读进内存再拒） |
 | 文件名带路径 | basename 化（`../../逃逸.md` → `逃逸.md`） |
+| `folder` | 目标目录 ID；省略或 `unfiled` = 未分类。**目录不存在 `404`（不自动新建，且不会先落盘）** |
+| 同名文件已在**另一个目录** | `409` —— 文档 ID 就是文件名，两格不能各有一份（同一目录重传是覆盖） |
 | 入库 | **异步**：立刻 `202`，后台切块嵌入；状态流转 `pending → processing → processed`，失败进 `failed`（带 `error`）；**只有 `processed` 可检索** |
 
 ### 9.2 知识库清单
@@ -507,10 +612,11 @@ Content-Type: application/octet-stream
 **请求**
 
 ```
-GET /api/v1/documents
+GET /api/v1/documents?folder=f_523f8bb13dc6
 ```
 
 清单是**实时视图**：后端每次把"登记表 / 磁盘 / 向量库"三处摆到一起再出参。
+`folder` 省略 = 全部；给目录 ID 或 `unfiled` = 只看那一格（二级页面的数据来源之一）。
 
 **响应**
 
@@ -519,10 +625,12 @@ GET /api/v1/documents
   "documents": [
     { "document_id": "lecture01.pdf", "filename": "lecture01.pdf", "status": "processed", "state": "ok",
       "chunks": 42, "indexed_chunks": 42, "size_bytes": 20480, "disk_size_bytes": 20480,
-      "on_disk": true, "searchable": true, "restricted": false, "created_at": "…", "error": null },
+      "on_disk": true, "searchable": true, "restricted": false, "folder": "f_523f8bb13dc6",
+      "created_at": "…", "error": null },
     { "document_id": "handbook.docx", "filename": "handbook.docx", "status": "unregistered", "state": "unregistered",
       "chunks": 0, "indexed_chunks": 0, "size_bytes": 0, "disk_size_bytes": 38426,
-      "on_disk": true, "searchable": false, "restricted": false, "created_at": "", "error": null }
+      "on_disk": true, "searchable": false, "restricted": false, "folder": "",
+      "created_at": "", "error": null }
   ],
   "summary": { "total": 2, "ok": 1, "changed": 0, "not_indexed": 0,
                "file_missing": 0, "unregistered": 1, "in_flight": 0 },
@@ -536,6 +644,7 @@ GET /api/v1/documents
 | `chunks` vs `indexed_chunks` | 登记表记的 vs 库里实际的，**两个数，不合成一个** |
 | `searchable` | 按**库内实际块数**算 —— 登记说 `processed` 不算数 |
 | `restricted` | 这份文档被收窄过（规则只用来收窄，见 §11.3）；**没授权给你的不出现** |
+| `folder` | 归在哪一级目录下；空串 = 未分类（**未登记的文件必然是空串**：读接口不写库） |
 
 ### 9.3 删除
 
@@ -582,6 +691,90 @@ GET /api/v1/documents/{document_id}/chunks?limit=20&chars=400
 - 没登记的文档 `404`，话术会点名 `project-rag doctor` / `--prune-orphans`（库里的孤儿块照样能被检索到，
   但"这份文档"在管理页上不存在）；**看不见的文档也回同一句 404**。
 - 顺序只保证稳定（按页码升序，没页码的在后），不保证与原文严格一致。
+
+
+### 9.5 目录清单
+
+**请求**
+
+```
+GET /api/v1/folders
+```
+
+一级页面用的就是这一条。每格的读数与清单**同一次对账**（份数 / 库内块数 / 占用 / 需要处理），
+所以"目录卡上写 2 份"与"点进去两行"不会在两次点击之间对不上。
+
+**响应**
+
+```json
+{
+  "folders": [
+    { "folder_id": "f_523f8bb13dc6", "name": "公司制度", "description": "员工手册与政策",
+      "created_at": "…", "updated_at": "…", "documents": 2, "chunks": 8, "size_bytes": 75899,
+      "issues": 0, "restricted": 1, "last_activity": "…", "unfiled": false }
+  ],
+  "unfiled": { "folder_id": "unfiled", "name": "未分类", "documents": 1, "chunks": 0, "…": "…",
+               "unfiled": true },
+  "summary": { "folders": 2, "used": 1, "unfiled": 1 }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `unfiled` | **恒定给出**（哪怕 0 份）。`folder_id` 是保留值 `unfiled`，库里存的是空串 |
+| `items.issues` | 需要处理的份数（三处不一致 + 在途/失败）—— **不是"错误数"** |
+| `items.chunks` | **库内实际块数**（不是登记表说多少） |
+| `items.last_activity` | 目录里最新一份文档的登记时间；空串 = 还没有文档（目录自身的 `updated_at` 是改名时间） |
+| `items.restricted` | 里面有几份是收窄过的 |
+| `summary` | `folders` 真实目录数 / `used` 其中有文档的 / `unfiled` 未分类份数 |
+
+计数**只数看得见的**：看不见的文档不出现在 `documents` 里，也不计入份数。
+
+### 9.6 目录详情
+
+```
+GET /api/v1/folders/{folder_id}
+```
+
+`folder_id` 可以是真实目录 ID，也可以是 `unfiled`。一次往返给齐二级页面要的三样东西：
+
+```json
+{ "folder": { "…": "同 §9.5 的一格" },
+  "documents": [ { "…": "同 §9.2 的每一行" } ],
+  "summary": { "total": 2, "ok": 1, "changed": 1, "not_indexed": 0,
+               "file_missing": 0, "unregistered": 0, "in_flight": 0 } }
+```
+
+目录不存在 `404`；`detail` 会指一条能走的路（先看 `GET /api/v1/folders`）。
+
+### 9.7 建目录 / 改名 / 删目录（admin）
+
+```
+POST   /api/v1/folders                {"name": "公司制度", "description": "员工手册与政策"}
+PATCH  /api/v1/folders/{folder_id}    {"name": "…", "description": "…"}   # 两个字段都可选
+DELETE /api/v1/folders/{folder_id}
+```
+
+| 情况 | 行为 |
+|---|---|
+| 名字为空 / 超过 40 字 / 含 `/` `\` 或控制字符 / 叫"未分类" | `400` |
+| 名字已被占用（**名字唯一**，`--folder` 靠它解析） | `409` |
+| 改名 | **ID 不变**（改 ID 等于把目录里的文档全脱钩）；`description` 给空串 = 清空 |
+| 删非空目录 | `409`，`detail` 点出份数 —— **删目录不删文档** |
+| 删不存在的目录 | `200` + `{"folder_id": "…", "deleted": 0}`（幂等） |
+| 对 `unfiled` 做改名 / 删除 | `400`（它是虚拟目录） |
+
+响应是 `FolderOut`（同 §9.5 的一格，含当前读数），删除是 `{"folder_id", "deleted"}`。
+
+### 9.8 移动文档（admin）
+
+```
+PATCH /api/v1/documents/{document_id}   {"folder_id": "f_523f8bb13dc6"}
+```
+
+只改归属：**不重切、不重灌、块 id 一个都不变**，所以是毫秒级的，历史引用也不受影响。
+`folder_id` 给空串 = 挪回未分类。目标目录不存在、或这份文档没有登记行（`unregistered`）都是 `404`。
+响应 `{"document_id": "…", "folder": "…"}`。
 
 ---
 
@@ -817,7 +1010,7 @@ Redis 故障 → **降级放行**（fail-open）+ WARNING：限流是保护不�
 | `qa` | `-q/--question` | `--k` `--source` `--session` `--stream` | **合流**：FAQ 优先、知识库兜底（日常入口） |
 | `rewrite` | `-q/--question` | — | 查询改写诊断：判成哪一类、改写成哪几句（不检索、不生成） |
 | `search` | `-q/--question` | `--k` `--source` `--route {both,vector,bm25}` | 只检索、**不调模型** |
-| `ingest` | — | `--path` `--dry-run` `--purge-source` `--batch-size` | 切块入库；默认 `data/corpus/pdf_data` |
+| `ingest` | — | `--path` `--dry-run` `--purge-source` `--batch-size` `--folder` | 切块入库；默认 `data/corpus/pdf_data`；`--folder 名字` 入到那一级目录（不存在就建，不给就按来源标签建） |
 | `collections` | — | `--reindex` `--yes` | 列出集合（块数 / `page` 列 / 稀疏列 / 索引类型）；`--reindex` 按配置重建索引 |
 | `sparse` | — | `--yes` `--batch-size` | 按当前语料重算全库 BM25 稀疏向量（`keyword.backend=milvus` 那一档） |
 | `drop` | `--collection` | `--yes` | 删一个向量集合（不给 `--yes` 只说不做，退出码 1） |

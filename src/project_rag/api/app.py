@@ -76,23 +76,33 @@ from project_rag.api.schemas import (
     MAX_CONTEXT_MAX,
     RRF_K_MAX,
     CapabilitiesOut,
+    CaptchaOut,
+    ChangePasswordRequest,
     ChunkPreviewOut,
+    CitationImageOut,
     CitationOut,
     CostLineOut,
     CostOut,
     PeriodTotalOut,
+    CreateFolderRequest,
     CreateGroupRequest,
     CreateUserOut,
     CreateUserRequest,
     DeletedDocumentOut,
+    DeletedFolderOut,
     DeletedGroupOut,
     DeletedOut,
     DeletedUserOut,
     DocumentAclOut,
+    DocumentFolderOut,
     DocumentOut,
     DocumentPreviewOut,
     DocumentsOut,
     DocumentSummaryOut,
+    FolderDetailOut,
+    FolderOut,
+    FoldersOut,
+    FolderSummaryOut,
     GroupOut,
     GroupDocumentOut,
     GroupDocumentsOut,
@@ -109,8 +119,11 @@ from project_rag.api.schemas import (
     MetricsMinNOut,
     ModelOut,
     ModelSettingsOut,
+    MoveDocumentRequest,
     QueryRequest,
     QueryResponse,
+    RegisterRequest,
+    RegistrationCapabilitiesOut,
     ResetPasswordRequest,
     RetrievalDefaultsOut,
     RetrievalLimitsOut,
@@ -124,6 +137,7 @@ from project_rag.api.schemas import (
     SetMembersRequest,
     SlowRowOut,
     SourcesOut,
+    UpdateFolderRequest,
     UserOut,
     UsersOut,
 )
@@ -144,6 +158,7 @@ from project_rag.application.accounts import (
     check_new_password,
     role_of,
 )
+from project_rag.application.captcha import issue_captcha, verify_captcha
 from project_rag.application.security import TOKEN_TTL_SECONDS
 from project_rag.application.greeting import match_greeting
 from project_rag.cli.deps import (
@@ -224,6 +239,15 @@ def _next_or_none(iterator: Iterator[QaEvent]) -> QaEvent | None:
 
 
 # ── 同步核心：装端口、调用例、转出参（都在线程池里跑） ─────────────────────────
+def _client_key(request: Request) -> str:
+    """输入:请求。行为:取调用方 IP 当限流键。输出:``ip:<地址>``。
+
+    限流按 IP 而不是按账号:登录/注册/验证码这几条路在拿到账号之前就要计数。
+    """
+    caller = request.client.host if request.client else "unknown"
+    return f"ip:{caller}"
+
+
 def _optional_factory(deps: Deps, name: str) -> Any:
     """输入:依赖集合 + 工厂字段名。行为:有就造,没配给 None(**不报 503**)。输出:实例或 None。
 
@@ -359,9 +383,33 @@ def _enforce_rate_limit(
 # 想限死的人该收紧的是后端地址白名单,不是 CSP。
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; font-src 'self' data:; connect-src *; object-src 'none'; "
+    # 图片来自 OSS/CDN(签名 URL),不能只允许 'self';脚本仍只许本站,
+    # 图片是被动内容,放开 https: 不会让 XSS 多一条执行路径。
+    "img-src 'self' data: https:; font-src 'self' data:; connect-src *; object-src 'none'; "
     "base-uri 'none'; frame-ancestors 'none'"
 )
+
+
+def _sync_folders(deps: Deps) -> None:
+    """输入:依赖。行为:把语料根下的一级子目录同步成一级目录(幂等)。输出:无。
+
+    **只在进程入口做**:``create_app`` 会被验收脚本反复调用,在那里写库会把注入的假件
+    塞满真实语料目录(踩过:每个用例的假登记表里都凭空多出 4 个目录)。
+
+    **失败只记警告,不拦启动**:目录是"组织方式",不是服务能不能起来的前提 ——
+    与 ``ensure_*`` 那几个启动钩子同一条政策。
+    """
+    if deps.document_store_factory is None:  # 注入式部署(验收):不碰真库
+        return
+    try:
+        from project_rag.application.folders import sync_corpus_folders
+
+        synced = sync_corpus_folders(
+            deps.document_store_factory(), project_path(get_settings().api.corpus_dir)
+        )
+        _logger.info("语料目录已同步成 %d 个一级目录", len(synced))
+    except Exception as exc:  # noqa: BLE001 - 见上:不拦启动
+        _logger.warning("语料目录同步失败(不影响启动):%s", exc)
 
 
 def _warn_wide_cors(settings) -> None:  # noqa: ANN001 - Settings,避免 import 环
@@ -450,40 +498,78 @@ def _rerank_enabled(deps: Deps, request: QueryRequest) -> bool:
     return request.rerank
 
 
-def _citations(snapshots: Iterable[CitationSnapshot]) -> list[CitationOut]:
-    """输入:引用快照序列(``domain.snapshot_citations`` 拍出来的)。行为:转成出参模型。输出:出参列表。
+def _image_signer(deps: Deps) -> Callable[[str], str] | None:
+    """输入:依赖。行为:图片功能开了就给一个 ``key -> 临时 URL`` 的签名器。输出:签名器或 None。
+
+    签名是**本地计算**(oss2 用 AccessKey 算 HMAC,不发网络请求),但仍放在同步侧:
+    WebSocket 每条连接只取一次;HTTP 每次回答在 ``_call`` 的线程里取。
+    """
+    store = _optional_factory(deps, "image_store_factory")
+    return None if store is None else store.sign
+
+
+def _citations(
+    snapshots: Iterable[CitationSnapshot],
+    signer: Callable[[str], str] | None = None,
+) -> list[CitationOut]:
+    """输入:引用快照序列 + 可选的图片签名器。行为:转成出参模型,并现签图片 URL。输出:出参列表。
 
     **截断与字段口径不在这里**:它们全在 ``domain.models.snapshot_citations`` ——
     实时这一份与落库历史那一份必须长得一样,两处各写一遍迟早漂。
+
+    图片签名失败**不该让整条回答失败**:文字和引用仍然有用,图缺一张比整页 500 好。
+    记一条 WARNING,``url`` 留空;前端按"这张图暂时取不到"处理。
     """
-    return [
-        CitationOut(
-            index=item.index,
-            source=item.source,
-            doc_id=item.doc_id,
-            preview=item.preview,
-            score=item.score,
-            rerank_score=item.rerank_score,
-            page=item.page,
+    out: list[CitationOut] = []
+    for item in snapshots:
+        images: list[CitationImageOut] = []
+        for key in item.image_keys:
+            if not key:
+                continue
+            url = ""
+            if signer is not None:
+                try:
+                    url = signer(key)
+                except Exception as exc:  # noqa: BLE001 - 图片是增强,不该拖垮文字回答
+                    _logger.warning("签名图片 URL 失败(key=%s):%s", key, exc)
+            images.append(CitationImageOut(key=key, url=url))
+        out.append(
+            CitationOut(
+                index=item.index,
+                source=item.source,
+                doc_id=item.doc_id,
+                preview=item.preview,
+                score=item.score,
+                rerank_score=item.rerank_score,
+                page=item.page,
+                images=images,
+            )
         )
-        for item in snapshots
-    ]
+    return out
 
 
-def _to_response(result: QaAnswer, session_id: str | None) -> QueryResponse:
-    """输入:用例回答 + 会话 ID。行为:转成出参模型。输出:QueryResponse。"""
+def _to_response(
+    result: QaAnswer,
+    session_id: str | None,
+    signer: Callable[[str], str] | None = None,
+) -> QueryResponse:
+    """输入:用例回答 + 会话 ID + 图片签名器。行为:转成出参模型。输出:QueryResponse。"""
     return QueryResponse(
         answer=result.answer,
         channel=result.channel,
         refused=result.refused,
         truncated=result.truncated,
-        citations=_citations(snapshot_citations(result.citations)),
+        citations=_citations(snapshot_citations(result.citations), signer),
         faq_score=result.faq_match.score if result.faq_match is not None else None,
         session_id=session_id,
     )
 
 
-def _frame(event: QaEvent, session_id: str | None) -> dict[str, Any]:
+def _frame(
+    event: QaEvent,
+    session_id: str | None,
+    signer: Callable[[str], str] | None = None,
+) -> dict[str, Any]:
     """输入:一帧 + 会话 ID。行为:转成 WebSocket 的 JSON 帧。输出:可发送的字典。
 
     帧名与 ``application/streaming.py`` 的协议一一对应(``sources`` / ``token`` / ``done``),
@@ -492,7 +578,10 @@ def _frame(event: QaEvent, session_id: str | None) -> dict[str, Any]:
     if event.kind == "sources":
         return {
             "type": "sources",
-            "citations": [c.model_dump() for c in _citations(snapshot_citations(event.citations))],
+            "citations": [
+                c.model_dump()
+                for c in _citations(snapshot_citations(event.citations), signer)
+            ],
         }
     if event.kind == "token":
         return {"type": "token", "text": event.text}
@@ -502,7 +591,10 @@ def _frame(event: QaEvent, session_id: str | None) -> dict[str, Any]:
         "channel": event.channel,
         "refused": event.refused,
         "truncated": event.truncated,
-        "citations": [c.model_dump() for c in _citations(snapshot_citations(event.citations))],
+        "citations": [
+            c.model_dump()
+            for c in _citations(snapshot_citations(event.citations), signer)
+        ],
         "session_id": session_id,
     }
 
@@ -529,7 +621,7 @@ def _answer(
         session=_session(deps, request.session_id),
         thinking=deps.thinking,  # 只进延迟账,不影响答案
     )
-    return _to_response(result, request.session_id)
+    return _to_response(result, request.session_id, _image_signer(deps))
 
 
 def _stream_events(
@@ -566,6 +658,7 @@ def _history(deps: Deps, session_id: str) -> HistoryOut:
     """输入:依赖 + 会话 ID。行为:读最近 N 轮(与喂给模型的**同一份**)。输出:HistoryOut。"""
     store = _factory(deps, "conversation_store_factory")
     turns = store.recent(session_id, limit=get_settings().conversation.history_rounds)
+    signer = _image_signer(deps)
     return HistoryOut(
         session_id=session_id,
         rounds=[
@@ -574,7 +667,7 @@ def _history(deps: Deps, session_id: str) -> HistoryOut:
                 answer=turn.answer,
                 # 出处连答案一起回去:正文里的 [1] 没有卡片可点,等于没有出处
                 # (老账没有这一列 → 空清单,界面按"这一轮的引用没留下"处理)
-                citations=_citations(turn.citations),
+                citations=_citations(turn.citations, signer),
             )
             for turn in turns
         ],
@@ -735,19 +828,22 @@ def _access(deps: Deps, user: User | None) -> AccessContext:
     )
 
 
-def _documents(deps: Deps, access: AccessContext) -> DocumentsOut:
-    """输入:依赖 + 可见范围。行为:登记表 + 磁盘 + 向量库**三处对账**后给清单(再按可见范围过滤)。输出:清单。
+def _visible_views(deps: Deps, access: AccessContext) -> tuple[Any, ...]:
+    """输入:依赖 + 可见范围。行为:登记表 + 磁盘 + 向量库**三处对账**,再滤掉看不见的。输出:清单行。
 
     **为什么不是"读一遍登记表"**:登记表是一份没人失效的缓存 —— CLI 灌完不写它、
     有人 rm 一个语料文件不写它、drop 一个集合更不写它。只念登记表的结果就是
     「集合清空了卡片还写已入库 677 块」「语料目录里新放的文件前端根本看不到」
     (那个 bug)。这里把三处摆到一起,``state`` 说的才是"现在到底怎么样"。
 
-    **被收窄且没授权给他的文档不出现在清单里**:清单是"你能检索什么"的视图,
+    **被收窄且没授权给他的文档不出现在这里**:清单是"你能检索什么"的视图,
     列出一份他既搜不到、点预览还会 403 的文档,只会让他以为系统坏了。
     每行的 ``restricted`` 仍然如实给出 —— 那是"这份是限定的,你在名单里"。
+
+    目录页与清单页**共用这一次对账**:两边各查一遍,就会在两次点击之间给出不同的
+    "共 N 份" —— 那正是用户最先注意到的那种不一致。
     """
-    from project_rag.application.documents import document_views, list_documents, summarize
+    from project_rag.application.documents import document_views, list_documents
 
     records = list_documents(_factory(deps, "document_store_factory"))
     views = document_views(
@@ -755,41 +851,247 @@ def _documents(deps: Deps, access: AccessContext) -> DocumentsOut:
         files=_disk_files(deps),
         indexed=_factory(deps, "vector_store_factory").chunk_counts(),
     )
+    return tuple(view for view in views if access.allows(view.document_id))
+
+
+def _document_out(view: Any, restricted: frozenset[str]) -> DocumentOut:
+    """输入:清单行 + "收窄过"的文档 ID。行为:转成出参模型。输出:``DocumentOut``。"""
+    return DocumentOut(
+        document_id=view.document_id,
+        source=view.source,
+        filename=view.filename,
+        status=view.status,
+        state=view.state,
+        chunks=view.chunks,
+        size_bytes=view.size_bytes,
+        disk_size_bytes=view.disk_size_bytes,
+        on_disk=view.on_disk,
+        created_at=view.created_at,
+        error=view.error,
+        folder=view.folder,
+        searchable=view.searchable,
+        indexed_chunks=view.indexed_chunks,
+        restricted=view.document_id in restricted,
+    )
+
+
+def _summary_out(summary: Any) -> DocumentSummaryOut:
+    """输入:``application.documents.DocumentSummary``。行为:搬进出参模型。输出:``DocumentSummaryOut``。"""
+    return DocumentSummaryOut(
+        total=summary.total,
+        ok=summary.ok,
+        changed=summary.changed,
+        not_indexed=summary.not_indexed,
+        file_missing=summary.file_missing,
+        unregistered=summary.unregistered,
+        in_flight=summary.in_flight,
+    )
+
+
+def _documents(deps: Deps, access: AccessContext, folder: str = "") -> DocumentsOut:
+    """输入:依赖 + 可见范围 + 可选的目录过滤(``unfiled`` = 未分类)。行为:对账后的清单。输出:清单。
+
+    ``folder`` 为空 = 全部(清单页);给了就只给那一格(目录二级页)。**过滤发生在对账之后**:
+    ``state`` 是单份文档的性质,不需要知道它属于哪个目录。
+    """
+    from project_rag.application.documents import summarize
+
+    views = _visible_views(deps, access)
+    if folder:
+        views = tuple(view for view in views if _folder_matches(view.folder, folder))
     restricted = _restricted_documents(deps)
-    visible = [view for view in views if access.allows(view.document_id)]
-    summary = summarize(visible)
     return DocumentsOut(
-        documents=[
-            DocumentOut(
-                document_id=view.document_id,
-                source=view.source,
-                filename=view.filename,
-                status=view.status,
-                state=view.state,
-                chunks=view.chunks,
-                size_bytes=view.size_bytes,
-                disk_size_bytes=view.disk_size_bytes,
-                on_disk=view.on_disk,
-                created_at=view.created_at,
-                error=view.error,
-                searchable=view.searchable,
-                indexed_chunks=view.indexed_chunks,
-                restricted=view.document_id in restricted,
-            )
-            for view in visible
-        ],
-        summary=DocumentSummaryOut(
-            total=summary.total,
-            ok=summary.ok,
-            changed=summary.changed,
-            not_indexed=summary.not_indexed,
-            file_missing=summary.file_missing,
-            unregistered=summary.unregistered,
-            in_flight=summary.in_flight,
-        ),
+        documents=[_document_out(view, restricted) for view in views],
+        summary=_summary_out(summarize(views)),
         uploads_dir=str(_uploads_dir()),
         corpus_dir=str(_corpus_dir()),
     )
+
+
+def _folder_matches(view_folder: str, wanted: str) -> bool:
+    """输入:清单行上的目录 ID + 调用方要的那一格。行为:判是不是同一格。输出:布尔。
+
+    ``unfiled`` 是**对外的名字**,库里存的是空串(见 ``domain/documents.py``)——
+    这一层专门把那一个词翻过来,别处不再各写一遍。
+    """
+    from project_rag.domain.documents import UNFILED, UNFILED_ID
+
+    if wanted == UNFILED_ID:
+        return view_folder == UNFILED
+    return view_folder == wanted
+
+
+def _folders_of(deps: Deps, views: Sequence[Any]) -> tuple[Any, ...]:
+    """输入:依赖 + 已经算好的清单行。行为:按目录聚合(含未分类)。输出:目录格。
+
+    聚合用的是**同一次对账**的结果(``_visible_views`` 的返回值):目录卡片上的份数/块数
+    与点进去看到的行必须是同一批数 —— 各自查一遍就会在两次点击之间给出不同的 N。
+    """
+    from project_rag.application.folders import folder_views
+
+    return folder_views(
+        views,
+        _factory(deps, "document_store_factory").list_folders(),
+        restricted=_restricted_documents(deps),
+    )
+
+
+def _folder_views(deps: Deps, access: AccessContext) -> tuple[Any, ...]:
+    """输入:依赖 + 可见范围。行为:对账 + 按目录聚合。输出:目录格。"""
+    return _folders_of(deps, _visible_views(deps, access))
+
+
+def _folder_out(view: Any) -> FolderOut:
+    """输入:``application.folders.FolderView``。行为:搬进出参模型。输出:``FolderOut``。"""
+    return FolderOut(
+        folder_id=view.folder_id,
+        name=view.name,
+        description=view.description,
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+        documents=view.documents,
+        chunks=view.chunks,
+        size_bytes=view.size_bytes,
+        issues=view.issues,
+        restricted=view.restricted,
+        last_activity=view.last_activity,
+        unfiled=view.unfiled,
+    )
+
+
+def _folders(deps: Deps, access: AccessContext) -> FoldersOut:
+    """输入:依赖 + 可见范围。行为:全部目录 + 未分类 + 汇总。输出:``FoldersOut``。"""
+    from project_rag.application.folders import summary_of
+
+    views = _folder_views(deps, access)
+    unfiled = next(view for view in views if view.unfiled)
+    counts = summary_of(views)
+    return FoldersOut(
+        folders=[_folder_out(view) for view in views if not view.unfiled],
+        unfiled=_folder_out(unfiled),
+        summary=FolderSummaryOut(
+            folders=counts.folders, used=counts.used, unfiled=counts.unfiled
+        ),
+    )
+
+
+def _no_such_folder(folder_id: str) -> HTTPException:
+    """输入:目录 ID。行为:造那句"没有这个目录"的 404。输出:``HTTPException``。"""
+    return HTTPException(
+        status_code=404,
+        detail=(
+            f"没有这个目录({folder_id!r})。`GET /api/v1/folders` 是全部目录与它们的 ID;"
+            "目录的 ID 在改名后不变,所以对不上多半是它被删了"
+        ),
+    )
+
+
+def _folder_detail(deps: Deps, access: AccessContext, folder_id: str) -> FolderDetailOut:
+    """输入:依赖 + 可见范围 + 目录 ID。行为:目录本身 + 里面的文档 + 汇总(一次往返)。输出:``FolderDetailOut``。
+
+    **不存在与看不见回同一句 404**(与文档预览同一条口径):目录不承载可见范围,
+    但一个"私密目录名"照样能说明点什么 —— 而目录里一份都看不见时,这格目录
+    本来也不该出现在他的列表里。
+    """
+    from project_rag.application.documents import summarize
+
+    views = _visible_views(deps, access)
+    wanted = next(
+        (view for view in _folders_of(deps, views) if view.folder_id == folder_id), None
+    )
+    if wanted is None:
+        raise _no_such_folder(folder_id)
+
+    rows = tuple(view for view in views if _folder_matches(view.folder, folder_id))
+    restricted = _restricted_documents(deps)
+    return FolderDetailOut(
+        folder=_folder_out(wanted),
+        documents=[_document_out(row, restricted) for row in rows],
+        summary=_summary_out(summarize(rows)),
+    )
+
+
+def _folder_error(exc: Exception) -> HTTPException:
+    """输入:用例层抛出来的异常。行为:翻成这一层该回的状态码。输出:``HTTPException``。
+
+    三个状态码各有各的"下一步":400 = 名字不合法(改个名字),404 = 目录/文档不存在
+    (刷新一下),409 = 状态冲突(重名 / 目录里还有文档)。都回 400 的话,前端只能显示
+    一句笼统的错误,而用户要猜是自己填错了还是别人先占了。
+    """
+    from project_rag.application.folders import FolderExists, FolderNotEmpty
+
+    if isinstance(exc, FolderNotEmpty):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, FolderExists):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    raise exc
+
+
+def _create_folder(deps: Deps, request: Any) -> Any:
+    """输入:依赖 + 请求体。行为:建目录。输出:``Folder``。名字/重名的错由用例层抛。"""
+    from project_rag.application.folders import create_folder
+
+    return create_folder(
+        _factory(deps, "document_store_factory"), request.name, request.description
+    )
+
+
+def _rename_folder(
+    deps: Deps, folder_id: str, *, name: str | None, description: str | None
+) -> Any:
+    """输入:依赖 + 目录 ID + 两个可选字段。行为:改名/改说明。输出:``Folder``。"""
+    from project_rag.application.folders import rename_folder
+
+    return rename_folder(
+        _factory(deps, "document_store_factory"),
+        folder_id,
+        name=name,
+        description=description,
+    )
+
+
+def _delete_folder(deps: Deps, access: AccessContext, folder_id: str) -> int:
+    """输入:依赖 + 可见范围 + 目录 ID。行为:空的才删。输出:删除条数。
+
+    份数从**同一份目录视图**里数(见 ``_folder_views``)—— 让适配器自己再查一遍
+    会得到第二个数,而"数出来是 0、删的时候不是"之间正好够一次上传落进来。
+    """
+    from project_rag.application.folders import delete_folder
+
+    match = next(
+        (view for view in _folder_views(deps, access) if view.folder_id == folder_id), None
+    )
+    # 找不到就给 0 份:删除是**幂等**的(与删文档同一条口径),重复点不该报错。
+    # `unfiled` 的拒绝发生在用例层(它在任何视图里都能找到,但不是真目录)。
+    return delete_folder(
+        _factory(deps, "document_store_factory"),
+        folder_id,
+        documents=0 if match is None else match.documents,
+    )
+
+
+def _move_document(deps: Deps, document_id: str, folder_id: str) -> None:
+    """输入:依赖 + 文档 ID + 目标目录。行为:改归属。输出:无。"""
+    from project_rag.application.folders import move_document
+
+    move_document(_factory(deps, "document_store_factory"), document_id, folder_id)
+
+
+def _folder_row(deps: Deps, access: AccessContext, folder_id: str) -> FolderOut:
+    """输入:依赖 + 可见范围 + 目录 ID。行为:取**聚合后**的那一格(计数不是零)。输出:``FolderOut``。
+
+    新建/改名之后要回一份带读数的目录:回一份计数全 0 的,前端刷新前会显示"0 份"。
+    """
+    match = next(
+        (view for view in _folder_views(deps, access) if view.folder_id == folder_id), None
+    )
+    if match is None:
+        raise _no_such_folder(folder_id)
+    return _folder_out(match)
 
 
 def _restricted_documents(deps: Deps) -> frozenset[str]:
@@ -1349,6 +1651,10 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         _logger.warning("会话历史表未就绪(建表失败):%s", conversation_problem)
     # 认证:这个签名就是"生产路径必然开着、只有注入式测试才是 None"的那一处
     auth = Authenticator(_optional_factory(deps, "auth_store_factory"))
+    # 验证码:存放要**一个进程一份**(票据回到同一实例才能取出答案),所以在建应用时就实例化;
+    # 渲染器无状态,但同样只取一次。两者都没装配 = 登录/注册只能靠限流。
+    captcha_store = _optional_factory(deps, "captcha_store_factory")
+    captcha_renderer = _optional_factory(deps, "captcha_renderer_factory")
     # 限流计数器**从组合根来**(Redis 或内存,见 cli/deps.py 的 `_rate_limiter`);
     # 没装配 = 不限流(与其它工厂同一条口径,`build_real_deps` 永远接上)。
     limiter = _optional_factory(deps, "rate_limiter_factory")
@@ -1460,6 +1766,12 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             # 前端因此不必写死一份"1h/6h/24h/7d/30d"(那种抄写迟早与后端漂开)。
             metrics=_metrics_capabilities(),
             roles=list(USER_ROLES),
+            registration=RegistrationCapabilitiesOut(
+                enabled=settings.api.registration.enabled and auth.enabled,
+                captcha_required=settings.api.captcha.enabled,
+                invite_required=bool(settings.api.registration.invite_code),
+                min_password_chars=settings.api.registration.min_password_chars,
+            ),
         )
 
     @app.get("/api/v1/sessions", response_model=SessionsOut)
@@ -1515,12 +1827,123 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             ]
         )
 
+    # ── 一级目录:知识库的两层结构 ──────────────────────────────────────────────
+    # 读那几个是 ``require_knowledge``(员工要知道自己能检索的东西分在哪几格);
+    # 建/改名/删/挪文档是 ``require_admin``(与上传、删除同一条线)。
+    @app.get("/api/v1/folders", response_model=FoldersOut)
+    async def folders(user: User | None = Depends(auth.user)) -> FoldersOut:
+        """全部目录 + 未分类那一格 + 汇总。**员工也能看**(与清单同一条口径)。
+
+        每格带的是**对账之后**的读数(份数 / 库内块数 / 占用 / 需要处理的份数):
+        让目录另查一次库,两个页面上的"共 N 份"就会在两次点击之间对不上。
+        """
+        auth.require_knowledge(user)
+        access = await _call(_access, deps, user)
+        return await _call(_folders, deps, access)
+
+    @app.post("/api/v1/folders", response_model=FolderOut, status_code=201)
+    async def create_folder(
+        request: CreateFolderRequest, user: User | None = Depends(auth.user)
+    ) -> FolderOut:
+        """新建一个一级目录。需要管理员。
+
+        名字规则在 ``domain/documents.check_folder_name``(命令行 ``ingest --folder``
+        与这里共用一处):空名、超长、带 ``/`` 或控制字符、以及保留名 ``未分类`` 都当场 400。
+        重名 409 —— 目录名是命令行解析的键,两个同名目录会让"入到哪个目录"变成掷硬币。
+        """
+        auth.require_admin(user)
+        access = await _call(_access, deps, user)
+        try:
+            folder = await _call(_create_folder, deps, request)
+        except Exception as exc:  # noqa: BLE001 - 翻成 400/409:话术见 _folder_error
+            raise _folder_error(exc) from exc
+        return await _call(_folder_row, deps, access, folder.folder_id)
+
+    @app.get("/api/v1/folders/{folder_id}", response_model=FolderDetailOut)
+    async def folder_detail(
+        folder_id: str, user: User | None = Depends(auth.user)
+    ) -> FolderDetailOut:
+        """一个目录 + 它里面的文档 + 这份清单的汇总(**一次往返**,二级页面只发这一条)。
+
+        ``unfiled`` 是未分类那一格的保留 ID(库里存空串,见 ``domain/documents.py``)。
+        目录不承载可见范围:看不见的文档不会出现在 ``documents`` 里,计数也按看得见的算。
+        """
+        auth.require_knowledge(user)
+        access = await _call(_access, deps, user)
+        return await _call(_folder_detail, deps, access, folder_id)
+
+    @app.patch("/api/v1/folders/{folder_id}", response_model=FolderOut)
+    async def update_folder(
+        folder_id: str,
+        request: UpdateFolderRequest,
+        user: User | None = Depends(auth.user),
+    ) -> FolderOut:
+        """改名 / 改说明。需要管理员。**改名不改 ID** —— 否则目录里的文档会全部脱钩。
+
+        两个字段都是可选的:给哪个改哪个。``description`` 给空串 = 清空说明,
+        不给 = 不动(这两件事在 pydantic 里分得清,见 ``UpdateFolderRequest``)。
+        """
+        auth.require_admin(user)
+        access = await _call(_access, deps, user)
+        try:
+            await _call(
+                _rename_folder,
+                deps,
+                folder_id,
+                name=request.name,
+                description=request.description,
+            )
+        except Exception as exc:  # noqa: BLE001 - 翻成 400/404/409
+            raise _folder_error(exc) from exc
+        return await _call(_folder_row, deps, access, folder_id)
+
+    @app.delete("/api/v1/folders/{folder_id}", response_model=DeletedFolderOut)
+    async def delete_folder(
+        folder_id: str, user: User | None = Depends(auth.user)
+    ) -> DeletedFolderOut:
+        """删一个**空**目录。需要管理员。
+
+        **删目录不删文档**:目录里还有文档时回 409 并点出份数 —— 一次误点就清空一整格
+        是不可逆的,而这个操作长得太像"删掉这一格"。空的目录随便删(幂等:
+        不存在时回 ``deleted=0``)。
+        """
+        auth.require_admin(user)
+        access = await _call(_access, deps, user)
+        try:
+            deleted = await _call(_delete_folder, deps, access, folder_id)
+        except Exception as exc:  # noqa: BLE001 - 翻成 400/404/409
+            raise _folder_error(exc) from exc
+        return DeletedFolderOut(folder_id=folder_id, deleted=deleted)
+
+    @app.patch("/api/v1/documents/{document_id}", response_model=DocumentFolderOut)
+    async def move_document(
+        document_id: str,
+        request: MoveDocumentRequest,
+        user: User | None = Depends(auth.user),
+    ) -> DocumentFolderOut:
+        """把一份文档挪到另一个目录(``folder_id: ""`` = 挪回未分类)。需要管理员。
+
+        **只动归属,不动内容**:不重切、不重灌、块 id 一个都不变 —— 所以挪动是毫秒级的,
+        而且不会让历史引用失效。**未登记的文件挪不了**:它没有登记行,没有东西可写
+        (那种文件在清单上是只读的,先 ``project-rag ingest`` 把它登记进来)。
+        """
+        auth.require_admin(user)
+        try:
+            await _call(_move_document, deps, document_id, request.folder_id)
+        except Exception as exc:  # noqa: BLE001 - 翻成 400/404
+            raise _folder_error(exc) from exc
+        return DocumentFolderOut(document_id=document_id, folder=request.folder_id)
+
     @app.post("/api/v1/documents", response_model=DocumentOut, status_code=202)
     async def upload_document(
         background: BackgroundTasks,
         request: Request,
         user: User | None = Depends(auth.user),
         filename: str = Query(..., description="原文件名(含后缀);文件本身走请求体"),
+        folder: str = Query(
+            default="",
+            description="目标目录 ID(空 = 未分类;`unfiled` 也认)。目录必须先存在",
+        ),
     ) -> DocumentOut:
         """上传一份文档并**异步**入库。需要管理员。返回 202 + 一条 ``pending`` 记录。
 
@@ -1532,6 +1955,9 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
         调用姿势(前端):``fetch("/api/v1/documents?filename=" + encodeURIComponent(file.name),
         {method: "POST", headers: {Authorization: "Bearer " + token}, body: file})``
+
+        ``folder`` 是**这一批要进的那一格**(二级页面把当前目录带上)。目录不存在时 404 ——
+        不自动新建:名字写错一个字的后果不该是"多出一个目录",而应该是当场被看见。
         """
         # 限流在鉴权**之前**:未认证的洪水(401 也是流量)同样要过闸,
         # 那时按来源 IP 记;认证过了就按账号记(同一个办公室不会互相挤占额度)。
@@ -1554,21 +1980,47 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                 detail=f"不支持的后缀 {suffix!r};支持 {'/'.join(supported)}",
             )
 
+        # **目录先验,再收字节**:目录不存在时现在就把 404 说清,而不是把文件收完
+        # 落盘、再回一个 404 —— 那样上传目录里会多出一份没人登记的孤儿文件。
+        from project_rag.application.documents import register_document
+        from project_rag.domain.documents import UNFILED, UNFILED_ID
+
+        target_folder = UNFILED if folder in ("", UNFILED_ID) else folder
+        store = _factory(deps, "document_store_factory")
+        if target_folder != UNFILED and store.get_folder(target_folder) is None:
+            raise _no_such_folder(target_folder)
+
+        # **同名文件不能换目录**:``document_id`` 就是文件名,而删块/挪目录/幂等清理都按这一个键 ——
+        # 两个目录各有一份同名文件时它们会互相删对方的块。同一目录重传是覆盖(正常用法),
+        # 换目录当场 409 并点名那一份在哪。这一条也在收字节之前判(不留孤儿文件)。
+        existing = store.get(raw_name)
+        if existing is not None and existing.folder != target_folder:
+            holder = store.get_folder(existing.folder) if existing.folder else None
+            where = "未分类" if holder is None and not existing.folder else (
+                holder.name if holder is not None else "另一个目录"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"同名文档已在目录「{where}」里({raw_name})—— 文档 ID 就是文件名,"
+                    "两个目录不能各有一份。先改名,或把那一份删掉再传"
+                ),
+            )
+
         target = _uploads_dir() / raw_name
         size = await _stream_to_file(
             request, target, settings.api.max_upload_mb * 1024 * 1024
         )
 
-        from project_rag.application.documents import register_document
-
         record = await _call(
             register_document,
-            _factory(deps, "document_store_factory"),
+            store,
             # source 用**装载器会用的那个标签**(上传目录名):否则 /api/v1/sources 显示 "uploads"
             # 而登记表写 "upload",同一批文档两个来源名。
             source=_uploads_dir().name,
             filename=raw_name,
             size_bytes=size,
+            folder=target_folder,
         )
         background.add_task(_run_ingest, deps, record, target)
         # 刚上传的这一份:pending / 文件刚落盘(大小已知)/ 库里当然还没有它的块。
@@ -1585,12 +2037,16 @@ def create_app(deps: Deps | None = None) -> FastAPI:
             on_disk=True,
             created_at=record.created_at,
             error=record.error,
+            folder=record.folder,
             searchable=False,
             indexed_chunks=0,
         )
 
     @app.get("/api/v1/documents", response_model=DocumentsOut)
-    async def documents(user: User | None = Depends(auth.user)) -> DocumentsOut:
+    async def documents(
+        folder: str = Query(default="", description="只看某一格:`{folder_id}` 或 `unfiled`;空 = 全部"),
+        user: User | None = Depends(auth.user),
+    ) -> DocumentsOut:
         """库里有哪些文档 —— **登记表 + 磁盘 + 向量库三处对账后的实时视图**。
 
         每一行带 ``state``:三处一致是 ``ok``,不一致是那四种之一(``changed`` /
@@ -1605,7 +2061,7 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         """
         auth.require_knowledge(user)
         access = await _call(_access, deps, user)
-        return await _call(_documents, deps, access)
+        return await _call(_documents, deps, access, folder)
 
     @app.delete("/api/v1/documents/{document_id}", response_model=DeletedDocumentOut)
     async def delete_document(
@@ -1831,6 +2287,96 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         auth.require_admin(user)
         return await _call(_set_document_acl, deps, document_id, request)
 
+    @app.get("/api/v1/auth/captcha", response_model=CaptchaOut)
+    async def auth_captcha(http_request: Request) -> CaptchaOut:
+        """发一张图形验证码。公开接口,按 IP 限流(与登录共用一档)。"""
+        if not settings.api.captcha.enabled:
+            raise HTTPException(status_code=404, detail="这个部署没开图形验证码")
+        if captcha_store is None or captcha_renderer is None:
+            raise HTTPException(status_code=503, detail="验证码没装配:检查 build_real_deps")
+        _enforce_rate_limit(
+            limiter,
+            "captcha",
+            _client_key(http_request),
+            settings.api.rate_limit.login,
+            float(settings.api.rate_limit.window_s),
+        )
+        challenge = await _call(
+            issue_captcha,
+            captcha_renderer,
+            captcha_store,
+            ttl_s=settings.api.captcha.ttl_s,
+            length=settings.api.captcha.length,
+        )
+        return CaptchaOut(
+            ticket=challenge.ticket, image=challenge.image, expires_in=challenge.expires_in
+        )
+
+    @app.post("/api/v1/auth/register", response_model=LoginOut, status_code=201)
+    async def auth_register(request: RegisterRequest, http_request: Request) -> LoginOut:
+        """自助注册:验证码 + 口令策略 → 建号 → 直接签发令牌(省一次登录)。
+
+        角色固定 ``employee``(请求体里没有 role)。关闭自助注册 → 403;
+        邀请码不对 → 403;验证码 / 口令不合规 → 400。
+        """
+        if not settings.api.registration.enabled:
+            raise HTTPException(
+                status_code=403, detail="这个部署没开自助注册,请联系管理员建号"
+            )
+        _enforce_rate_limit(
+            limiter,
+            "register",
+            _client_key(http_request),
+            settings.api.rate_limit.login,
+            float(settings.api.rate_limit.window_s),
+        )
+        if settings.api.captcha.enabled:
+            if captcha_store is None:
+                raise HTTPException(status_code=503, detail="验证码没装配:检查 build_real_deps")
+            try:
+                verify_captcha(
+                    captcha_store,
+                    ticket=request.captcha_ticket,
+                    answer=request.captcha_answer,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        expected_invite = settings.api.registration.invite_code
+        if expected_invite and request.invite_code.strip() != expected_invite:
+            raise HTTPException(status_code=403, detail="邀请码不对")
+        token, user = await auth.register(
+            username=request.username,
+            password=request.password,
+            min_password_chars=settings.api.registration.min_password_chars,
+        )
+        _logger.info("自助注册成功: %s", user.username)
+        return LoginOut(
+            token=token,
+            username=user.username,
+            role=user.role,
+            expires_in=TOKEN_TTL_SECONDS,
+        )
+
+    @app.post("/api/v1/auth/password", response_model=LoginOut)
+    async def auth_change_password(
+        request: ChangePasswordRequest, user: User | None = Depends(auth.user)
+    ) -> LoginOut:
+        """改密:成功即**撤销该用户全部旧令牌**,并给当前设备发一枚新令牌。
+
+        于是其它设备下次请求就 401(改密即踢下线),当前设备不用重新登录。
+        """
+        if user is None:
+            raise HTTPException(status_code=503, detail="没有接上认证存储")
+        token = await auth.change_password(
+            username=user.username,
+            old_password=request.old_password,
+            new_password=request.new_password,
+            min_password_chars=settings.api.registration.min_password_chars,
+        )
+        return LoginOut(
+            token=token, username=user.username, role=user.role, expires_in=TOKEN_TTL_SECONDS
+        )
+
     @app.post("/api/v1/auth/login", response_model=LoginOut)
     async def login(request: LoginRequest, http_request: Request) -> LoginOut:
         """用账号密码换一个 Bearer 令牌。失败一律 401 + 同一句话(防用户名枚举)。
@@ -2003,6 +2549,8 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         # 可见范围:一次算好,循环里每次提问复用 —— 规则在连接期间变了也不会读到半新半旧的
         # 两个状态(要立刻生效就重连;这一点写在 API.md 里)。
         ws_access = await _call(_access, deps, ws_user)
+        # 签名器每条连接只取一次:oss2 的 import 与 Bucket 构造不该落在每一帧上。
+        ws_signer = await _call(_image_signer, deps)
         try:
             while True:
                 try:
@@ -2087,7 +2635,9 @@ def create_app(deps: Deps | None = None) -> FastAPI:
 
                 events = await _call(_stream_events, deps, request, ws_access)
                 async for event in _in_thread(events):
-                    await websocket.send_json(_frame(event, request.session_id))
+                    await websocket.send_json(
+                        _frame(event, request.session_id, ws_signer)
+                    )
         except WebSocketDisconnect:
             _logger.debug("客户端断开 WebSocket")
         except Exception as exc:  # noqa: BLE001 - 连接层的兜底:短消息回前端,细节进日志
@@ -2204,6 +2754,9 @@ def run() -> None:
     _warn_wide_cors(settings)
     # 依赖只装配一次:预热与 create_app 用同一份,免得建出两套单例缓存
     deps = build_real_deps()
+    # 语料目录 → 一级目录(**只在进程入口做**):create_app 会被验收脚本反复调用,
+    # 在那里写库会把假件的库塞满真目录。
+    _sync_folders(deps)
     if settings.api.warmup:
         _warmup(deps)
     # 地址走配置:类默认仍是 0.0.0.0:8080

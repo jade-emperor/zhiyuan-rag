@@ -91,6 +91,20 @@ export async function loadMe(): Promise<void> {
   }
 }
 
+/** 注册/改密成功后把令牌落到本地并刷新「我是谁」。 */
+export async function setSession(value: string, username: string): Promise<void> {
+  setToken(value)
+  setStoredUsername(username)
+  state.username = username
+  await loadMe()
+}
+
+/** 改密成功 → 服务端已撤销全部旧令牌并下发新令牌,本地换掉即可继续用。 */
+export async function changePassword(oldPassword: string, newPassword: string): Promise<void> {
+  const result = await api.changePassword(oldPassword, newPassword)
+  await setSession(result.token, result.username)
+}
+
 export function clearAuth(): void {
   setToken(null)
   setStoredUsername(null)

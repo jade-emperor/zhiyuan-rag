@@ -155,17 +155,38 @@ def _usage_of(chunk: object, fallback_model: str) -> LlmUsage | None:
     )
 
 
+def _content_of(message: ChatMessage) -> str | list[dict[str, Any]]:
+    """输入:领域消息。行为:有图时转成 OpenAI 风格的多模态 content 列表。输出:字符串或内容块列表。
+
+    **没有图时必须原样返回字符串**:纯文本路径的提示词与加图片之前逐字节一致
+    (提示词契约按字符串比)。有图时文字放第一块,图片按顺序跟在后面 ——
+    模型看到的顺序就是调用方拼好的引用顺序。
+    """
+    if not message.images:
+        return message.content
+    return [
+        {"type": "text", "text": message.content},
+        *[
+            {"type": "image_url", "image_url": {"url": url}}
+            for url in message.images
+        ],
+    ]
+
+
 def to_sdk_messages(messages: Sequence[ChatMessage]) -> list:
     """
     将领域消息 -> langchain 需要的消息。
 
     转换只属于适配器:domain 里绝不写 to_langchain(),否则依赖方向就反了。
 
-    输入:领域消息序列[领域值对象中的role,content]
-    行为:按 role 分派,转成对应的 langchain 消息类。
+    输入:领域消息序列[领域值对象中的role,content,images]
+    行为:按 role 分派,转成对应的 langchain 消息类;有图时 content 用多模态列表。
     输出:langchain 消息列表[SystemMessage/HumanMessage/AIMessage(content)]
     """
-    return [_LANGCHAIN_MESSAGE[m.role](content=m.content) for m in messages]
+    return [
+        _LANGCHAIN_MESSAGE[m.role](content=_content_of(m))
+        for m in messages
+    ]
 
 
 class DeepSeekLLM(LLMClient):

@@ -35,7 +35,9 @@ import { capabilitiesState, loadCapabilities } from './stores/capabilities'
 import AccountsView from './views/AccountsView.vue'
 import ChatView from './views/ChatView.vue'
 import LoginView from './views/LoginView.vue'
+import RegisterView from './views/RegisterView.vue'
 import MetricsView from './views/MetricsView.vue'
+import FolderView from './views/FolderView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
 
 /** 一页要的那个能力(与 `stores/auth.ts` 的三个 computed 一一对应)。 */
@@ -46,12 +48,37 @@ export const router = createRouter({
   routes: [
     { path: '/', redirect: '/chat' },
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/register', name: 'register', component: RegisterView },
     { path: '/chat', name: 'chat', component: ChatView, meta: { needs: 'knowledge' } },
     { path: '/knowledge', name: 'knowledge', component: KnowledgeView, meta: { needs: 'manage' } },
+    // 二级页面:**一个目录里的文档**。`unfiled` 是未分类那一格的保留 ID(它也是目录)。
+    {
+      path: '/knowledge/:folder',
+      name: 'folder',
+      component: FolderView,
+      meta: { needs: 'manage' },
+    },
     { path: '/reports', name: 'reports', component: MetricsView, meta: { needs: 'reports' } },
     { path: '/accounts', name: 'accounts', component: AccountsView, meta: { needs: 'manage' } },
     { path: '/:rest(.*)', redirect: '/chat' },
   ],
+})
+
+/** 路由名 → 页面标题。写成一张表,新增页面时不会漏掉 document.title。 */
+const TITLES: Record<string, string> = {
+  login: '登录',
+  register: '注册',
+  chat: '对话',
+  knowledge: '知识库',
+  folder: '知识库',
+  reports: '报表',
+  accounts: '账号与权限',
+}
+
+router.afterEach((to) => {
+  const name = typeof to.name === 'string' ? to.name : ''
+  const label = TITLES[name]
+  document.title = label === undefined ? 'RAG Assistant' : `${label} · RAG Assistant`
 })
 
 const NEEDS: Record<Need, () => boolean> = {
@@ -74,7 +101,7 @@ export function landingRoute() {
 router.beforeEach(async (to) => {
   const auth = authState()
   if (!auth.ready) await loadMe()
-  if (to.name === 'login') return true
+  if (to.name === 'login' || to.name === 'register') return true
   if (auth.user === null) return { name: 'login', query: { next: to.fullPath } }
   const need = to.meta.needs as Need | undefined
   if (need !== undefined && !NEEDS[need]()) return landingRoute()

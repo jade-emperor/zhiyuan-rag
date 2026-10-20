@@ -10,27 +10,23 @@
  *    也不能同时给:两个真值来源必然打架)。给用户一个调了不生效的滑条比不给他调更糟;
  * 3. **模型与温度是只读的**:它们是服务端启动期配置,这里如实显示"现在用的是什么"。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 
-import * as api from '../api/endpoints'
 import type { FusionMode, RetrievalMode } from '../api/types'
 import { capabilitiesState } from '../stores/capabilities'
 import { limits, paramsState, persist, restoreDefaults, weightsOk } from '../stores/params'
+import { loadSources, sourcesState } from '../stores/sources'
+
+/** embedded = 放进右侧抽屉时用自己的容器样式（不再占 320px 固定栏）。 */
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 
 const params = paramsState()
 const caps = capabilitiesState()
+const sources = sourcesState()
 
-const sources = ref<string[]>([])
-const sourcesError = ref('')
-
-onMounted(async () => {
-  try {
-    // 来源读的是**向量库里的真实来源**(不是配置白名单):要回答"我能检索哪几门课"
-    const result = await api.sources()
-    sources.value = result.sources
-  } catch (error) {
-    sourcesError.value = (error as Error).message
-  }
+onMounted(() => {
+  // 来源读的是**向量库里的真实来源**(不是配置白名单):要回答"我能检索哪几个库"
+  void loadSources()
 })
 
 const retrieval = computed(() => caps.data?.retrieval ?? null)
@@ -38,20 +34,15 @@ const models = computed(() => caps.data?.models ?? [])
 const modelSettings = computed(() => caps.data?.model_settings ?? null)
 
 const MODE_LABELS: Record<RetrievalMode, string> = {
-  vector: '向量检索',
-  keyword: '关键字检索(BM25)',
-  hybrid: '混合检索(两路)',
+  vector: '向量',
+  keyword: 'BM25',
+  hybrid: '混合',
 }
 const FUSION_LABELS: Record<FusionMode, string> = {
-  rrf: 'RRF —— 只用排名,免标定',
-  weighted: '加权 —— 各自 min-max 归一化后相加',
+  rrf: 'RRF',
+  weighted: '加权',
 }
 
-const weightHint = computed(() =>
-  params.fusion === 'weighted'
-    ? '两路分数先各自 min-max 归一化到 0~1,再按权重相加:能表达“哪一路更可信”。'
-    : 'RRF 下这两个是排名权重:权重越大,那一路的名次在融合里越占优。',
-)
 
 function touch(): void {
   persist()
@@ -59,24 +50,23 @@ function touch(): void {
 </script>
 
 <template>
-  <aside class="panel">
-    <h3>Configuration</h3>
+  <aside class="panel" :class="{ embedded: props.embedded }">
+    <h3 v-if="!props.embedded">检索</h3>
 
     <p v-if="caps.error" class="alert error">{{ caps.error }}</p>
 
     <section>
       <h4>知识库</h4>
-      <p class="faint">按来源过滤,一次只选一个。</p>
-      <p v-if="sourcesError" class="alert error small">{{ sourcesError }}</p>
+      <p v-if="sources.error" class="alert error small">{{ sources.error }}</p>
       <label class="option">
         <input v-model="params.source_filter" type="radio" :value="null" @change="touch" />
-        <span>全部来源</span>
+        <span>全部</span>
       </label>
-      <label v-for="name in sources" :key="name" class="option">
+      <label v-for="name in sources.items" :key="name" class="option">
         <input v-model="params.source_filter" type="radio" :value="name" @change="touch" />
         <span>{{ name }}</span>
       </label>
-      <p v-if="sources.length === 0 && !sourcesError" class="faint">向量库里还没有来源。</p>
+      <p v-if="sources.items.length === 0 && !sources.error" class="faint">暂无来源</p>
     </section>
 
     <section>
@@ -102,16 +92,16 @@ function touch(): void {
         </label>
 
         <div class="field">
-          <span>两路权重 <span class="faint">BM25 {{ params.bm25_weight.toFixed(2) }} / 向量 {{ params.vector_weight.toFixed(2) }}</span></span>
+          <span>权重 <span class="faint">BM25 {{ params.bm25_weight.toFixed(2) }} / 向量 {{ params.vector_weight.toFixed(2) }}</span></span>
           <input v-model.number="params.bm25_weight" type="range" min="0" max="1" step="0.05" @change="touch" />
           <input v-model.number="params.vector_weight" type="range" min="0" max="1" step="0.05" @change="touch" />
-          <p class="faint">{{ weightHint }}</p>
-          <p v-if="!weightsOk()" class="alert error">两路权重不能同时为 0:那等于什么都不检索。</p>
+
+          <p v-if="!weightsOk()" class="alert error">权重不能同时为 0</p>
         </div>
       </template>
 
       <label class="field">
-        <span>召回条数 k <span class="faint">每一路各取几条</span></span>
+        <span>k</span>
         <input
           v-model.number="params.k"
           type="number"
@@ -122,7 +112,7 @@ function touch(): void {
       </label>
 
       <label class="field">
-        <span>引用块数 <span class="faint">最多几条父块进上下文</span></span>
+        <span>上下文</span>
         <input
           v-model.number="params.max_context"
           type="number"
@@ -139,26 +129,20 @@ function touch(): void {
           :disabled="retrieval !== null && !retrieval.rerank_available"
           @change="touch"
         />
-        <span>
-          重排
-          <span class="faint">
-            ({{ retrieval?.rerank_available === false ? '这个部署没装重排器' : 'CrossEncoder 精排,更准但更慢' }})
-          </span>
-        </span>
+        <span :title="retrieval?.rerank_available === false ? '未安装重排器' : ''">重排</span>
       </label>
 
       <button class="ghost small" type="button" @click="restoreDefaults(); touch()">恢复默认</button>
     </section>
 
     <section>
-      <h4>模型设置</h4>
+      <h4>模型</h4>
       <label class="field">
         <span>模型</span>
         <select :value="models.find((m) => m.default)?.id ?? ''" disabled>
           <option v-for="model in models" :key="model.id" :value="model.id">{{ model.label }}</option>
         </select>
       </label>
-      <p class="faint">模型由服务端配置决定(改 config.yaml 后重启生效)。</p>
 
       <div class="field">
         <span>Temperature <span class="faint">{{ modelSettings?.temperature ?? '—' }}</span></span>
@@ -167,7 +151,6 @@ function touch(): void {
       <div class="field">
         <span>思考模式 <span class="faint">{{ modelSettings?.thinking ?? '—' }}</span></span>
       </div>
-      <p class="faint">这两项由服务端配置决定,界面上不可改。</p>
     </section>
   </aside>
 </template>
@@ -184,6 +167,13 @@ function touch(): void {
   flex-direction: column;
   gap: 14px;
   min-height: 0;
+}
+
+.panel.embedded {
+  width: 100%;
+  border-left: none;
+  padding: 0;
+  background: transparent;
 }
 
 h3 {

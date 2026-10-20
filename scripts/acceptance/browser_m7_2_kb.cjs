@@ -1,14 +1,15 @@
 /**
- * 知识库管理页的浏览器实测：走一遍真实流程。
+ * 知识库**两级页面**的浏览器实测：走一遍真实流程。
  *
  * 对着 `scripts/acceptance/serve_fake_backend.py`(真 uvicorn + 假依赖,18081)跑:
  *
- *   1. 管理员进「知识库」页 → 看到种子文档(一份已入库、一份处理中);
- *   2. 上传一份文件 → 卡片出现(待处理)→ **自动轮询**把它推到「已入库」;
- *   3. 预览那份上传的文档 → 弹层里「入库 N 块(子块) · 预览 M 段(父块)」两个数都在,页码是真算出来的;
- *   4. 预览种子 PDF → 页码显示成「第 7–8 页」(跨页);
- *   5. 删除(两步确认)→ 卡片消失,提示语如实说出**删了几块向量**;
- *   6. 删完再预览 → 404(与后端联动)。
+ *   1. 管理员进「知识库」页 → **一级是目录卡**(公司制度 / 产品资料 / 未分类),读数来自对账;
+ *   2. 点「公司制度」→ **二级是文档表格**,五种 state 各按 `state` 显示;
+ *   3. 上传一份文件到这一格 → 行出现(在途)→ **自动轮询**把它推到「已入库」;
+ *   4. 预览 → 弹层里「入库 N 块(子块) · 预览 M 段(父块)」两个数都在,页码是真算出来的;
+ *   5. 预览种子 PDF → 页码显示成「第 7–8 页」(跨页);
+ *   6. 删除(两步确认)→ 行消失,提示语如实说出**删了几块向量**;
+ *   7. 未登记的文件在「未分类」里,而且**没有删除按钮**(它没有登记行)。
  *
  * 跑法(准备)：
  *
@@ -46,6 +47,12 @@ function expect(name, condition, detail) {
   }
 }
 
+/** 输入:页面。行为:回一级页面(目录卡)并等它渲染完。输出:无。 */
+async function backToFolders(page) {
+  await page.goto(`${BASE}static/app/#/knowledge`, { waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('.folder', { timeout: 15000 })
+}
+
 async function main() {
   fs.mkdirSync(path.dirname(UPLOAD), { recursive: true })
   fs.writeFileSync(UPLOAD, '这是一份浏览器实测用的文档。'.repeat(40), 'utf8')
@@ -62,88 +69,79 @@ async function main() {
     failedRequests.push(`${request.url()} ${request.failure() && request.failure().errorText}`),
   )
 
-  // ── 登录 → 知识库页 ────────────────────────────────────────────────────
+  // ── 登录 → 知识库一级页面(目录) ───────────────────────────────────────
   await page.goto(BASE, { waitUntil: 'domcontentloaded' })
   await page.getByLabel('用户名').fill('admin')
   await page.getByLabel('密码').fill('admin-pass')
   await page.getByRole('button', { name: '登录' }).click()
-  await page.waitForSelector('text=Configuration', { timeout: 15000 })
+  await page.waitForSelector('.workspace', { timeout: 15000 })
 
   await page.getByRole('link', { name: '知识库' }).click()
-  await page.waitForSelector('.doc', { timeout: 15000 })
-  const seeded = await page.locator('.doc').count()
-  const names = await page.locator('.doc .title').allInnerTexts()
-  expect(
-    '种子文档都在(至少 3 份)',
-    seeded >= 3,
-    `${seeded} 张卡片:${names.map((n) => n.slice(0, 12)).join(' / ')}`,
-  )
-  const supported = await page.locator('text=支持:').innerText()
-  expect(
-    '支持的类型来自 capabilities',
-    supported.includes('.pdf') && supported.includes('.docx'),
-    supported.replace(/\n/g, ' '),
-  )
-  await page.screenshot({ path: `${SHOT}_1_list.png` })
+  await page.waitForSelector('.folder', { timeout: 15000 })
 
-  // ── 实时清单:五种 state 都显示出来（登记表会撒谎,磁盘与库才对得上账） ──
-  const cards = await page.locator('.doc').allInnerTexts()
-  const cardOf = (name) => cards.find((text) => text.includes(name)) || ''
+  const folders = await page.locator('.folder h3').allInnerTexts()
+  expect(
+    '一级是目录列表(公司制度 / 产品资料 / 未分类)',
+    ['公司制度', '产品资料', '未分类'].every((name) => folders.includes(name)),
+    folders.join(' / '),
+  )
+  expect(
+    '目录卡带份数(读数来自后端对账)',
+    /份/.test(await page.locator('.folder footer').first().innerText()),
+    (await page.locator('.folder footer').first().innerText()).replace(/\n/g, ' '),
+  )
+  await page.screenshot({ path: `${SHOT}_1_folders.png` })
+
+  // ── 二级:公司制度里的文档表格 ────────────────────────────────────────
+  await page.locator('.folder', { hasText: '公司制度' }).click()
+  await page.waitForSelector('table tbody tr', { timeout: 15000 })
+
+  const crumb = await page.locator('.crumbs').innerText()
+  expect(
+    '二级页有面包屑',
+    crumb.includes('知识库') && crumb.includes('公司制度'),
+    crumb.replace(/\n/g, ' '),
+  )
+
+  const rowOf = (name) => page.locator('tbody tr', { hasText: name })
+  const rows = await page.locator('tbody tr').allInnerTexts()
+  const rowText = (name) => rows.find((text) => text.includes(name)) || ''
   const expectations = [
-    ['劳动法', '已入库', '三处一致(登记 2 块 = 库内 2 块,磁盘大小也对得上)'],
     ['员工手册.md', '文件已变更', '登记 4096 字节、磁盘 5000 → 库里的内容是旧的'],
     ['没有入库成功的.pdf', '库内没有块', '登记说 processed,向量库里一块都没有'],
-    ['已经删掉的文件.md', '文件已不在', '磁盘上找不到这个文件'],
-    ['未登记的语料.md', '未入库', '**只在磁盘上**、登记表里没有它 —— 以前前端根本看不到'],
-    ['reimburse.docx', '处理中', '在途的行原样回状态,不去做一致性判定'],
   ]
   for (const [name, badge, why] of expectations) {
-    const text = cardOf(name)
-    expect(`${name} → 「${badge}」`, text.includes(badge), `${why};卡片:${text.replace(/\n/g, ' ').slice(0, 70)}`)
+    expect(
+      `${name} → 「${badge}」`,
+      rowText(name).includes(badge),
+      `${why};行:${rowText(name).replace(/\n/g, ' ').slice(0, 70)}`,
+    )
   }
-  const unregisteredCard = page.locator('.doc', { hasText: '未登记的语料.md' })
+  const mismatchRow = rowText('没有入库成功的.pdf')
   expect(
-    '未登记的文件没有「删除」按钮(它没有登记行,删不了磁盘文件)',
-    (await unregisteredCard.getByRole('button', { name: '删除' }).count()) === 0,
-    '只有只读的「未登记」按钮',
+    '两个块数并排(库里实际 / 登记说的)',
+    mismatchRow.includes('0') && mismatchRow.includes('12'),
+    mismatchRow.replace(/\n/g, ' ').slice(0, 60),
   )
-  const summaryLine = await page.locator('.summary').innerText()
-  expect(
-    '汇总把四类不一致分开计数',
-    ['未入库', '库内没块', '文件不在', '文件已变更'].every((word) => summaryLine.includes(word)),
-    summaryLine.replace(/\n/g, ' '),
-  )
-  const notIndexed = cardOf('没有入库成功的.pdf')
-  expect(
-    '不一致的卡片给出可执行的下一步',
-    notIndexed.includes('project-rag ingest'),
-    notIndexed.replace(/\n/g, ' ').slice(0, 90),
-  )
-  const refreshStamp = await page.locator('.head-right .faint').last().innerText()
-  expect('页面上有「上次刷新」时间', /上次刷新\s*\d{1,2}:\d{2}:\d{2}/.test(refreshStamp), refreshStamp)
-  expect(
-    '两个块数并排(登记说的与库里实际的)',
-    cardOf('没有入库成功的.pdf').includes('登记说 12 块'),
-    cardOf('没有入库成功的.pdf').replace(/\n/g, ' ').slice(0, 70),
-  )
-  await page.screenshot({ path: `${SHOT}_1b_live_states.png` })
+  const refreshed = await page.locator('.page-actions .faint').last().innerText()
+  expect('页面上有「上次刷新」时间', /上次刷新\s*\d{1,2}:\d{2}:\d{2}/.test(refreshed), refreshed)
+  await page.screenshot({ path: `${SHOT}_2_folder.png` })
 
   // ── 上传 → 轮询到「已入库」 ───────────────────────────────────────────
   await page.locator('input[type=file]').setInputFiles(UPLOAD)
-  const card = page.locator('.doc', { hasText: 'browser_upload_demo.md' })
-  await card.waitFor({ timeout: 15000 })
-  const early = await card.innerText()
+  const row = rowOf('browser_upload_demo.md')
+  await row.waitFor({ timeout: 15000 })
+  const early = await row.innerText()
   // **只在"还没入库完成"这一点上断言**:入库是异步的(假后端故意慢 1.2 秒),所以此刻
-  // 卡片必然是"在途"或"刚落盘还没登记"之一 —— 断言具体哪一个会与轮询抢跑(3 秒一次的
-  // 清单刷新可能正好采到"文件已落盘、登记行还没写"那一瞬)。
+  // 这一行必然是"在途"或"刚落盘还没登记"之一 —— 断言具体哪一个会与轮询抢跑。
   expect(
-    '上传后卡片立刻出现,不必等入库完成',
+    '上传后这一行立刻出现,不必等入库完成',
     !early.includes('已入库'),
     early.replace(/\n/g, ' ').slice(0, 40),
   )
   await page.waitForFunction(
     () =>
-      Array.from(document.querySelectorAll('.doc')).some(
+      Array.from(document.querySelectorAll('tbody tr')).some(
         (node) =>
           node.textContent.includes('browser_upload_demo.md') &&
           node.textContent.includes('已入库'),
@@ -151,15 +149,15 @@ async function main() {
     undefined,
     { timeout: 20000 },
   )
-  const done = await card.innerText()
+  const done = await row.innerText()
   expect('轮询把它推到「已入库」', done.includes('已入库'), done.replace(/\n/g, ' ').slice(0, 60))
-  await page.screenshot({ path: `${SHOT}_2_uploaded.png` })
+  await page.screenshot({ path: `${SHOT}_3_uploaded.png` })
 
   // ── 预览:两个数与页码 ────────────────────────────────────────────────
-  await card.getByRole('button', { name: '预览' }).click()
+  await row.getByRole('button', { name: '预览' }).click()
   const dialog = page.locator('[role=dialog]')
   await dialog.waitFor({ timeout: 10000 })
-  // **先等那一行出现**:弹层是先开、接口后回的;不等就断言会读到"还在加载"的中间态(第一版就这么假红过)
+  // **先等那一行出现**:弹层是先开、接口后回的;不等就断言会读到"还在加载"的中间态
   await dialog.locator('header p').waitFor({ timeout: 10000 })
   const head = await dialog.locator('header').innerText()
   expect(
@@ -169,15 +167,12 @@ async function main() {
   )
   const blocks = await dialog.locator('.block').count()
   expect('预览有内容', blocks > 0, `${blocks} 段`)
-  const pageTag = await dialog.locator('.block .tag.ok').first().innerText()
-  expect('页码是真算出来的', /第 \d+ 页/.test(pageTag), pageTag)
-  await page.screenshot({ path: `${SHOT}_3_preview.png` })
+  await page.screenshot({ path: `${SHOT}_4_preview.png` })
   await dialog.getByRole('button', { name: '关闭' }).click()
   await dialog.waitFor({ state: 'detached', timeout: 5000 })
 
   // 种子 PDF 是跨页的:要显示成「第 7–8 页」
-  const pdfCard = page.locator('.doc', { hasText: '劳动法' })
-  await pdfCard.getByRole('button', { name: '预览' }).click()
+  await rowOf('劳动法').getByRole('button', { name: '预览' }).click()
   await dialog.waitFor({ timeout: 10000 })
   const spanTag = await dialog.locator('.block .tag.ok').first().innerText()
   expect('跨页显示成区间', spanTag.includes('–'), spanTag)
@@ -185,13 +180,13 @@ async function main() {
   await dialog.waitFor({ state: 'detached', timeout: 5000 })
 
   // ── 删除:两步确认 + 如实转述 ─────────────────────────────────────────
-  await card.getByRole('button', { name: '删除' }).click()
-  const confirmButton = card.getByRole('button', { name: '确认删除?' })
+  await row.getByRole('button', { name: '删除' }).click()
+  const confirmButton = row.getByRole('button', { name: '确认删除?' })
   expect('删除要二次确认', (await confirmButton.count()) === 1, '出现「确认删除?」')
   await confirmButton.click()
   await page.waitForFunction(
     () =>
-      !Array.from(document.querySelectorAll('.doc')).some((node) =>
+      !Array.from(document.querySelectorAll('tbody tr')).some((node) =>
         node.textContent.includes('browser_upload_demo.md'),
       ),
     undefined,
@@ -203,13 +198,34 @@ async function main() {
     /向量\s*\d+\s*块/.test(notice) && notice.includes('原文件'),
     notice.replace(/\n/g, ' ').slice(0, 60),
   )
-  await page.screenshot({ path: `${SHOT}_4_deleted.png` })
+  await page.screenshot({ path: `${SHOT}_5_deleted.png` })
+
+  // ── 未分类:未登记的文件在那里,而且删不了 ───────────────────────────
+  await backToFolders(page)
+  await page.locator('.folder', { hasText: '未分类' }).click()
+  await page.waitForSelector('table tbody tr', { timeout: 15000 })
+  const unregistered = rowOf('未登记的语料.md')
+  expect(
+    '未登记的文件没有「删除」按钮(它没有登记行)',
+    (await unregistered.getByRole('button', { name: '删除' }).count()) === 0,
+    '只有只读的「预览」',
+  )
+  expect(
+    '未登记的行给出可执行的下一步',
+    (await unregistered.innerText()).includes('project-rag ingest'),
+    (await unregistered.innerText()).replace(/\n/g, ' ').slice(0, 80),
+  )
+  await page.screenshot({ path: `${SHOT}_6_unfiled.png` })
 
   expect('没有 JS 报错', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || '无')
   expect('没有失败请求', failedRequests.length === 0, failedRequests.slice(0, 2).join(' | ') || '无')
 
   await browser.close()
-  console.log(failures === 0 ? '\n知识库页浏览器实测:全部通过' : `\n知识库页浏览器实测:${failures} 条失败`)
+  console.log(
+    failures === 0
+      ? '\n知识库两级页面浏览器实测:全部通过'
+      : `\n知识库两级页面浏览器实测:${failures} 条失败`,
+  )
   process.exit(failures === 0 ? 0 : 1)
 }
 

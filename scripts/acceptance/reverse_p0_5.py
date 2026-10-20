@@ -79,12 +79,14 @@ CASES: tuple[Case, ...] = (
     Case(
         title="RT-3  装载器不走 read_with_pages（区间表在装载那一步丢掉）",
         target=ADAPTERS / "document_loader.py",
+        # 锚点跟着变量改名走(图片模态那轮把 `reader` 改成了 `page_reader`,
+        # 因为它与 `read_with_assets` 那条路并存,叫 `reader` 会看岔)。
         old=(
-            "        reader = getattr(source, \"read_with_pages\", None)\n"
-            "        if reader is not None:\n"
-            "            text, pages = reader(file)\n"
-            "        else:\n"
-            "            text = source.read(file)\n"
+            "            page_reader = getattr(source, \"read_with_pages\", None)\n"
+            "            if page_reader is not None:\n"
+            "                text, pages = page_reader(file)\n"
+            "            else:\n"
+            "                text = source.read(file)\n"
         ),
         new="        text = source.read(file)\n",
         needle="装载器把区间表带进 Document",

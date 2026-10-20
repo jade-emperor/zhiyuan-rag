@@ -42,6 +42,19 @@ api:
     upload: 10
     login: 10
 
+  # 图形验证码。注册是无人值守入口,必须有;关掉它只剩限流(仅限纯内网部署)。
+  captcha:
+    enabled: true
+    ttl_s: 120
+    length: 4
+
+  # 员工自助注册。要审批制就 enabled: false,改由管理员 `project-rag user add` 建号;
+  # invite_code 非空时注册还要填邀请码。
+  registration:
+    enabled: true
+    invite_code: ""
+    min_password_chars: 10
+
 llm:
   model: deepseek-flash
   base_url: https://api.deepseek.com/v1
@@ -168,7 +181,9 @@ milvus:
   port: 10086
   # 只准填已存在的库。Milvus 不会自动建库,当前环境里只有 default
   database: default
-  collection: rag_chunks
+  # 图片模态上线后的新集合名。老 `rag_chunks` 没有 image_keys 列(schema 建集合时定格),
+  # 且图片 key 属于新增载荷 —— 按新 schema 重灌一份,老集合留着做回滚。
+  collection: rag_chunks_img_v1
   read_consistency: strong
   # 稠密向量的索引（**建集合那一刻定格**，改这里不会自动重排已有索引）。
   #   FLAT     = 暴力精确检索。结果可断言、小语料最稳；N 大时延迟线性涨。
@@ -180,6 +195,32 @@ milvus:
     type: IVF_FLAT
     nlist: 128      # 仅 IVF_FLAT 用：簇数
     nprobe: 16      # 仅 IVF_FLAT 用：检索探几个簇（取值越大越接近 FLAT）
+
+# 图片模态。**密钥不写在这里**:AccessKey 从 .env(或环境变量)读,
+# 这一段只放非敏感的策略与默认值。关掉时 PDF 仍走 PyMuPDF。
+images:
+  enabled: false        # 真开由 .env 的 RAG_IMAGES__ENABLED=true 覆盖
+  max_per_doc: 50
+  min_bytes: 2048
+  max_bytes: 10485760
+  allowed_types: image/jpeg,image/png,image/webp
+
+oss:
+  region: cn-guangzhou
+  prefix: rag/images
+  # signed = 后端签短链(浏览器/模型直连 OSS);proxy 尚未实现
+  url_mode: signed
+  sign_expires_s: 300
+  connect_timeout_s: 5
+  upload_timeout_s: 30
+  max_retries: 3
+
+mineru:
+  # compose 里的服务名是 mineru;手工跑宿主服务时改成 http://127.0.0.1:18082
+  base_url: http://mineru:8000
+  timeout_s: 3600  # 大 PDF 单份可能几十分钟;客户端别比服务端先超时
+  poll_interval_s: 2
+  cache_dir: data/mineru
 
 embedding:
   # 目录相对项目根;写绝对路径也认

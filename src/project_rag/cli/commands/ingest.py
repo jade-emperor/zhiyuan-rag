@@ -46,6 +46,12 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         help="每次嵌入的块数;不给就用 rag.ingest_batch_size(默认 64)",
     )
+    parser.add_argument(
+        "--folder",
+        default=None,
+        metavar="目录名",
+        help="入到哪一级目录(不存在就新建);不给就按文件在语料根下的一级目录",
+    )
     return parser
 
 
@@ -79,15 +85,29 @@ def run(args) -> int:
     from project_rag.adapters.chunker_recursive import ChineseRecursiveChunker
     from project_rag.adapters.document_loader import load_documents, supported_suffixes
     from project_rag.application import chunk_documents, ingest_documents
-    from project_rag.config import get_settings
+    from project_rag.config import get_settings, project_path
 
     settings = get_settings()
     path = _resolve(args.path)
+    corpus_dir = project_path(settings.api.corpus_dir)
+    deps = args.deps
 
     if not path.exists():
         print(f"路径不存在:{path}", file=sys.stderr)
         return 1
-    loaded = load_documents(path)
+    # 真入库走组合根装配的 loader(图片模态开启时是 MinerU + OSS);
+    # --dry-run 刻意不碰 OSS/服务,否则"只看切分"会变成一次外部写操作。
+    loader = load_documents
+    if not args.dry_run and deps is not None and deps.loader_factory is not None:
+        loader = deps.loader_factory()
+    # 语料根同时是"登记根"的判据(见 document_loader.registration_anchor):给了它,
+    # 从语料根灌与从子目录灌得到同一批 doc_id/source —— 重灌才真的幂等。
+    # 组合根装配的那个 loader 已经把语料根绑好了(它只收一个 path),别重复传。
+    loaded = (
+        load_documents(path, corpus_root=corpus_dir)
+        if loader is load_documents
+        else loader(path)
+    )
     # 两份「没进来」的清单都要报:少入库一份文档,不打印的话没人会发现
     for label, names in (("不认识的文件", loaded.skipped), ("没抽出文字", loaded.empty)):
         if names:
@@ -116,7 +136,9 @@ def run(args) -> int:
         print("\n--dry-run:识别到这个参数,直接退出,不进行下面的入库操作")
         return 0
 
-    deps = args.deps
+    if deps is None:  # --dry-run 之外的入口都必须带装配(见 cli/main.py)
+        print("没有依赖装配(deps 为空),无法真正入库", file=sys.stderr)
+        return 1
     missing = [name for name in _REQUIRED_FACTORIES if getattr(deps, name) is None]
     if missing:
         print(
@@ -190,14 +212,50 @@ def run(args) -> int:
         file.doc_id: file.size_bytes
         for file in list_files(root, suffixes=supported_suffixes())
     }
+    # ── 目录:默认按文件在语料根下的一级目录,`--folder` 可以显式指定 ─────────────
+    # 语料根自己**不是**一格(它是所有格的父亲),直接躺在根下的文件落未分类;
+    # 语料之外的路径(上传目录、临时目录)也落未分类 —— "从哪灌的"不该偷偷长出目录来。
+    from project_rag.application.folders import (
+        corpus_folder_of_source,
+        ensure_folder,
+        sync_corpus_folders,
+    )
+    from project_rag.domain.documents import UNFILED
+
+    store = deps.document_store_factory()
+    # 先把磁盘上的语料目录同步成一格一格(幂等):新加一个语料目录,不用先灌一遍才看得见
+    sync_corpus_folders(store, corpus_dir)
+
+    folders: dict[str, str] = {}
+    folder_names: set[str] = set()
+    if args.folder is not None:
+        chosen = ensure_folder(store, args.folder)
+        for document in documents:
+            folders[document.doc_id] = chosen.folder_id
+        folder_names.add(chosen.name)
+    else:
+        for document in documents:
+            name = corpus_folder_of_source(corpus_dir, document.source)
+            if name is None:
+                folders[document.doc_id] = UNFILED
+                continue
+            folder = ensure_folder(store, name)
+            folders[document.doc_id] = folder.folder_id
+            folder_names.add(folder.name)
+
     rows = register_ingested(
-        deps.document_store_factory(),
+        store,
         documents=documents,
         chunks=chunks,
         sizes=sizes,
         created_at=datetime.now().isoformat(timespec="seconds"),
+        folders=folders,
     )
-    print(f"已登记 {len(rows)} 份(状态 processed + 块数 + 字节数),知识库清单上现在看得到它们。")
+    where = "、".join(sorted(folder_names)) if folder_names else "未分类"
+    print(
+        f"已登记 {len(rows)} 份(状态 processed + 块数 + 字节数 + 目录「{where}」),"
+        "知识库清单上现在看得到它们。"
+    )
     unknown = [row.document_id for row in rows if row.size_bytes == 0]
     if unknown:
         print(

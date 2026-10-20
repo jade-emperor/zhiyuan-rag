@@ -551,6 +551,7 @@ def stream_rag(
     history: Sequence[ConversationTurn] = (),
     thinking: str | None = None,
     rewriter: QueryRewriter | None = None,
+    image_signer: Callable[[str], str] | None = None,
     timing: StreamTiming | None = None,
 ) -> Iterator[QaEvent]:
     """输入/输出同 ``_rag_frames``,额外做一件事:**计时并记一条 latency 日志**。
@@ -584,6 +585,7 @@ def stream_rag(
             history=history,
             timing=timing,
             rewriter=rewriter,
+            image_signer=image_signer,
         )
         return
     own = StreamTiming(label="rag", channel="rag", thinking=thinking)
@@ -599,9 +601,51 @@ def stream_rag(
             history=history,
             timing=own,
             rewriter=rewriter,
+            image_signer=image_signer,
         ),
         own,
     )
+
+
+# 一次回答最多附几张图给模型。图片会按 token 计费,也拖慢首字;
+# 3 张足够覆盖"答案主要依据的两三条资料",再多收益很低。
+_LLM_IMAGE_LIMIT = 3
+
+
+def _llm_images(
+    citations: Sequence[Citation],
+    signer: Callable[[str], str] | None,
+) -> tuple[tuple[str, ...], str]:
+    """输入:引用序列 + 图片签名器。行为:把前几条引用的图现签成 URL。输出:``(urls, 说明)``。
+
+    **只在真要调模型时签**:签名 URL 有有效期,提前签好放在状态里等于制造死链。
+    签名失败跳过这一张(记 WARNING),不让"图挂了"变成"答不出来"。
+    """
+    if signer is None:
+        return (), ""
+    urls: list[str] = []
+    notes: list[str] = []
+    for citation in citations:
+        if len(urls) >= _LLM_IMAGE_LIMIT:
+            break
+        count = 0
+        for key in citation.chunk.image_keys:
+            if len(urls) >= _LLM_IMAGE_LIMIT:
+                break
+            try:
+                url = signer(key)
+            except Exception as exc:  # noqa: BLE001 - 图片是增强,不拖垮回答
+                _logger.warning("给模型签名图片失败(key=%s):%s", key, exc)
+                continue
+            if not url:
+                continue
+            urls.append(url)
+            count += 1
+        if count:
+            notes.append(f"[{citation.index}] {count} 张")
+    if not urls:
+        return (), ""
+    return tuple(urls), "；".join(notes)
 
 
 def _rag_frames(
@@ -616,6 +660,7 @@ def _rag_frames(
     history: Sequence[ConversationTurn] = (),
     timing: StreamTiming,
     rewriter: QueryRewriter | None = None,
+    image_signer: Callable[[str], str] | None = None,
 ) -> Iterator[QaEvent]:
     """输入:问题 + 四个端口 + 可选的关键字索引/重排器 + 检索旋钮 + 可选的历史轮次 + 计时账本
     + 可选的查询改写端口。
@@ -679,11 +724,20 @@ def _rag_frames(
 
     yield QaEvent(kind="sources", citations=citations)
 
+    images, image_note = _llm_images(citations, image_signer)
     prompt = rag_answer_prompt(citations, query, history)
+    if image_note:
+        # 只有真的附了图才改提示词:纯文本路径的提示词必须与加图片之前逐字一致。
+        prompt += (
+            f"\n\n本次资料附图:{image_note}。图片按引用编号顺序附在消息里;"
+            "需要核对图表时结合对应 [n] 的文字说明,不要编造图中没有的信息。"
+        )
     timing.mark("llm_start")
     parts: list[str] = []
     reason: str | None = None
-    for delta in llm.stream([ChatMessage(role="user", content=prompt)]):
+    for delta in llm.stream(
+        [ChatMessage(role="user", content=prompt, images=images)]
+    ):
         if delta.last:
             reason = delta.finish_reason
         if delta.usage is not None:
@@ -738,6 +792,7 @@ def answer_rag(
     history: Sequence[ConversationTurn] = (),
     thinking: str | None = None,
     rewriter: QueryRewriter | None = None,
+    image_signer: Callable[[str], str] | None = None,
 ) -> RagAnswer:
     """输入/输出同 ``stream_rag``,只是把流**收拢**成一句答案。
 
@@ -756,6 +811,7 @@ def answer_rag(
             history=history,
             thinking=thinking,
             rewriter=rewriter,
+            image_signer=image_signer,
         )
     )
     return RagAnswer(

@@ -21,19 +21,10 @@
 #     -v "$PWD/logs:/app/logs" \
 #     project-rag:0.1.0
 #
-# 依赖分了两档:运行时(进这个镜像)与可选 `unstructured`(**不进**)—— 后者那一档里
-# `en-core-web-sm` 的 wheel 只有 GitHub 一个来源。加/减依赖见 pyproject.toml 的注释。
-#
-# 的两轮实测与根治(结论:**解析阶段不再碰 github**):
-#   ① 挪进 optional **并不等于**解析期不去取它 —— `uv sync --locked` 仍要那个 wheel 的
-#      **元数据**来校验锁(实测取一次:宿主 172s / 容器 186s,而 uv 默认超时 30s×3 → 46s 就失败)。
-#      于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步(同一天各一次)。
-#   ② 根治:wheel 的 METADATA 里**只有 Name/Version**(纯数据包,没有一条 Requires-Dist),
-#      所以在 pyproject 的 `[tool.uv] dependency-metadata` 里**静态声明**了它,并写进了
-#      `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked` 校验**零网络**(实测 0 秒)。
-#   ③ 仍然留着 `UV_HTTP_TIMEOUT=300`:首次 sync 时 uv 还会下载一次那个 wheel 做**哈希校验**
-#      (12MB,进缓存后不再下),这一次仍可能被慢网络拖死 —— 它是兜底,不是主修法。
-#      想连这一次都省掉:把 wheel 放进仓库、`[tool.uv.sources]` 指向本地文件(12MB 入库的取舍)。
+# 依赖只有一档:**运行时**。`unstructured` / `en-core-web-sm` 那一档已整块删除 ——
+# 它的 wheel 只有 GitHub 一个来源,uv 任何一次重新解析都要去取(实测 172s,默认 46s 放弃),
+# 于是 `docker build` 与日常 `uv run` 会随机死在网络上,而 `src/` 里 0 处 import 它。
+# 加依赖见 pyproject.toml 的注释;**别再把 direct-URL 依赖加回来**。
 #
 # 三个必须知道的事实:
 #
@@ -55,6 +46,21 @@
 # -----------------------------------------------------------------------------
 FROM python:3.13-slim AS builder
 
+# 国内构建优先走镜像源;要换回官方源就 `--build-arg DEBIAN_MIRROR=deb.debian.org` 覆盖。
+ARG DEBIAN_MIRROR=mirrors.aliyun.com
+
+# `oss2` 依赖 `crcmod`,而 crcmod 在 PyPI 只有 sdist(没有 manylinux wheel);
+# 它可选编译 C 扩展,但 setup.py 仍需要编译器。builder 里补 gcc,运行层不带它。
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list; \
+    fi; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 # uv 用 pip 装(源可用 --build-arg 覆盖),**故意不用**
 # `COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /bin/`:ghcr.io 在国内经常连不上,
 # 而这条链上只需要 `uv sync`(uvx 用不到);版本照样钉死(与本地开发同一条 0.12.11)。
@@ -67,13 +73,8 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_HTTP_TIMEOUT=300
 
-# UV_HTTP_TIMEOUT=300(默认 30)—— **兜底,不是主修法**。主修法是 pyproject 的
-# `[tool.uv] dependency-metadata`(静态声明那个 wheel 的元数据,已写进 uv.lock 的 [manifest]),
-# 它让**解析期**不再去 github;这里兜的是**首次 sync 那次哈希校验下载**(12MB,冷缓存才有)。
-#   为什么当初会死:uv 解析时要那个 wheel 的元数据才肯校验锁,而它 307 到
-#   release-assets.githubusercontent.com,实测宿主 172s / 容器 186s,30s × 3 次重试全超时 →
-#   `Failed to generate package metadata for en-core-web-sm==3.8.0`。
-#   300 是实测值的 1.6 倍余量;缓存挂载留着,第二次构建不必再付这笔时间。
+# UV_HTTP_TIMEOUT=300(默认 30):镜像要在国内网络上拉 torch 这类大包,30s 不够。
+# 这条只是**网络宽容度**,不是任何依赖的来源问题 —— 依赖全部来自 PyPI 镜像。
 
 WORKDIR /app
 
@@ -168,10 +169,7 @@ CMD ["project-rag-api"]
 #      老引擎会把 `--mount=type=cache` 当语法错误 —— 那时删掉这两个挂载即可,
 #      **不要**加回 `# syntax=docker/dockerfile:1.7`(那会多一次 registry 请求,见文件头)。
 #
-#   4) 构建期**不需要** ghcr.io(uv 用 pip 装);github.com 也**只在冷缓存首次构建时碰一次**
-#      —— 那一次是给 `en-core-web-sm` 的 wheel 做哈希校验(12MB,见 UV_HTTP_TIMEOUT 那段),
-# **解析期已经不碰了**(静态元数据,见文件头 那段)。github 完全不可达时,
-#      走文末第 1 条那条 `uv export` + `uv pip install` 的路(实测它不带那个包)。
+#   4) 构建期**不需要** ghcr.io，也**不需要** github.com(依赖全部来自 PyPI 镜像)。
 #      在能直连 ghcr 的机器上想换回官方镜像,把上面那两行 pip 换回
 #      `COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /bin/` 即可。
 # =============================================================================

@@ -62,11 +62,11 @@ git clone <repo-url> && cd project_rag
 uv sync                       # 建 .venv + 装依赖（含 torch，首次下载较久）
 ```
 
-依赖分两组：上面这条装的是**运行时**；另有一档可选的 `unstructured`（预留给 HTML / Excel / 扫描件
-OCR 那条路，见文末「已知边界」）。要它得显式点名：`uv sync --extra unstructured`。
-**它不进默认环境、也不进镜像** —— 那个包链上的 `en-core-web-sm` 只有 GitHub 一个下载源，
-留在运行时依赖里会让 `uv sync` / `docker build` 每次去 github.com 取一个产品路径根本不用的模型
-（`src/` 里 0 处 import）。理由与实测数字写在 `pyproject.toml` 的注释里。
+依赖只有**运行时**这一组。曾经可选的那档 `unstructured`（HTML / Excel / 扫描件 OCR）已整块删除：
+那一档把 `en-core-web-sm` 带进解析图，而它的 wheel 只有 GitHub 一个来源 —— 取一次实测 172s、
+uv 默认 46s 就放弃，于是 `uv run` 与 `docker build` 会随机超时（同一天各一次），而 `src/` 里
+0 处 import 它。要用时自己 `uv add --optional unstructured`，并先确认那个模型的来源可达。
+
 
 ### 2. 写 `.env`（密钥只在这里，不在仓库）
 
@@ -80,6 +80,34 @@ EOF
 
 配置优先级：**环境变量 > `.env` > `config/config.yaml`**（前缀 `RAG_`，嵌套层级用 `__`，
 例如 `RAG_FAQ__THRESHOLD=0.9`）。`config.yaml` 里不写任何密钥。
+
+要接**图片模态**（PDF 里的图 + MinerU 解析）再加这几行；不接就保持 `RAG_IMAGES__ENABLED=false`：
+
+```dotenv
+RAG_OSS__ACCESSKEY_ID=...
+RAG_OSS__ACCESSKEY_SECRET=...
+RAG_OSS__REGION=cn-guangzhou
+RAG_OSS__BUCKET=your-bucket
+# 本机/WSL 用公网 endpoint；同地域 ECS 才可用 -internal
+RAG_OSS__ENDPOINT=https://oss-cn-guangzhou.aliyuncs.com
+RAG_OSS__PREFIX=rag/images
+RAG_OSS__URL_MODE=signed          # 私有桶 + 临时 URL；不把 OSS 公开
+RAG_OSS__SIGN_EXPIRES_S=300
+
+RAG_IMAGES__ENABLED=true
+# 宿主 CLI 走 127.0.0.1:18082(compose 已把 mineru 的 8000 映射到宿主回环);
+# app 容器在 compose 里覆盖成 http://mineru:8000,不读这一行。
+RAG_MINERU__BASE_URL=http://127.0.0.1:18082
+RAG_MINERU__TOKEN=change-me
+```
+
+图片按**字节 SHA-256** 做对象 key（同一张图反复上传不会产生第二个对象），向量库只存
+`image_key`，出参/调模型前再签一个短 URL。RAM 用户至少需要 `oss:PutObject` 与
+`oss:GetObject`（HEAD 也走后者），资源限制到 `<bucket>/<prefix>/*`。
+
+`RAG_IMAGES__ENABLED=true` 时，容器部署要同时起 MinerU 那个 profile：
+`docker compose --profile images up -d --build`；否则上传会在“提交 MinerU 任务”那一步失败。
+不接图片就把它设回 `false`，普通 `docker compose up` 不受影响。
 
 ### 3. 起中间件
 
@@ -181,24 +209,30 @@ s = get_settings(); MySQLConversationStore(s.mysql, s.conversation).ensure_table
 CORPUS=data/corpus/bagu_ai_data        # ← 换成你的语料目录
 uv run project-rag ingest --path "$CORPUS" --dry-run   # 只打印父块/子块数与块长分布
 uv run project-rag ingest --path "$CORPUS"             # 真写 Milvus（幂等：按 doc_id 清旧块重灌）
+uv run project-rag ingest --path "$CORPUS" --folder 公司制度   # 入到指定目录（不存在就建）
 ```
 
 集合不存在会自动建；`--batch-size` 控制每次嵌入的块数（CPU 上大一点更划算）。
-**灌完它会把这一批登记回来**（状态 / 块数 / 磁盘字节数），所以知识库页上立刻看得到它们 ——
+**灌完它会把这一批登记回来**（状态 / 块数 / 磁盘字节数 / **目录**），所以知识库页上立刻看得到它们 ——
 以前 `ingest` 不写登记表，后端灌的语料在界面上永远是「未登记」。
+`--folder` 不给时按**文件在语料根下的一级目录**落格（`data/corpus/pdf_data/…` → `pdf`）：
+语料根下的每一级子目录就是一格，`data/corpus` 自己是"所有格的父亲"，不是一格；
+语料之外的路径（上传目录、临时目录）落**未分类**，不会凭空长出一个目录来。
+从语料根灌与从子目录灌给出同一批 `doc_id`，所以两种灌法互相幂等。
 
-**6.4 看/换/删集合**（现在每个集合多带一列 `page`，老集合不能写）
+**6.4 看/换/删集合**（现在每个集合多带 `page` 与 `image_keys` 两列，老集合不能写）
 
 ```bash
 uv run project-rag collections                          # 有哪些集合、块数 / page 列 / 稀疏列 / 索引类型 / 当前指向哪个
 uv run project-rag collections --reindex --yes           # 按 milvus.index.* 重建索引（FLAT ⇄ IVF_FLAT，数据不动）
 uv run project-rag sparse --yes                          # 按当前语料重算稀疏向量（keyword.backend=milvus 那一档）
-uv run project-rag drop --collection rag_chunks          # 默认只说不做：打印会删掉什么，然后退出码 1
-uv run project-rag drop --collection rag_chunks --yes     # 真删（不可恢复；语料还在磁盘上，重灌即可回来）
+uv run project-rag drop --collection rag_chunks_img_v1   # 默认只说不做：打印会删掉什么，然后退出码 1
+uv run project-rag drop --collection rag_chunks_img_v1 --yes  # 真删（语料还在磁盘上，重灌即可回来）
 ```
 
 切集合只改 config 里 `milvus.collection` 一行（或用 `RAG_MILVUS__COLLECTION` 临时覆盖）。
-**往没有 `page` 列的集合写会被当场拒收**（静默丢掉页码比报错糟得多），报错里会点名这三条路。
+**往没有 `page`/`image_keys` 列的旧集合写会被当场拒收**（静默丢掉页码/图片比报错糟得多），
+报错里会点名换新集合 / 原地重建两条路。图片模态上线后默认集合是 `rag_chunks_img_v1`。
 
 ### 7. 跑起来
 
@@ -241,7 +275,7 @@ uv run project-rag user add -u 你的名字 --role admin     # 命令行建号�
 按 `uv.lock` 装依赖，runtime 只带 `.venv` + 代码；非 root 跑，带 `/health` 探活）。**中间件不进这个镜像。**
 
 ```bash
-mkdir -p logs data/uploads          # 容器要写的两个目录（缺了 Docker 会建成 root 属主 → 写不进）
+mkdir -p logs data/uploads data/mineru   # 容器要写的三个目录（缺了 Docker 会建成 root 属主 → 写不进）
 docker compose up -d --build        # 一次起全套：中间件 + app（首次要构建镜像，最久）
 docker compose ps                   # app 那行要是 healthy（首次最多等 3 分钟：启动预热要加载 BGE-M3）
 curl http://localhost:8080/health
@@ -250,6 +284,13 @@ curl http://localhost:8080/health
 
 - **地址用服务名**：`standalone:19530` / `mysql:3306` / `redis:6379`。同一个 compose 网络里，
   既不需要 `host.docker.internal`，也不经过 1008x/1009x 那些宿主映射。
+- **图片模态多一个 `mineru` 服务**：它单独构建（`services/mineru/Dockerfile`，内含 MinerU 与模型依赖，
+  镜像很大），app 通过 `http://mineru:8000` 提交任务。它带 `profiles: ["images"]`，
+  默认的 `docker compose up` **不会**构建/启动它；要图片就：
+  `docker compose --profile images up -d --build`。不开图片时保持
+  `RAG_IMAGES__ENABLED=false`，只起 `standalone mysql redis app` 即可。
+  compose 里已给 MinerU 申请 GPU（`gpus: all` + `MINERU_DEVICE_MODE=cuda`）；没有 GPU 的机器
+  把这两处**一起**改回 CPU，别只删 `gpus`（容器里会看不见卡）。
 - **端口有三个角色，别混**：`18080` = 宿主上的**代码后端**（`uv run project-rag-api` 或
   `./scripts/dev.sh serve`，改完源码直接跑、不必重建镜像），`8080` = 容器里的 app（上面这条命令；
   一个进程同时发页面和接口），`5173` = vite 开发服务器（只发页面）。当前谁占着：`./scripts/dev.sh ports`。
@@ -302,17 +343,11 @@ curl http://localhost:8080/health
 - 镜像偏大：`uv.lock` 里的 torch 是 CUDA 版，会拖进 `nvidia-*`（本地 `.venv` 实测 6.7G，
   其中 nvidia 3.2G + triton 0.9G）。CPU-only 的瘦身办法写在 `Dockerfile` 末尾注释里，
   **没在真机验证过**，验过再改默认。
-- **那个 `en-core-web-sm` 已经不会再让构建/启动随机失败了**（两轮实测 + 根治）：
-  它在可选依赖档 `unstructured` 里、运行时用不到，但过去 `uv sync --locked` 仍会去 github 取它的
-  **元数据**来校验锁 —— 取一次实测宿主 **172s** / 容器 **186s**，而 uv 默认 HTTP 超时 30s × 3 次重试
-  → **46s 就失败**。于是 `docker build` 与**日常 `uv run project-rag-api`** 都随机死在这一步
-  （同一天各一次）。根治是**静态声明它的元数据**：那个 wheel 的 METADATA 里只有 `Name`/`Version`
-  （纯数据包，没有一条 `Requires-Dist`），所以 `pyproject.toml` 写了 `[tool.uv] dependency-metadata`，
-  `uv lock` 又把它带进 `uv.lock` 的 `[manifest]` 段 —— 之后冷缓存 `--locked` 校验**零网络**（实测 0 秒）。
-  ⚠️ **但这只对带 `--locked` / `--frozen` / `--offline` 的调用成立**：不带这些开关的**普通 `uv run`**
-  在**冷缓存**（`uv cache clean`、换机器、新克隆、容器首次构建）下**仍会去 GitHub 取那个 wheel**，
-  实测日志是 `No cache entry for: …/en_core_web_sm-3.8.0-py3-none-any.whl` → 3 次重试 → 超时
-  （就是那句 `Failed to generate package metadata`）。所以日常跑命令用 `uv run --frozen …`
+- **`en-core-web-sm` 那条网络依赖已经整块删除**：它过去随着可选档 `unstructured` 进解析图，
+  而 wheel 只有 GitHub 一个来源 —— 静态声明元数据能救 `--locked` 校验，但**普通 `uv run`
+  在冷缓存下仍会去取它**（`Failed to generate package metadata` → 3 次重试 → 超时）。
+  现在 pyproject 里没有任何 direct-URL 源，解析只访问 PyPI 镜像；`export UV_FROZEN=1`
+  仍可作双保险（不重解析、只用现有锁）。
   （或 `export UV_FROZEN=1`），要装东西的那一次才需要网络。
   还留着 `UV_HTTP_TIMEOUT=300` 兜底：首次 sync 时 uv 仍要下载一次那个 wheel 做**哈希校验**（12MB，
   进缓存后不再下），这一次可能被慢网络拖死。契约：`check_m6_deploy.py`「静态元数据」+ 反向 RT-19。
@@ -491,6 +526,8 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | 中文两级切分 | 父块 1200 字 / 子块 300 字 / 重叠 50；分隔符按语义强度递归降级 | `adapters/chunker_recursive.py` |
 | 幂等入库 | 主键含内容哈希，同份输入跑两次得到同一批 id；按 `doc_id` 清旧块重灌 | `application/ingest_documents.py` |
 | 多格式入库 | 五种后缀（md/txt/docx/pptx/pdf）各一个来源适配器；命名、排序、分派只在装载层一处；没读进来的文件逐个报出 | `ports/document_source.py` / `adapters/document_loader.py` |
+| 图片模态 | MinerU `content_list.json` → 正文/页码/图片锚点；图片按字节 SHA-256 幂等上传 OSS，向量库只存 `image_key`；出参/调模型前现签临时 URL（私有桶，不公开 OSS） | `adapters/mineru_parser.py` / `adapters/oss_images.py` / `application/ingest_documents.py` |
+| MinerU 独立解析服务 | 与 app 分进程的异步服务：任务队列 + PDF 哈希缓存 + zip 结果；app 只提交/轮询/下载 | `services/mineru/` / `adapters/mineru_client.py` |
 | 两路召回 + 融合 | 稠密（Milvus）+ 关键字（BM25：进程内，或编码成稀疏向量进 Milvus）**并行召回**（互不依赖，汇齐后再融合）；RRF 或加权（min-max 归一化） | `application/fusion.py` / `adapters/bm25_index.py` / `adapters/bm25_sparse.py` |
 | 索引与关键字后端 | `milvus.index.type`（FLAT / IVF_FLAT + nlist/nprobe）与 `keyword.backend`（memory / milvus）都是配置；换索引一条命令重建，换后端要重灌 | `adapters/milvus_store.py` / `adapters/bm25_sparse.py` |
 | 重排 | BGE-Reranker-v2-m3 对**父块正文**精排；可关（消融开关） | `adapters/reranker_bge.py` |
@@ -502,9 +539,9 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 | 认证与角色 | Bearer 令牌（12 小时、库里只存 sha256）、**三种角色**：`employee`（检索问答）/ `ops`（问答 + 报表，**不能**管理）/ `admin`（全部 + 管理）；"能干什么"只在 `domain/auth.py` 的三张能力表里，接口各自 `require_knowledge` / `require_reports` / `require_admin`，前端只是"不给点" | `domain/auth.py` / `application/security.py` / `api/auth.py` |
 | 账号与可见范围 | 管理员可建号 / 删号 / 改密码 / 建组（一类员工）；**文档可见范围**按"某个人"或"某个组"授权，**没配规则 = 人人可见**（规则只用来收窄）；检索、清单、预览三处同时生效 | `domain/access.py` / `application/access.py` / `adapters/access_mysql.py` |
 | 消耗报表 | provider 回报的 token 落进账本（模型 / 输入 / **命中缓存** / 输出四个字段），按 `cost.models` 的**三档 × 两时段**单价折成钱（命中 vs 未命中差 50 倍、高峰 vs 空闲差 2 倍）。**时段 = 北京时间工作日 ∩ 09:00–12:00 / 14:00–18:00 ∩ 非中国法定节假日**（价值表原文；节假日表 `cost.holidays` 每年照国务院通知补一行），账本时间戳**带时区**（容器 UTC / 宿主 CST 都不会判错）；**没配单价 → 报"未配置"**，**没量到 / 无时间戳 / 无时区 / 无日历 / 缓存不明 → 各自单独计数**，都不显示成 0 | `application/cost.py` / `config.yaml` 的 `cost` 段 |
-| 文档治理 | 上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 删除（连带删向量与原文件，**语料源材料不动**）；知识库清单是**登记表 × 磁盘 × 向量库三处对账**的实时视图 | `application/documents.py` |
+| 文档治理 | **两级结构**：一级目录（`folder`，**由 `data/corpus` 的一级子目录同步而来**，名字唯一、改名不改 ID、删目录不删文档）+ 目录里的文档；上传（原始 body 流式 → 异步入库）→ 状态轮询 → 预览（父块）→ 二步删除（连带删向量与原文件，**语料源材料不动**）→ 挪目录；知识库清单是**登记表 × 磁盘 × 向量库三处对账**的实时视图 | `application/documents.py` / `application/folders.py` / `adapters/documents_mysql.py` |
 | 限流 | Redis 滑动窗口（query 60/min、upload 10/min、login 10/min），429 带 `Retry-After` 与可执行话术；Redis 故障降级放行且只告警一次 | `adapters/ratelimit_redis.py` |
-| 前端 | Vue 3 + TS 单页应用（对话 / 知识库 / 报表 / 账号与权限四页，hash 路由）；**能力接口与 `/auth/me` 是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
+| 前端 | Vue 3 + TS 单页应用（对话 / 知识库（二级：目录 → 文档）/ 报表 / 账号与权限，hash 路由）；**能力接口与 `/auth/me` 是唯一的能力来源**，产物入库所以 Python 侧与镜像都不需要 Node | `web/` |
 | 桌面壳 | `project-rag-desktop` 一个窗口套在这份产物上；本地模式用回环 HTTP 托管随包产物、`--remote` 直接开后端那份界面 | `src/project_rag/desktop.py` |
 | 延迟观测 | 一次回答一行账：检索六段 + TTFT + 吐字速率 + **思考三字段** | `observability/latency.py` |
 | 评估闭环 | 评估集 → 跑本系统产出答案与上下文 → RAGAS 四指标落盘（带元数据，从不覆盖历史） | `scripts/tools/`（离线工具，**不随仓库发布**；要复现得自备语料） |
@@ -514,14 +551,14 @@ uv run project-rag ingest --path data/corpus/<你的语料目录>
 
 | 页 | 谁能看 | 做什么 |
 |---|---|---|
-| **对话** | `employee` / `ops` / `admin` | 提问（WS 逐字流式）、引用与页码（**切回旧会话也带当轮的引用卡片**）、左侧会话目录、右侧检索参数面板（知识库 / 检索方式 / 两路权重 / 重排 / 模型） |
-| **知识库** | `admin` | 上传（后缀与大小上限来自 `capabilities`）→ 状态轮询 → 预览父块 → 两步确认删除 → **权限**（这份文档给某个人 / 某一类人看）；每张卡片显示**对账后的 `state`**（一致 / 文件已变更 / 库内没有块 / 文件已不在 / 未入库），对不上的写明该怎么办；顶部一句话汇总 + 「上次刷新」时间 |
+| **对话** | `employee` / `ops` / `admin` | 三栏工作台：左侧会话目录（搜索 / 本机重命名 / 删除）、中间消息流（Markdown + 代码高亮 + 表格、逐字流式、可停止）、右侧引用原文（元数据 / 相关度条 / 命中块高亮）。**检索参数**收进顶栏的「检索设置」抽屉（知识库 / 检索方式 / 两路权重 / 重排 / 模型）；引用与页码（**切回旧会话也带当轮的引用卡片**）；低置信度给可操作提示；≤1180px 两栏改浮层、≤768px 侧栏抽屉 + 引用底部弹层 |
+| **知识库** | `admin` | **两级**：一级是目录卡（名称 / 说明 / 份数 / 块数 / 占用 / 最近更新 / 需要处理的份数；**未分类**是兜底格子），点进去是二级——面包屑 + 统计条 + 搜索 / 状态筛选 / 排序 + 文档表格（多选、批量删除、行内预览 / 权限 / 移动 / 两步确认删除）+ 右侧上传与目录信息 + 空状态。上传的落点就是当前目录（后缀与大小上限来自 `capabilities`）；每行显示**对账后的 `state`**（一致 / 文件已变更 / 库内没有块 / 文件已不在 / 未入库），对不上的写明该怎么办 |
 | **报表** | `ops` / `admin` | 延迟 + **消耗**：六个 KPI（**比率都带分子分母**，且**只数热行**；冷启动单独一行报它自己那一套）、分段 p50/p95/p99（样本不够画 `—`，**不折算成 0**）、最慢榜（含冷启动并标出来）、五个时间窗口；消耗区给出模型调用次数、输入（含命中缓存）/输出 token 与金额，按**模型 × 时段**分行，并写出**时段口径本身**（哪几天、哪几个钟点是高峰，来自接口而不是界面写死）（未配单价 / 没量到 token / 无时间戳 / 无时区 / 无日历 / 缓存不明都如实说） |
 | **账号与权限** | `admin` | 建号（员工 / 运维 / 管理员）、改密码、删号（**不能删自己、不能删最后一个管理员**）、建组并维护成员；文档授权有两个方向:**文档侧**(「知识库」页每张卡片的「权限」= 这份文档给谁看)与**组侧**(组那一行的「文档权限」= 这个组能看哪些文档,三态:人人可见 / 已授权 / 看不到) |
 
 三条与后端对齐的规矩：**能力不写死在前端**（后缀表 / 检索方式 / 上限 / 模型名一律来自
 `GET /api/v1/capabilities`；"哪个角色能看哪一页"来自 `GET /api/v1/auth/me` 报的三个能力布尔值，
-前端不比较角色字符串）；**页面唯一的环境就是"一个后端地址"**（左上角可改、会被记住 —— 桌面壳
+前端不比较角色字符串）；**流式走 WebSocket 而不是 SSE**（后端只有 `WS /api/v1/stream`，且请求要带长 prompt；前端不按 chunk 边界解析，按帧处理）；**页面唯一的环境就是"一个后端地址"**（左上角可改、会被记住 —— 桌面壳
 与"连另一台后端"都靠它）；**界面藏起来的不等于权限**（每个接口在后端各自
 `require_knowledge` / `require_reports` / `require_admin`，契约里有一条全表扫描盯着）。
 
@@ -590,8 +627,9 @@ API.md               HTTP / WebSocket / CLI 接口文档
 
 ### 已知边界
 
-- **还没接的格式**：HTML / Excel / 扫描件 OCR，以及页码、工作表这类元数据到引用清单的透传；
-  真要做时先 `uv sync --extra unstructured`（那一档默认不装）。
+- **还没接的格式**：HTML / Excel，以及工作表这类元数据到引用清单的透传。
+  扫描件/PDF 内嵌图片走**可选**的 MinerU 服务（`RAG_IMAGES__ENABLED=true`），
+  不开时仍是 PyMuPDF 的纯文本路径；MinerU 的依赖与模型不在基础镜像里（见 `services/mineru/`）。
 - **镜像已在真机构建并跑起来过**（之前"开发环境里没有 `docker` 命令"那条已作废）：
   `docker compose up -d --build` 构建成功、app 变 healthy、宿主 8080 上打开的就是仓库里这份
   Vue 前端（容器内预热 7649ms、`/static/app/` 200、旧调试页 404）。
@@ -606,7 +644,7 @@ API.md               HTTP / WebSocket / CLI 接口文档
   （检索那两路**已经并行**：稠密与关键字叠着跑，见下面「两路召回 + 融合」一行）
   「暂不做」的条目与各自的**触发条件**记在维护者本地的（不随仓库发布）。
 - 当前状态、验收基线、每条踩过的坑同样记在维护者本地的；
-  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 32 套契约 + 24 份反向 runner，
+  仓库里对应的是**可执行的证据**：`scripts/acceptance/` 的 35 套契约 + 26 份反向 runner，
   以及 `CHANGELOG.md`。
 
 ---

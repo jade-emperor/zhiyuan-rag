@@ -18,6 +18,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import * as api from '../api/endpoints'
 import type { GroupDocument, GroupDocumentsOut } from '../api/types'
+import DialogShell from './ui/DialogShell.vue'
 
 const props = defineProps<{ groupId: string; groupName: string }>()
 const emit = defineEmits<{ close: [] }>()
@@ -102,110 +103,86 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
-    <div class="card dialog" role="dialog" aria-label="组的文档权限">
-      <header>
-        <div>
-          <h3>「{{ groupName }}」能看的文档</h3>
-          <p class="faint">
-            勾上 = 把这个组加进这份文档的名单；取消 = 移出。
-            <span v-if="openCount > 0">
-              <br />
-              其中 {{ openCount }} 份是<strong>人人可见</strong>（没有配过可见范围）——
-              这里禁不掉它们，要用右边那个按钮收窄。
-            </span>
-          </p>
-        </div>
-        <button class="ghost" type="button" @click="emit('close')">关闭</button>
-      </header>
+  <DialogShell
+    label="组的文档权限"
+    :title="`「${groupName}」`"
+    size="lg"
+    @close="emit('close')"
+  >
+    <template #subtitle>
+      <span v-if="openCount > 0">{{ openCount }} 份公开</span>
+    </template>
 
-      <p v-if="loading" class="muted"><span class="spin"></span> 读取中…</p>
-      <p v-if="error" class="alert error">{{ error }}</p>
-      <p v-if="notice" class="alert info">{{ notice }}</p>
+    <p v-if="loading" class="muted"><span class="spin"></span> 读取中…</p>
+    <p v-if="error" class="alert error">{{ error }}</p>
+    <p v-if="notice" class="alert info">{{ notice }}</p>
 
-      <div v-if="!loading" class="rows">
-        <div v-for="doc in documents" :key="doc.document_id" class="row">
-          <label class="check">
-            <input
-              type="checkbox"
-              :checked="doc.visibility === 'open' ? true : allowed.includes(doc.document_id)"
-              :disabled="doc.visibility === 'open'"
-              @change="toggle(doc.document_id)"
-            />
-            <span class="name" :title="doc.document_id">{{ doc.filename }}</span>
-          </label>
-          <span v-if="doc.visibility === 'open'" class="tag soft">人人可见</span>
-          <span v-else-if="doc.visibility === 'allowed'" class="tag ok">已授权本组</span>
-          <span v-else class="tag warn">看不到</span>
-          <span v-if="doc.visibility !== 'open' && doc.other_subjects === 0" class="faint small">
-            取消后这份会回到人人可见
-          </span>
-          <button
-            v-if="doc.visibility === 'open'"
-            class="ghost small"
-            type="button"
-            :disabled="savingId === doc.document_id"
-            @click="restrictToGroup(doc.document_id)"
-          >
-            {{ savingId === doc.document_id ? '收窄中…' : '收窄成只有本组可见' }}
-          </button>
-        </div>
-        <p v-if="documents.length === 0" class="faint">知识库里还没有文档。</p>
-      </div>
-
-      <div class="actions">
-        <button class="primary" type="button" :disabled="loading || saving" @click="save">
-          {{ saving ? '保存中…' : '保存（整份名单）' }}
+    <div v-if="!loading" class="rows">
+      <div v-for="doc in documents" :key="doc.document_id" class="row">
+        <label class="check">
+          <input
+            type="checkbox"
+            :checked="doc.visibility === 'open' ? true : allowed.includes(doc.document_id)"
+            :disabled="doc.visibility === 'open'"
+            @change="toggle(doc.document_id)"
+          />
+          <span class="name" :title="doc.document_id">{{ doc.filename }}</span>
+        </label>
+        <span v-if="doc.visibility === 'open'" class="tag soft">人人可见</span>
+        <span v-else-if="doc.visibility === 'allowed'" class="tag ok">已授权本组</span>
+        <span v-else class="tag warn">看不到</span>
+        <span v-if="doc.visibility !== 'open' && doc.other_subjects === 0" class="faint small">
+          取消后这份会回到人人可见
+        </span>
+        <button
+          v-if="doc.visibility === 'open'"
+          class="ghost small"
+          type="button"
+          :disabled="savingId === doc.document_id"
+          @click="restrictToGroup(doc.document_id)"
+        >
+          {{ savingId === doc.document_id ? '收窄中…' : '收窄成只有本组可见' }}
         </button>
-        <span class="faint">保存只影响这个组的授权；不改动文档本身的内容。</span>
+        <span v-else-if="doc.visibility === 'allowed'" class="faint small">已授权</span>
       </div>
+      <p v-if="documents.length === 0" class="faint">暂无文档</p>
     </div>
-  </div>
+
+    <template #footer>
+      <button class="primary" type="button" :disabled="loading || saving" @click="save">
+        {{ saving ? '保存中…' : '保存（整份名单）' }}
+      </button>
+    </template>
+  </DialogShell>
 </template>
 
 <style scoped>
-.dialog {
-  width: min(720px, 92vw);
-  max-height: 86vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px 18px;
-}
-
-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-h3 {
-  font-size: 16px;
-}
-
 .rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.row:last-child {
+  border-bottom: none;
 }
 
 .check {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 220px;
   flex: 1;
-  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
 }
 
 .name {
@@ -215,12 +192,8 @@ h3 {
 }
 
 .small {
-  font-size: 12px;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 </style>

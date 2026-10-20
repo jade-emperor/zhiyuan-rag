@@ -142,7 +142,43 @@ services:
       - standalone
 
   # ---------------------------------------------------------------------------
-  # 7) app —— 服务本体(镜像由本仓库根目录的 Dockerfile 构建)
+  # 7) mineru —— 独立 PDF 解析服务(图片模态开启时才需要)
+  #
+  # 它跟 app 分进程:解析一份 PDF 要几分钟,不能占着 Web 请求线程。
+  # app 容器通过 http://mineru:8000 提交任务;宿主 CLI 通过 127.0.0.1:18082。
+  mineru:
+    # 图片模态是可选的:默认 `docker compose up` 不构建/启动它。
+    # 要图片就 `docker compose --profile images up -d --build`(或单独 up mineru)。
+    profiles: ["images"]
+    build:
+      context: ./services/mineru
+      dockerfile: Dockerfile
+    image: project-rag-mineru:0.1.0
+    restart: "no"
+    # `gpus: all` 与下面的 MINERU_DEVICE_MODE: cuda 必须成对:只写 cuda 不申请 GPU,
+    # 容器里 torch.cuda.is_available() 是 False,MinerU 会静默退回 CPU(慢 10~30 倍)。
+    gpus: all
+    environment:
+      MINERU_TOKEN: ${RAG_MINERU__TOKEN:-change-me}
+      MINERU_OUTPUT_DIR: /data/mineru
+      MINERU_WORKERS: "1"            # MinerU 吃 GPU/CPU,先单 worker;要并发自己量过再加
+      MINERU_TIMEOUT_S: "3600"       # 大 PDF 在 CPU 上要几十分钟;客户端要 >= 这个值
+      # 国内环境默认走 ModelScope;HuggingFace 在不少网络里连不上。
+      # 想换回 HF 就改这里(或删掉,让代码默认 huggingface)。
+      MINERU_MODEL_SOURCE: modelscope
+      MINERU_DEVICE_MODE: cuda       # 与上面的 gpus 成对
+      # 这是 16GB 卡,但 app 的嵌入/重排还占着 4~5GB;按 8GB 估算 batch,别把整卡算进去。
+      MINERU_VIRTUAL_VRAM_SIZE: "8"
+
+    ports:
+      # 只绑回环给**宿主上的 CLI** 用;不暴露到局域网。
+      # app 容器走 compose 服务名 http://mineru:8000,不经过这个映射。
+      - "127.0.0.1:18082:8000"
+    volumes:
+      - mineru_cache:/data/mineru
+      - mineru_models:/root/.cache   # 模型缓存:不挂的话每次重建镜像/容器都要重下
+
+  # 8) app —— 服务本体(镜像由本仓库根目录的 Dockerfile 构建)
   #
   # 为什么放这里而不是让它在宿主上跑:中间件都在同一个 compose 网络里,地址直接写
   # 服务名(standalone / mysql / redis)、端口用**容器内部端口**(19530 / 3306 / 6379),
@@ -167,6 +203,10 @@ services:
       RAG_MYSQL__PORT: "3306"
       RAG_REDIS__HOST: redis
       RAG_REDIS__PORT: "6379"
+      # app 容器里必须用 compose 服务名;宿主 CLI 用 127.0.0.1:18082
+      RAG_MINERU__BASE_URL: http://mineru:8000
+      # 与 mineru 服务的 MINERU_TIMEOUT_S 对齐:大 PDF 单份可能几十分钟。
+      RAG_MINERU__TIMEOUT_S: "3600"
       RAG_EMBEDDING__DEVICE: cuda      # 与上面的 gpus 成对,别单独删;宿主侧脚本在 agent 沙箱里
                                         # 看不见 GPU(见 AGENTS.md),别据此判定"这台机器没有 GPU"
     ports:
@@ -183,6 +223,9 @@ services:
       # ⚠️ 宿主侧 `data/uploads` 必须先存在(README 的 quickstart 与 `./scripts/dev.sh up` 都会
       # `mkdir -p`):否则 Docker 会替你建一个 root 属主的目录,容器里的 uid 1000 写不进去。
       - ./data/uploads:/app/data/uploads
+      # MinerU 结果的本地缓存(下载 zip 后解压到这里)。它在只读的 ./data 下面,
+      # 必须单独给可写 bind;否则 app 下载完结果写不进缓存,每次重灌都要重跑 MinerU。
+      - ./data/mineru:/app/data/mineru
       - ./logs:/app/logs                # 另一个需要写的挂载点(镜像里 /app/logs 属于 uid 1000)
     depends_on:
       standalone:
@@ -198,3 +241,5 @@ volumes:
   milvus_data:
   redis_data:
   mysql_data:
+  mineru_cache:
+  mineru_models:
