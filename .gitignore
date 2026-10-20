@@ -38,8 +38,9 @@ __pycache__/
 # 生成物（临时实验等），可随时重建
 /.cache/
 
-# 前端：源码与 package-lock 进版本库,**依赖目录与构建中间产物不进**
-#（构建产物落在 src/project_rag/api/static/app/ 下,那是入库的）
-#   ⚠️ `web/scripts/` 要进版本库（source-digest.mjs 是 build 的一环），别在这里写 `scripts/`
+# 前端：源码与 package-lock 进版本库，**依赖目录与构建中间产物不进**
+#（web/dist 是可独立部署的产物，已忽略；`npm run build` 会在
+#  src/project_rag/api/static/app/ 留一份入库的兼容副本，供桌面壳/一体化模式使用）
+#   ⚠️ `web/scripts/` 要进版本库（source-digest / sync-python-bundle 是 build 的一环）
 web/node_modules/
 web/dist/

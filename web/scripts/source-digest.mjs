@@ -1,9 +1,9 @@
 /**
  * 把「这份产物是从哪一版源码构建出来的」写成一个摘要文件。
  *
- * 为什么需要它:`src/project_rag/api/static/app/` 里的产物是**入库**的
- * (Python 侧与 Docker 镜像都不装 node),于是"改了前端忘了重新构建"就成了一种
- * **静默**的坏法 —— 仓库里跑的界面和你正在改的源码根本不是一份东西。
+ * 前后端分离后，`web/dist/` 是前端自己的产物；`npm run build` 末尾会把整份
+ * dist 同步一份到 Python 包里的兼容目录（供桌面壳 / 一体化模式使用）。摘要先写进
+ * dist，再由同步脚本带进兼容副本，两条部署路径都能回答“这份界面是哪版源码”。
  *
  * 为什么不用文件 mtime:`git checkout` / 反向测试还原源码 / 换个机器 clone
  * 都会把 mtime 变新,而内容一个字都没改 —— 那种检查会天天误报,最后被人无视。
@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const webRoot = resolve(here, '..')
-const outFile = resolve(webRoot, '../src/project_rag/api/static/app/source-digest.txt')
+const outFile = resolve(webRoot, 'dist/source-digest.txt')
 
 function walk(dir) {
   const out = []

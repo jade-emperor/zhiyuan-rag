@@ -1,81 +1,63 @@
 /**
- * 容器冒烟：用真 Chromium 打开**容器**（compose 里那个 app 服务，宿主 8080）那份前端，
- * 确认「页面真的渲染出来」，而不只是「文件在、HTTP 200」。
+ * 容器冒烟（API-only）：compose 里的 app 默认只提供接口，不再在 8080 发页面。
  *
- * 与 `browser_m7_frontend.cjs` 的分工：那几套打的是**假后端 + 壳的回环服务**（可脚本化地
- * 走完登录/提问/退出）；这一份打**真容器**，只验页面能出来、登录页渲染得对、控制台干净 ——
- * 登录之后的问答要有真账号口令（账号在 MySQL 里、口令是 PBKDF2 摘要），那一步归人工。
+ * 这一份不启动浏览器：它验的是「容器起来后，后端该在的入口在、前端托管该关的关」。
+ * 页面渲染归 `browser_m7_frontend.cjs`（Vite / 假后端）和桌面壳那套管。
  *
- * 跑法：LD_LIBRARY_PATH=$PWD/.cache/pwlibs/root/usr/lib/x86_64-linux-gnu \
- *        BASE=http://127.0.0.1:8080/ node .cache/pw/container_smoke.cjs
+ * 跑法：
+ *   BASE=http://127.0.0.1:8080/ node scripts/acceptance/browser_container_smoke.cjs
+ *
+ * 期望：
+ *   GET /health      200 {"status":"ok"}
+ *   GET /            200 api-only JSON（不是 307 到页面）
+ *   GET /docs        200 Swagger UI
+ *   GET /static/app/ 404（前端由 Vite / Nginx 单独发）
  */
-// Playwright 的位置可用 PLAYWRIGHT_MODULE 覆盖（默认是开发机 .cache 下那份一次性安装，
-// 的三步准备）；换机器时不改源码，设个环境变量即可。
-// 仓库根：从本文件位置推出来（scripts/acceptance/ → 上两级），别人克隆下来不用改源码。
-const path = require('path')
-const REPO_ROOT = path.resolve(__dirname, '../..')
 
-const { chromium } = require(
+const path = require('path')
+
+const REPO_ROOT = path.resolve(__dirname, '../..')
+const { request } = require(
   process.env.PLAYWRIGHT_MODULE
   || path.join(REPO_ROOT, '.cache/pw/node_modules/playwright'),
 )
 
 const BASE = process.env.BASE || 'http://127.0.0.1:8080/'
-const EXE = process.env.CHROME_BIN
-  || path.join(REPO_ROOT, '.cache/chrome/chrome-headless-shell-linux64/chrome-headless-shell')
-const SHOT = process.env.SHOT || path.join(REPO_ROOT, '.cache/m7_container_login.png')
+const ROOT = BASE.endsWith('/') ? BASE : `${BASE}/`
 
 let failures = 0
 const ok = (name, detail) => console.log(`  ✔ ${name} — ${detail}`)
 const bad = (name, detail) => { failures += 1; console.log(`  ✘ ${name} — ${detail}`) }
 
 ;(async () => {
-  const browser = await chromium.launch({ executablePath: EXE, args: ['--no-sandbox'] })
-  const page = await browser.newPage({ viewport: { width: 1360, height: 900 } })
-  const consoleErrors = []
-  const pageErrors = []
-  const caps = []
-  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
-  page.on('pageerror', (e) => pageErrors.push(String(e)))
-  page.on('response', (r) => {
-    if (r.url().includes('/api/v1/capabilities')) caps.push(`${r.status()} ${r.url()}`)
-  })
+  const context = await request.newContext({ baseURL: ROOT })
 
-  await page.goto(BASE, { waitUntil: 'networkidle' })
-  const url = page.url()
-  if (url.includes('/static/app/') && url.includes('#/login')) {
-    ok('根路径 307 → 前端产物，hash 路由落到登录页', url)
+  const health = await context.get('health')
+  const healthBody = await health.text()
+  if (health.status() === 200 && healthBody.includes('"ok"')) ok('容器 API 存活', `${health.status()} ${healthBody}`)
+  else bad('容器 API 存活', `${health.status()} ${healthBody.slice(0, 120)}`)
+
+  const root = await context.get('')
+  const rootBody = await root.text()
+  const rootJson = (() => { try { return JSON.parse(rootBody) } catch { return null } })()
+  if (root.status() === 200 && rootJson?.mode === 'api-only' && rootJson?.docs === '/docs') {
+    ok('根路径是 API-only 说明，不跳页面', `${root.status()} ${rootBody.replace(/\s+/g, ' ').slice(0, 100)}`)
   } else {
-    bad('根路径 / 路由', `最终 URL 不是 /static/app/#/login：${url}`)
+    bad('根路径是 API-only 说明', `${root.status()} ${rootBody.slice(0, 120)}`)
   }
 
-  const card = page.locator('.card.login')
-  if (await card.isVisible().catch(() => false)) ok('登录卡片渲染出来', '.card.login 可见')
-  else bad('登录卡片', '.card.login 不可见')
-
-  const user = page.locator('input[autocomplete="username"]')
-  const pass = page.locator('input[autocomplete="current-password"]')
-  if (await user.isVisible().catch(() => false) && await pass.isVisible().catch(() => false)) {
-    ok('账号 / 口令两个输入框都在', 'autocomplete=username / current-password')
+  const docs = await context.get('docs')
+  if (docs.status() === 200 && (docs.headers()['content-type'] || '').includes('text/html')) {
+    ok('Swagger 文档可达', `${docs.status()} ${docs.headers()['content-type']}`)
   } else {
-    bad('输入框', '账号或口令框不可见')
+    bad('Swagger 文档可达', `${docs.status()} ${docs.headers()['content-type'] || '(无 content-type)'}`)
   }
 
-  const button = page.locator('button.primary.block')
-  ok('提交按钮文案', (await button.innerText().catch(() => '(读不到)')).trim())
+  const staticPage = await context.get('static/app/')
+  if (staticPage.status() === 404) ok('静态前端没有由容器托管', '404（符合 API-only）')
+  else bad('静态前端没有由容器托管', `期望 404，实际 ${staticPage.status()}`)
 
-  if (caps.some((line) => line.startsWith('200'))) ok('能力自述来自容器', caps.join(' / '))
-  else bad('能力自述', caps.length ? caps.join(' / ') : '页面根本没打 /api/v1/capabilities')
-
-  await page.screenshot({ path: SHOT })
-  ok('截图', SHOT)
-
-  if (consoleErrors.length === 0) ok('正常路径无 console 报错', '0 条')
-  else bad('console 报错', consoleErrors.join(' | '))
-  if (pageErrors.length === 0) ok('无未捕获异常', '0 条')
-  else bad('未捕获异常', pageErrors.join(' | '))
-
-  await browser.close()
-  console.log(failures ? `\n${failures} 条没过` : '\n容器冒烟：全过')
+  await context.dispose()
+  console.log(failures ? `\n${failures} 条没过` : '\n容器 API 冒烟：全过')
   process.exit(failures ? 1 : 0)
 })()

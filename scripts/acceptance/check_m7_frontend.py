@@ -513,7 +513,11 @@ def _() -> str:
     }
     for name, (guard, what) in wanted.items():
         line = next(
-            (item for item in header.splitlines() if f":to=\"{{ name: '{name}' }}\"" in item),
+            (
+                item
+                for item in header.splitlines()
+                if 'class="tab"' in item and f":to=\"{{ name: '{name}' }}\"" in item
+            ),
             None,
         )
         if line is None:

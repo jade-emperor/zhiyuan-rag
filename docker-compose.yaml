@@ -209,6 +209,9 @@ services:
       RAG_MINERU__TIMEOUT_S: "3600"
       RAG_EMBEDDING__DEVICE: cuda      # 与上面的 gpus 成对,别单独删;宿主侧脚本在 agent 沙箱里
                                         # 看不见 GPU(见 AGENTS.md),别据此判定"这台机器没有 GPU"
+      # 前后端分离：容器只提供 API；页面由宿主 Vite / Nginx 单独发。
+      # 想回到一体化模式就把它改成 "true"（镜像里仍保留一份兼容产物）。
+      RAG_API__SERVE_FRONTEND: "false"
     ports:
       - "8080:8080"                     # 宿主 8080 被占就改左边;右边是容器内端口,不能改
                                         # 宿主上的**代码后端**是另一个口(18080,见 config/config.yaml)——

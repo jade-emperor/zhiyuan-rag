@@ -32,6 +32,12 @@ function devDefaultBackend(): string {
 }
 
 export function defaultBackend(): string {
+  // 前后端分离的开发态：页面在 Vite 5173，后端在 18080/8080 —— 不能拿页面的
+  // origin 当后端地址。`.env.development` / `dev.sh web <port>` 给的默认值优先。
+  if (import.meta.env.DEV) {
+    const dev = devDefaultBackend()
+    if (dev) return dev
+  }
   const origin = typeof window === 'undefined' ? '' : window.location.origin
   // 桌面壳用 file:// 打开时 origin 是字符串 "null":那不是后端地址,不许当默认值用。
   if (!origin || origin === 'null') return devDefaultBackend()

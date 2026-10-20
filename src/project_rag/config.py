@@ -430,6 +430,10 @@ class RegistrationConfig(BaseModel):
 class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
+    # 是否由后端托管前端产物。**兼容模式默认 true**：桌面壳、旧的一体化部署与本地
+    # `uv run project-rag-api` 仍然打开就能用；前后端分离部署在 compose 里显式设 false，
+    # 后端只提供 API，前端由 Vite / Nginx 单独发。
+    serve_frontend: bool = True
     # 启动预热:先把嵌入/重排模型、语料索引、Milvus 连接建好,把「第一个请求的冷启动」
     # 从**第一个用户**身上挪到启动阶段(实测:不预热时首个请求比热请求多付 4.4s)。
     # 预热只走到「检索出引用」为止,**不调大模型**,所以不花 token 钱;

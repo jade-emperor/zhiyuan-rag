@@ -863,10 +863,10 @@ def _entry_points_self_report() -> str:
             f"`up` 起的是 {sorted(services)}：它的语义是「**只起中间件**」（前端用 app / serve 两个入口）。"
             "集合一变，那句「这一步没有前端」就变成假话 —— 而用户正是靠它判断前端该不该在"
         )
-    for entry in ("dev.sh app", "dev.sh serve"):
+    for entry in ("dev.sh app", "dev.sh backend", "dev.sh web"):
         if entry not in up:
             raise AssertionError(
-                f"`up` 起完没说清另外两条路（缺 `{entry}`）：只说「起了 3 件」，"
+                f"`up` 起完没说清另外三条路（缺 `{entry}`）：只说「起了 3 件」，"
                 "用户还是会去 8080 找一个不存在的前端"
             )
 
@@ -877,13 +877,12 @@ def _entry_points_self_report() -> str:
         raise AssertionError("start_container_app 没有真的起 app 容器")
     if "docker compose build app" not in body or '"$build" = "--build"' not in body:
         raise AssertionError(
-            "`app` 不支持 `--build`：改了前端之后，容器那份**只能**靠重建镜像跟上"
-            "（npm run build 只改工作区）—— 没有这条路，用户只能自己记住两条命令"
+            "`app` 不支持 `--build`：改了后端代码之后，容器只能靠重建镜像跟上"
         )
-    if body.index("npm run build") > body.index("docker compose build app"):
+    if "npm run build" in body:
         raise AssertionError(
-            "`app --build` 先建镜像后建前端：镜像里会装进**上一版**产物，而且界面上看不出来"
-            "（前端「在」，但不是你改的那份）"
+            "`app --build` 又在构建前端：容器默认是 API-only，前端由 `dev.sh web` 单独发；"
+            "两条链不该再绑在一起"
         )
 
     if "show_status" not in branch("status"):
@@ -904,8 +903,8 @@ def _entry_points_self_report() -> str:
             "而「容器发的是旧前端」这件事仍然要人自己判断"
         )
     return (
-        f"up={sorted(services)} 且点名 app/serve 两条路；app→start_container_app "
-        "（--build 时前端先于镜像）；status→show_status 读 source-digest.txt 并列出三个角色"
+        f"up={sorted(services)} 且点名 app/backend/web 三条路；app→start_container_app "
+        "（API-only，--build 只重建镜像）；status→show_status 读 source-digest.txt 并列出三个角色"
     )
 
 

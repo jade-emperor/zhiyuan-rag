@@ -2,11 +2,13 @@
   "name": "project-rag-web",
   "version": "0.1.0",
   "private": true,
-  "description": "知源助手前端：企业知识问答、知识管理与运营治理。构建产物写入 src/project_rag/api/static/app/。",
+  "description": "知源助手前端：企业知识问答、知识管理与运营治理。产物在 web/dist，另同步一份兼容副本给桌面壳。",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/source-digest.mjs",
+    "build": "vite build && node scripts/source-digest.mjs && node scripts/sync-python-bundle.mjs",
+    "build:dist": "vite build && node scripts/source-digest.mjs",
+    "bundle:python": "node scripts/sync-python-bundle.mjs",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview"
   },

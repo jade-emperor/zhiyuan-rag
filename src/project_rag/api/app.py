@@ -63,7 +63,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.requests import HTTPConnection
@@ -1664,6 +1664,15 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         description="企业知识智能问答：精准溯源、混合检索与权限隔离",
         version="0.1.0",
     )
+    # 兼容式前后端分离：默认仍托管前端；compose 里显式设 false 时只提供 API。
+    # 产物目录不存在也按 API-only 起（例如只拷 src 的精简部署），但把原因留在日志里。
+    serve_frontend = settings.api.serve_frontend
+    if serve_frontend and not _STATIC_DIR.is_dir():
+        _logger.warning(
+            "api.serve_frontend=true 但前端产物目录不存在（%s），本次按 API-only 启动",
+            _STATIC_DIR,
+        )
+        serve_frontend = False
     # 本机开发默认全开(api.cors_origins = ["*"]);要对外就得收紧到具体来源
     # (限流与鉴权都收在这一层)
     app.add_middleware(
@@ -1693,9 +1702,11 @@ def create_app(deps: Deps | None = None) -> FastAPI:
         return response
     # html=True:请求一个目录时给它的 index.html —— 前端产物挂在 /static/app/ 下,
     # 没有这一条 `/static/app/` 会 404(StaticFiles 默认不做目录索引)。
-    app.mount(
-        "/static", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static"
-    )
+    # **分离部署**时这一整块不注册：后端只回答 API，前端由 Vite / Nginx 单独发。
+    if serve_frontend:
+        app.mount(
+            "/static", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static"
+        )
 
     @app.get("/health", response_model=HealthOut)
     async def health() -> HealthOut:
@@ -2649,21 +2660,24 @@ def create_app(deps: Deps | None = None) -> FastAPI:
                 pass
 
     @app.get("/", include_in_schema=False)
-    async def index() -> RedirectResponse:
-        """根路径跳转到**前端 app**。
+    async def index() -> Response:
+        """根路径：兼容模式跳前端；API-only 模式只报服务入口。
 
-        为什么是重定向而不是直接返回 SPA 的 index.html:那份产物用**相对** base
-        (`./assets/…`),只有 URL 以 `/static/app/` 结尾时相对路径才解析得对;
-        直接返回文件会让浏览器去 `/assets/…` 拿资源 —— 404,而且页面白屏。
-        重定向的另一个好处是 URL 变对了,用户刷新/收藏都对。
-
-        这一份产物是**唯一的界面**:删掉了原来那个 101 行的内置调试页。
-        两份 UI = 两套要跟着后端一起改的东西,而其中一份没人日常打开 —— 它漂了也不会
-        有人发现(旧调试页那次就比新前端晚了半天才跟上 `/api/v1` 迁移)。排障也不缺入口:
-        接口文档 `/docs`、能力自述 `/api/v1/capabilities`、`curl` 直接打 `/api/v1/query`
-        能拿到一份不流式的答案;界面本身则由 `check_m7_*` 那几套契约与浏览器用例盯着。
+        ``serve_frontend=false`` 时**不再**把根路径指向一个不存在的页面 —— 这是前后端
+        分离部署最容易踩的坑（浏览器打开 8080 只看到 404，误以为后端没起来）。
         """
-        return RedirectResponse(url="/static/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        if serve_frontend:
+            return RedirectResponse(
+                url="/static/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT
+            )
+        return JSONResponse(
+            {
+                "service": "知源助手 API",
+                "mode": "api-only",
+                "docs": "/docs",
+                "health": "/health",
+            }
+        )
 
     return app
 

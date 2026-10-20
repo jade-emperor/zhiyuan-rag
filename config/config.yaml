@@ -8,6 +8,9 @@ log_max_bytes: 10485760 # 10MB
 log_backup_count: 5
 
 api:
+  # 兼容模式：本地 `uv run project-rag-api` 与桌面壳仍由后端托管前端产物。
+  # 前后端分离部署在 compose 里显式设 false（后端只发 API，前端由 Vite / Nginx 单独发）。
+  serve_frontend: true
   # 启动预热:把嵌入/重排模型、语料索引、Milvus 连接先在启动阶段建好,
   # 免得第一个用户扛冷启动(实测:首个请求比热请求多付 4.4s)。
   warmup: true
@@ -38,7 +41,7 @@ api:
     backend: redis
     key_prefix: "ratelimit:v1:"
     window_s: 60
-    query: 60
+    query: 5
     upload: 10
     login: 10
 
@@ -184,11 +187,10 @@ milvus:
   # 图片模态上线后的新集合名。老 `rag_chunks` 没有 image_keys 列(schema 建集合时定格),
   # 且图片 key 属于新增载荷 —— 按新 schema 重灌一份,老集合留着做回滚。
   collection: rag_chunks_img_v1
-  read_consistency: strong
+  read_consistency: bounded
   # 稠密向量的索引（**建集合那一刻定格**，改这里不会自动重排已有索引）。
   #   FLAT     = 暴力精确检索。结果可断言、小语料最稳；N 大时延迟线性涨。
   #   IVF_FLAT = 先 k-means 分 nlist 个簇、检索只探 nprobe 个簇 —— 快，但**是近似**
-  #              （召回率换延迟；nprobe=nlist 就退化成分簇暴力）。
   # 换上/换下都要重建索引：`project-rag collections --reindex --yes`（数据不动）。
   # nprobe 必须 ≤ nlist（配置层会当场拦下来，不等 Milvus 报错）。
   index:
