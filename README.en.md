@@ -23,7 +23,7 @@ The answer pipeline keeps the curated FAQ-first, retrieval-fallback strategy, `[
 > 中文说明（更详细）见 [`README.md`](README.md)。维护者的决策与状态文档（`docs/`）**不随本仓库发布**；
 > 本仓库里可验证的东西是 `scripts/acceptance/` 的 38 份契约 + 29 份反向测试。
 >
-> For deployment compatibility, package, CLI and image identifiers remain `project_rag` / `project-rag` / `project-rag-api`.
+> Package, CLI and image identifiers are `project_rag` / `project-rag` / `project-rag-api`.
 
 ## Try it in 5 minutes (no model download)
 

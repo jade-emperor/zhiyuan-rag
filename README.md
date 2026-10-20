@@ -24,7 +24,7 @@
 
 **English**: [`README.en.md`](README.en.md)（短版：能力、5 分钟演示、验证方式）。
 
-> 为兼容既有部署，代码包名、CLI 与镜像名仍保留 `project_rag` / `project-rag` / `project-rag-api`。
+> 代码包名、CLI 与镜像名分别是 `project_rag` / `project-rag` / `project-rag-api`。
 
 ---
 
