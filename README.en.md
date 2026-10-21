@@ -21,7 +21,7 @@ Zhiyuan Assistant is a traceable knowledge intelligence platform for enterprise 
 The answer pipeline keeps the curated FAQ-first, retrieval-fallback strategy, `[1][2]` citations, token streaming and both HTTP / WebSocket entry points.
 
 > 中文说明（更详细）见 [`README.md`](README.md)。维护者的决策与状态文档（`docs/`）**不随本仓库发布**；
-> 本仓库里可验证的东西是 `scripts/acceptance/` 的 38 份契约 + 29 份反向测试。
+> 本仓库里可验证的东西是 `scripts/acceptance/` 的 39 份契约 + 29 份反向测试。
 >
 > Package, CLI and image identifiers are `project_rag` / `project-rag` / `project-rag-api`.
 
