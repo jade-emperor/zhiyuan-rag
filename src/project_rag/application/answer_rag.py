@@ -11,14 +11,17 @@
 2. **两路融合在这里做**:两路分数不可比,融合是决策不是管道(见 fusion.py)。
    只给向量库不给关键字索引时**退化成单路,且不做融合** —— 单路时直接沿用那一路的分数,
    这样「检索分」的口径不会因为有没有第二路而变。
-3. **命中子块之后按父块折叠**:父子分层的意义就是「多召回子块、少给父块」。
-   同一个父块的三个子块都被命中时,不折叠就等于把几乎一样的上下文喂三遍。
-4. **重排放在折叠之后、截断之前**(顺序就是这一步的全部):
+3. **父子分层:多召回子块、少给父块**:同一个父块的多个子块都命中时,最后只留
+   重排分最高的那个子块(它的 ``context_text`` 就是父块正文),不会把几乎一样的
+   上下文喂三遍。
+4. **顺序:融合 → 取前 k 条子块 → 重排 → 按父块折叠 → 截断**(顺序就是这一步的全部):
 
-   - 折叠之后 → 先去掉重复的子块,不做重复功;
-   - 截断之前 → 重排要在**全部候选**里挑,先截断就只剩一小撮可选,重排白做;
-   - 喂进去的是 ``context_text``(父块正文)→ 分数对应的正好是模型会读到的那段文字,
-     引用清单上的分数才核对得上。
+   - 先取前 k 条:两路并集可能到 2k(实测 ~17),不截会让重排对数随“两路差异”漂;
+   - 重排放在折叠之前:让 CrossEncoder 看过所有候选子块,而不是只看融合分最高的那个;
+   - 折叠放在重排之后:同一父块保留重排分最高的子块;
+   - 截断放在最后:重排要在全部候选里挑,先截断就只剩一小撮可选,重排白做;
+   - 默认喂子块正文 ``text``(更短、重排更快);要“分数对得上模型读到的文字”时
+     用 ``rerank_input="parent"`` 喂父块正文 ``context_text``。
 
 5. **引用跟着答案一起返回**:``[1][2]`` 是给人核对用的;``routes`` 还告诉你
    这一条是单路捞到的还是两路都捞到了 —— 两路都命中通常更可信。
@@ -121,21 +124,38 @@ def collapse_parents(citations: Sequence[Citation]) -> tuple[Citation, ...]:
     return _renumber(ordered)
 
 
+def collapse_ranked(citations: Sequence[Citation]) -> tuple[Citation, ...]:
+    """输入:已按重排分降序的引用(子块)。行为:每个父块只留第一条。输出:重新编号的引用。
+
+    调用方保证顺序:**重排之后**(或没有重排器时的融合之后),所以"第一条"就是
+    "该父块分数最高的那个子块"。没有父块的块(``parent_id`` 为空)按 ``chunk_id`` 自成一组。
+    """
+    seen: set[str] = set()
+    kept: list[Citation] = []
+    for citation in citations:
+        key = citation.chunk.parent_id or citation.chunk.chunk_id
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(citation)
+    return _renumber(kept)
+
+
 def rerank_citations(
     query: str,
     citations: Sequence[Citation],
     *,
     reranker: Reranker,
-    rerank_input: Literal["parent", "child"] = "parent",
+    rerank_input: Literal["parent", "child"] = "child",
 ) -> tuple[Citation, ...]:
     """输入:问题 + 当前引用序列 + 重排端口 + 喂哪段正文。行为:按重排分重新排序。输出:重新编号的引用。
 
-    默认喂 ``chunk.context_text``(父块正文)—— **模型会读到的那段正文**,不是子块。
-    这样引用清单上的重排分才对应得到模型的实际输入。
+    默认喂 ``chunk.text``(检索命中的**子块**):约 150–200 token,比父块短 3–4 倍;
+    并发下重排是吞吐瓶颈,子块的吞吐约高 3.8×。代价是「重排分」对应的文字
+    与模型真正读到的父块不是同一段。
 
-    ``rerank_input="child"`` 改成喂检索命中的那个**子块**:更短、更聚焦,长文档上通常更准,
-    代价是「重排分」对应的文字与模型读到的不是同一段(那个分数就只能当排序依据看)。
-    这条旋钮是为那组检索 A/B 加的,**默认不动** —— 换默认要等读数说话。
+    ``rerank_input="parent"`` 改喂 ``chunk.context_text``(父块正文)—— **模型会读到的那段**,
+    引用清单上的重排分才核对得上;长父块下重排更慢。
 
     三条边界,每条都有理由:
 
@@ -238,8 +258,8 @@ def _gather(
 ) -> tuple[Citation, ...]:
     """输入:一句检索语句 + 端口 + 旋钮 + 打点/分段函数。
 
-    行为:跑有索引的那几路(**互不依赖的那两路并行**) → 融合(单路则跳过) → 折叠父块 → 重新编号。
-    输出:引用序列(已折叠,**未重排、未截断**);没检索到给空序列。
+    行为:跑有索引的那几路(**互不依赖的那两路并行**) → 融合(单路则跳过) → 取前 k 条子块 → 重新编号。
+    输出:引用序列(子块,**未折叠、未重排、未截断**);没检索到给空序列。
 
     **两路为什么并行**:它们是同一个问题的两种捞法,谁也不等谁的结果(稠密那路要嵌入,
     关键字那路自己分词),融合本来就要等两路都到手 —— 串着跑纯属白等。真栈上
@@ -370,15 +390,17 @@ def _gather(
             },
             rrf_k=options.rrf_k,
         )
+    # **标准做法**:融合后只留前 ``k`` 条**子块**进重排。两路各 k 条,并集可能到 2k
+    # (实测两路只重合约 3 条,17 条左右);不截的话重排对数会随"两路差异"变大。
+    # 这里**不折叠父块** —— 重排看的是子块,折叠放到重排之后(同父块留重排分最高的子块),
+    # 否则"只重排了融合分最高的那个子块",标准做法要的是让 CrossEncoder 看过所有候选子块。
+    fused = fused[: options.k]
     mark("fuse")
 
-    citations = _renumber(
+    return _renumber(
         Citation(index=0, chunk=item.chunk, score=item.score, routes=item.routes)
         for item in fused
     )
-    collapsed = collapse_parents(citations)
-    mark("collapse")
-    return collapsed
 
 
 def _finish(
@@ -391,8 +413,8 @@ def _finish(
 ) -> tuple[Citation, ...]:
     """输入:重排用的那句原话 + 候选 + 重排器 + 旋钮 + 打点函数。
 
-    行为:重排(给了重排器才做) → 截断到 ``max_context``。
-    输出:最终引用序列。
+    行为:重排(给了重排器才做) → **按父块去重** → 截断到 ``max_context``。
+    输出:最终引用序列(子块引用,``context_text`` 仍是父块正文)。
 
     **重排开不开由「有没有传重排器」表达**,不另设开关 —— 和 ``keyword_index=None``
     表示「没有 BM25 那一路」是同一个道理。两处都能表达就有两个真值来源:
@@ -405,6 +427,10 @@ def _finish(
         # 只在真装了重排器时打点:没装的时候这一格留 '-' 而不是 0.0 ——
         # 「没做」和「很快」在排查时是两件事
         mark("rerank")
+    # 重排之后再折叠:同一父块的多个子块,留重排分最高的那条。没有重排器时顺序是
+    # 融合分,等价于"留融合分最高的子块"。
+    citations = collapse_ranked(citations)
+    mark("collapse")
     if options.max_context is not None and len(citations) > options.max_context:
         citations = _renumber(citations[: options.max_context])
     return citations
@@ -422,11 +448,11 @@ def retrieve(
 ) -> tuple[Citation, ...]:
     """输入:问题 + 向量库 + 可选的关键字索引 + 可选的重排器 + 检索旋钮 + 可选计时账本。
 
-    行为:跑有索引的那几路 → 融合(单路则跳过) → 折叠父块 → 重排(给了重排器才做)
-          → 截断到 max_context。
+    行为:跑有索引的那几路 → 融合(单路则跳过) → **取前 k 条子块** → 重排(给了重排器才做)
+          → **按父块去重** → 截断到 max_context。
     输出:引用序列;没检索到给空序列。
 
-    ``timing`` 给了就在六处打点(嵌入 / 向量检索 / 关键字 / 融合 / 折叠 / 重排):
+    ``timing`` 给了就在六处打点(嵌入 / 向量检索 / 关键字 / 融合 / 重排 / 折叠):
     「检索一共 1.8 秒」是一回事,「这 1.8 秒花在哪」是另一回事 —— 没有分段就只能猜。
     不给就空转(验收与脚本常常不需要账本)。
 
@@ -464,8 +490,8 @@ def retrieve_many(
 ) -> tuple[Citation, ...]:
     """输入:一句或多句检索语句 + 端口 + 旋钮 + 可选账本 + 可选的重排用原话。
 
-    行为:每句各跑一遍召回→融合→折叠 → 按 ``chunk_id`` 合并(同一条留最高分)→
-          用 ``rerank_query``(默认第一句)重排一次 → 截断。
+    行为:每句各跑一遍召回→融合→取前 k 条子块 → 按 ``chunk_id`` 合并(同一条留最高分)→
+          用 ``rerank_query``(默认第一句)重排一次 → 按父块去重 → 截断。
     输出:引用序列;全都召不到给空序列。
 
     ``retrieve_many([q])`` 与 ``retrieve(q)`` **逐字等价**(两句走的是同一对

@@ -82,7 +82,7 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
         "src/project_rag/application/answer_rag.py",
         '        item.chunk.text if rerank_input == "child" else item.chunk.context_text',
         '        item.chunk.context_text',
-        "喂进去的是父块正文",
+        "默认应喂子块正文",
         "check_m3_rag.py",
     ),
     (
