@@ -35,6 +35,8 @@ from project_rag.config import EmbeddingConfig
 from project_rag.domain import Embedding
 from project_rag.ports import Embedder
 
+from .batching import Batcher
+
 
 class BGEM3Embedder(Embedder):
     """BGE-M3 稠密嵌入。"""
@@ -52,6 +54,14 @@ class BGEM3Embedder(Embedder):
             self._model.half()
         # ST 5.x 把方法改名成 get_embedding_dimension(),4.x 只有旧名 —— 两个都认
         self._dim = self._embedding_dimension()
+        self._batch_size = int(config.embed_batch_size)
+        # 查询侧每条请求只 embed 一句话(批大小 1);批处理器把同一时刻排队的
+        # 多条请求攒成一批,避免几十个小前向在 GPU 上互相切片
+        self._batcher: Batcher[str, Embedding] = Batcher(
+            self._encode,
+            max_items=int(config.embed_batch_max_texts),
+            name="embed",
+        )
 
     def _embedding_dimension(self) -> int:
         """输入:无。行为:读出稠密维度。输出:维度。
@@ -76,9 +86,18 @@ class BGEM3Embedder(Embedder):
         return self._dim
 
     def embed(self, texts: Sequence[str]) -> Sequence[Embedding]:
-        """输入:一批文本。行为:批量编码 + L2 归一化。输出:与输入同序的向量。"""
+        """输入:一批文本。行为:交给批处理器(同刻排队的调用合成一批)编码。输出:与输入同序的向量。"""
+        return self._batcher.submit([str(text) for text in texts])
+
+    def _encode(self, texts: Sequence[str]) -> list[Embedding]:
+        """输入:一批文本(批处理器合批后的)。行为:编码 + L2 归一化。输出:与输入同序的向量。
+
+        **只该由批处理器调用**:这是真正碰模型的地方,单线程执行,predict/encode 因此
+        不必考虑并发重入。
+        """
         vectors = self._model.encode(
-            [str(text) for text in texts],
+            list(texts),
+            batch_size=self._batch_size,
             # 模型自带 2_Normalize,这里仍然显式要求一次:
             # 「IP = 余弦」是这个项目的前提,不能靠模型的默认行为兜着
             normalize_embeddings=True,

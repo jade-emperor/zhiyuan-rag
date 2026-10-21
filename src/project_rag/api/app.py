@@ -44,6 +44,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -1866,10 +1867,25 @@ def create_app(deps: Deps | None = None) -> FastAPI:
     # 没装配 = 不限流(与其它工厂同一条口径,`build_real_deps` 永远接上)。
     limiter = _optional_factory(deps, "rate_limiter_factory")
 
+    @asynccontextmanager
+    async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+        """启动时把 anyio 线程池上限调到配置值。
+
+        同步重活(嵌入/检索/重排/生成)都走 ``run_in_threadpool``;这个池子的大小
+        同时就是服务端「最多同时处理多少个请求」的上限。默认 40(anyio 默认值);
+        调大只是让更多请求进到 GPU 队列里排队,收益要压测里量。
+        """
+        import anyio.to_thread
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = settings.api.threadpool_size
+        _logger.info("线程池上限:%d", settings.api.threadpool_size)
+        yield
+
     app = FastAPI(
         title="知源助手 API",
         description="企业知识智能问答：精准溯源、混合检索与权限隔离",
         version="0.1.0",
+        lifespan=_lifespan,
     )
     # 兼容式前后端分离：默认仍托管前端；compose 里显式设 false 时只提供 API。
     # 产物目录不存在也按 API-only 起（例如只拷 src 的精简部署），但把原因留在日志里。
