@@ -1,137 +1,71 @@
 env: dev
-root_log_level: NOTSET # 根日志等级,这是第一道阀门,开发环境可以调整为DEBUG,生产环境要提高等级,或者将设置权力交给handler
-console_log_level: INFO # 控制台日志等级
-file_log_level: DEBUG # 文件日志等级,先通过root过滤,如果root设置为INFO,这里设置为DEBUG也不会写入DEBUG的日志
+root_log_level: NOTSET        # NOTSET / DEBUG / INFO / WARNING / ERROR
+console_log_level: INFO
+file_log_level: DEBUG
 log_dir: logs
-# 日志轮转:单个文件上限 + 保留几份旧日志(app.log.1 / .2 …)。
-log_max_bytes: 10485760 # 10MB
+log_max_bytes: 10485760       # 单文件上限,字节
 log_backup_count: 5
 
 api:
-  # 兼容模式：本地 `uv run project-rag-api` 与桌面壳仍由后端托管前端产物。
-  # 前后端分离部署在 compose 里显式设 false（后端只发 API，前端由 Vite / Nginx 单独发）。
-  serve_frontend: true
-  # 启动预热:把嵌入/重排模型、语料索引、Milvus 连接先在启动阶段建好,
-  # 免得第一个用户扛冷启动(实测:首个请求比热请求多付 4.4s)。
+  serve_frontend: true        # true = 后端托管前端产物;false = 只发 API
   warmup: true
-  # 上传的原文件落盘目录(相对项目根)。删文档时会连它一起删,所以别指到语料目录外的地方。
   uploads_dir: data/uploads
-  # 语料**源材料**目录(相对项目根)。知识库页拿它和登记表/向量库对账:放在这里但还没入库的
-  # 文件会显示成「未入库」—— 后端直接往这儿放文件时前端才看得见。删除文档**不动**这个目录
-  # (删库不删源;清掉登记行与向量之后重新 ingest 就能回来)。
   corpus_dir: data/corpus
-  # 单个上传文件大小上限(MB):礼貌的闸,不是安全边界(防滥用靠反代/限流)。
   max_upload_mb: 50
-  # 绑定地址:绑回环时 WSL 里 Windows 浏览器连不上(实测);进容器也映射不出去。
   host: 0.0.0.0
   port: 18080
-  # 预热查询。**换语料领域时记得换这一句** —— 检索不到东西的预热等于没预热。
+  threadpool_size: 50           # 同时在处理的请求上限(anyio 线程池)
   warmup_query: "装饰器有什么用"
-  # CORS 允许的来源。本机全开;对外必须收紧成具体域名。
-  # "全开 + 绑非回环地址"这个组合启动时会打一条 WARNING(不拦启动)。
-  cors_origins: ["*"]
-  # 限流:**滑动窗口**,计数默认在 Redis。
-  #   每一档 <= 0 = 关掉这一档;backend: memory 可退到单进程(重启清零、多 worker 各算各的)。
-  #   实现:adapters/ratelimit_redis.py —— 一段 Lua 原子完成「裁剪→计数→判定→写入→设 TTL」,
-  #   窗口时间取 **Redis 服务端时钟**(多机时钟不同步也不会各算各的窗口)。
+  cors_origins: ["*"]         # * = 全开
   rate_limit:
     enabled: true
-    # redis = 跨进程共享(重启不清零、多 worker 一份计数、时钟以 Redis 为准);
-    # memory = 单进程内存(无 Redis 的部署与离线验收用)。Redis 故障时降级为**放行**并记告警。
-    backend: redis
+    backend: redis            # redis = 跨进程;memory = 单进程
     key_prefix: "ratelimit:v1:"
     window_s: 60
-    query: 5
+    query: 5                  # 每窗口次数上限,<= 0 = 关闭该档
     upload: 10
     login: 10
-
-  # 图形验证码。注册是无人值守入口,必须有;关掉它只剩限流(仅限纯内网部署)。
   captcha:
     enabled: true
     ttl_s: 120
     length: 4
-
-  # 员工自助注册。要审批制就 enabled: false,改由管理员 `project-rag user add` 建号;
-  # invite_code 非空时注册还要填邀请码。
   registration:
-    enabled: true
-    invite_code: ""
+    enabled: true             # false = 关闭自助注册
+    invite_code: ""           # 非空 = 注册需填邀请码
     min_password_chars: 10
 
 llm:
   model: deepseek-flash
   base_url: https://api.deepseek.com/v1
-  # 思考模式(开关 + 强度一个变量搞定):
-  #   auto         = 不发参数,沿用服务端默认(开启、high)—— 即加这个开关之前的行为
-  #   off          = 不思考(最快):实测首个内容字 ~0.5s(思考时 2~15s)
-  #   low / high / max = 开启并指定强度(deepseek-flash 支持 low/high/max,默认 high)
-  # 注意:思考时 temperature 会被忽略(不报错也不生效);思考还会计入输出 token。
-  thinking: "off"
+  thinking: "off"             # auto / off / low / high / max
   temperature: 0.7
   max_tokens: 4096
   timeout_s: 60.0
-  # 让 provider 在流末尾回报这次用了多少 token(消耗报表的**唯一**数据来源)。
-  # 关掉它服务照常跑,只是账本上那一格是 "-",报表会如实说"没量到 token"。
-  # 什么时候要关:某个代理不认 stream_options 这个参数(直接 400)时。
-  stream_usage: true
+  stream_usage: true          # false = 不向 provider 要 token 用量
 
-# 消耗报表的单价(报表按 "token 数 × 单价" 算钱;token 数来自上面那个开关)。
-#
-# 三档 × 两个时段(这是 DeepSeek-V4.1-Flash 的价目表,单位:元 / 每百万 token):
-#            空闲时段   高峰时段
-#   输入·命中   0.02      0.04     ← prompt cache 命中,比未命中便宜 50 倍
-#   输入·未命中 1         2
-#   输出        4         8
-#
-# 口径三条:
-#   ① 时段按**账本时间戳的钟点**判(账本用的是数据库时间),窗口见下面的 off_peak;
-#   ② 没回报"缓存命中数"的调用,整段输入按**未命中**价计(上界,报表会说出来);
-#   ③ 没配单价的模型**不算钱**,报表会把它列出来提醒你 —— 它不会把"不知道"显示成 0.00。
-#
-# 键是 provider **回报**的模型名(不是你请求的那个)。填错名字时报表的
-# `unpriced_models` 会原样告诉你它到底报的是什么 —— 照抄进来即可。
-# 下面用 YAML 锚点让两个名字共用同一份价(请求名 `deepseek-flash` 与显示名
-# `DeepSeek-V4.1-Flash`,代理可能回报其中任意一个)。
 cost:
   currency: CNY
-  # ── 高峰时段怎么判(贵的那一档;其余时间空闲,价目表上是半价)────────────────────
-  # 口径就是价目表那句话(逐字抄在 config.py 的 PeakConfig 里):
-  #   "空闲时段价格为高峰时段价格的一半。北京时间周一至周五(不含中国法定节假日)
-  #    9:00 - 12:00、14:00 - 18:00 为高峰时段;其余时段,包括周末及中国法定节假日
-  #    全天均为空闲时段。"
-  # 于是高峰 = 工作日 ∩ 钟点窗口 ∩ 不是法定节假日,三个条件分别在下面三处。
   peak:
-    # ISO 星期:1=周一 … 7=周日。**调休上班的周末不算工作日**(价目表说的是"周末",
-    # 不是"调休日历"),所以这里永远是 1–5,别照放假通知里的"X月X日上班"改。
-    weekdays: [1, 2, 3, 4, 5]
-    # 高峰钟点,**按北京时间读**(不是服务器本地的钟)。[起, 止) 左闭右开:
-    # 12:00 整已经不算高峰(午休从 12:00 开始),18:00 整同样。
-    # 写成 [] = 不分时段(全部按 peak 价)。
-    windows:
+    weekdays: [1, 2, 3, 4, 5]      # ISO 星期:1=周一 … 7=周日
+    windows:                        # 高峰时段,北京时间,左闭右开
       - ["09:00", "12:00"]
       - ["14:00", "18:00"]
-  # 中国法定节假日:**含头含尾的日期区间**。落在这里的日子全天算空闲。
-  # 来源 = 国务院办公厅《关于XXXX年部分节假日安排的通知》(每年 11 月前后发布),
-  # 只抄"放假"的那几天,**不要抄调休上班的周末**(那些按"周末"已经是空闲)。
-  #   2025:国办发明电〔2024〕12号    2026:国办发明电〔2025〕7号
-  # **每年公布后补一行**;某一年没填 → 那年的工作日按高峰价计并在报表里计入
-  # calendar_unknown_calls(不会假装那天不放假,但会偏贵)。
-  holidays:
-    - ["2025-01-01", "2025-01-01"]   # 元旦
-    - ["2025-01-28", "2025-02-04"]   # 春节
-    - ["2025-04-04", "2025-04-06"]   # 清明
-    - ["2025-05-01", "2025-05-05"]   # 劳动节
-    - ["2025-05-31", "2025-06-02"]   # 端午
-    - ["2025-10-01", "2025-10-08"]   # 国庆 + 中秋
-    - ["2026-01-01", "2026-01-03"]   # 元旦(1/4 周日上班,仍是周末 → 空闲)
-    - ["2026-02-15", "2026-02-23"]   # 春节(2/14、2/28 周六上班,同上)
-    - ["2026-04-04", "2026-04-06"]   # 清明
-    - ["2026-05-01", "2026-05-05"]   # 劳动节(5/9 周六上班)
-    - ["2026-06-19", "2026-06-21"]   # 端午
-    - ["2026-09-25", "2026-09-27"]   # 中秋(9/20 周日上班)
-    - ["2026-10-01", "2026-10-07"]   # 国庆(10/10 周六上班)
+  holidays:                         # 法定节假日,含头含尾
+    - ["2025-01-01", "2025-01-01"]
+    - ["2025-01-28", "2025-02-04"]
+    - ["2025-04-04", "2025-04-06"]
+    - ["2025-05-01", "2025-05-05"]
+    - ["2025-05-31", "2025-06-02"]
+    - ["2025-10-01", "2025-10-08"]
+    - ["2026-01-01", "2026-01-03"]
+    - ["2026-02-15", "2026-02-23"]
+    - ["2026-04-04", "2026-04-06"]
+    - ["2026-05-01", "2026-05-05"]
+    - ["2026-06-19", "2026-06-21"]
+    - ["2026-09-25", "2026-09-27"]
+    - ["2026-10-01", "2026-10-07"]
   models:
-    deepseek-flash: &v41_flash
+    deepseek-flash: &v41_flash     # 单价:元 / 百万 token;键为 provider 回报的模型名
       input_cache_hit:  {peak: 0.04, off_peak: 0.02}
       input_cache_miss: {peak: 2.0,  off_peak: 1.0}
       output:           {peak: 8.0,  off_peak: 4.0}
@@ -142,66 +76,39 @@ mysql:
   port: 10093
   user: rag
   database: rag
-  connect_timeout_s: 5 # 连不上时多久报错(本机 Docker 与跨网部署合理值不同)
+  connect_timeout_s: 5
 
 redis:
   host: 127.0.0.1
   port: 10087
   db: 0
-  # Redis 故障时每个请求要等多久才降级
   socket_timeout_s: 1.0
 
 faq:
-  # 口径 = top1 原始分 / 该条问自己的分(夹到 0~1),再要求两个覆盖率都过门槛
-  threshold: 0.95
-  # 提问覆盖率:用户问的词至少这么大比例要出现在命中的条目里(实测 150 条真实语料:
-  # 一字不差与"请问,…"150/150 全放行,50 条留出题被误答 6 → 1)。
-  min_query_coverage: 0.5
-  # 条目覆盖率:命中的条目里至少这么大比例的词要被用户提到(拦住只有虚词相同的两条问题互相命中)。
-  min_entry_coverage: 0.8
-  # ── 数据侧:什么样的"问题"才准进这张表(由装载脚本校验;那份脚本不随仓库发布)──
-  # 规则 = 分词后至少 2 个实词,或整串至少 8 个字(长标识符 IllegalArgumentException 也算合格)。
-  # 病根是"单个实词"的短条目:它的自身分极低,任何含这个词的提问都会被它答掉。
-  # 两个都填 0 = 关掉校验(回滚用)。
-  min_question_tokens: 2
-  min_question_chars: 8
+  threshold: 0.95               # top1 分 / 自身分,夹到 0~1
+  min_query_coverage: 0.5       # 提问词被命中条目覆盖的比例
+  min_entry_coverage: 0.8       # 条目词被提问覆盖的比例
+  min_question_tokens: 2        # 数据准入:实词数下限,0 = 不校验
+  min_question_chars: 8         # 数据准入:字数下限
   table: faq
 
 cache:
-  # FAQ 答案缓存的过期秒数(旁路缓存)。
-  # 300 = 5 分钟:够挡住重复提问那笔 LLM 兜底的钱,又不至于让过期答案停留太久。
-  # 注意作用域:该缓存当前只服务 `faq` 单通道命令 —— 合流(qa / FastAPI)不读写缓存,
-  ttl_s: 300
-  # BM25 索引「语料指纹」的缓存秒数:指纹查询实测 397.6ms/次(3938 块)且**每次检索都调**,
-  # 而真正的 BM25 打分只要 ~1ms —— 缓存后每查询变成一次 Redis GET(~0.1ms)。
-  # 代价只是「语料变了最多晚这么久被发现」;入库本身要几分钟,20 秒体感上不存在。
-  # 要"上传完立刻可搜"就得让写入方 bump 缓存键。
-  corpus_fp_ttl_s: 20
+  ttl_s: 300                    # FAQ 答案缓存秒数
+  corpus_fp_ttl_s: 20           # BM25 语料指纹缓存秒数
 
 milvus:
   host: 127.0.0.1
-  # 宿主端口,19530 映射到 10086
   port: 10086
-  # 只准填已存在的库。Milvus 不会自动建库,当前环境里只有 default
   database: default
-  # 图片模态上线后的新集合名。老 `rag_chunks` 没有 image_keys 列(schema 建集合时定格),
-  # 且图片 key 属于新增载荷 —— 按新 schema 重灌一份,老集合留着做回滚。
   collection: rag_chunks_img_v1
-  read_consistency: bounded
-  # 稠密向量的索引（**建集合那一刻定格**，改这里不会自动重排已有索引）。
-  #   FLAT     = 暴力精确检索。结果可断言、小语料最稳；N 大时延迟线性涨。
-  #   IVF_FLAT = 先 k-means 分 nlist 个簇、检索只探 nprobe 个簇 —— 快，但**是近似**
-  # 换上/换下都要重建索引：`project-rag collections --reindex --yes`（数据不动）。
-  # nprobe 必须 ≤ nlist（配置层会当场拦下来，不等 Milvus 报错）。
+  read_consistency: bounded     # strong / bounded / eventually
   index:
-    type: IVF_FLAT
-    nlist: 128      # 仅 IVF_FLAT 用：簇数
-    nprobe: 16      # 仅 IVF_FLAT 用：检索探几个簇（取值越大越接近 FLAT）
+    type: IVF_FLAT              # FLAT / IVF_FLAT
+    nlist: 128                  # IVF_FLAT:簇数
+    nprobe: 16                  # IVF_FLAT:检索探几个簇,<= nlist
 
-# 图片模态。**密钥不写在这里**:AccessKey 从 .env(或环境变量)读,
-# 这一段只放非敏感的策略与默认值。关掉时 PDF 仍走 PyMuPDF。
 images:
-  enabled: false        # 真开由 .env 的 RAG_IMAGES__ENABLED=true 覆盖
+  enabled: false                # 真开走 .env 的 RAG_IMAGES__ENABLED
   max_per_doc: 50
   min_bytes: 2048
   max_bytes: 10485760
@@ -210,86 +117,60 @@ images:
 oss:
   region: cn-guangzhou
   prefix: rag/images
-  # signed = 后端签短链(浏览器/模型直连 OSS);proxy 尚未实现
-  url_mode: signed
+  url_mode: signed              # signed / proxy
   sign_expires_s: 300
   connect_timeout_s: 5
   upload_timeout_s: 30
   max_retries: 3
 
 mineru:
-  # compose 里的服务名是 mineru;手工跑宿主服务时改成 http://127.0.0.1:18082
   base_url: http://mineru:8000
-  timeout_s: 3600  # 大 PDF 单份可能几十分钟;客户端别比服务端先超时
+  timeout_s: 3600
   poll_interval_s: 2
   cache_dir: data/mineru
 
 embedding:
-  # 目录相对项目根;写绝对路径也认
   model_dir: models/bge-m3
-  # 重排模型,现在只把位置定下来
   rerank_model_dir: models/bge-reranker-v2-m3
-  device: cuda
-  # 是否开启半精度
+  device: cuda                  # cuda / cpu
   use_f16: true
   rerank_use_f16: true
-  backend: bge_m3
+  embed_batch_size: 32          # 单次前向条数
+  embed_batch_max_texts: 64     # 单批调度上限
+  rerank_batch_size: 32         # 单次前向前对数
+  rerank_batch_max_pairs: 128   # 单批调度上限
+  backend: bge_m3               # bge_m3 / hashing
 
 keyword:
-  #将BM25稀疏向量存进哪里,milvus/memory
-  backend: milvus
-  # BM25 的两个常数（只对 milvus 那档生效；memory 那档用 rank_bm25 的默认值，恰好也是这两个数）。
-  # bm25_k1：词频饱和速度（越大越"词频说话"）；bm25_b：长度归一强度（0=不归一，1=完全按长度罚）。
-  # 调完之后已有文档的权重是按旧常数烘进去的 —— 要么重灌，要么跑 `project-rag sparse --yes`。
-  bm25_k1: 1.5
-  bm25_b: 0.75
+  backend: milvus               # milvus / memory
+  bm25_k1: 1.5                  # 词频饱和
+  bm25_b: 0.75                  # 长度归一
 
 rag:
-  # 分块与检索默认值
   parent_chunk_size: 1200
   child_chunk_size: 300
   chunk_overlap: 50
-  # ingest 的嵌入批大小:CPU 上批量越大越划算,显存小的机器反而要调小。
   ingest_batch_size: 64
-  retrieval_k: 5          # 每一路各召回多少条(BM25 路 / 向量路)
-  candidate_m: 2          # 融合后最终进上下文的块数,也就是大模型收到的父块数量
-  # 融合:两路(进程内 BM25 关键字 + Milvus 稠密向量)合并成一个排序。
-  #   rrf      —— 只用排名,免标定,对两路分数量纲不敏感
-  #   weighted —— 各自归一化后加权,能表达「哪一路更可信」,但要调权重
-  fusion: rrf
-  rrf_k: 60  # 各排名得分的分母,越大各排名的得分差距越小
-  # 两路权重:rrf 模式=排名权重,weighted 模式=分数权重。至少一个 > 0。
-  bm25_weight: 0.5
+  retrieval_k: 10               # 每路召回条数
+  candidate_m: 3                # 最终进上下文的父块数
+  fusion: rrf                   # rrf / weighted
+  rrf_k: 60
+  bm25_weight: 0.5              # 两路权重,至少一个 > 0
   vector_weight: 0.5
-  # 重排:两路融合后,用 CrossEncoder 对**父块正文**再精排一次。
-  #   顺序:召回 → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
   rerank: true
 
 rewrite:
-  # 查询改写:合流通道里「FAQ 未命中 → 向量检索」之间那一步。
-  # 四类策略(与 data/intent/strategy_v1 的训练数据同一套编号):
-  #   0 直接检索 / 1 假设答案(HyDE) / 2 子查询分解 / 3 去噪改写
-  #
-  # **默认关**:除"直接检索"外每一条都要多花一次 LLM 调用生成检索语句,收益取决于语料
-  # —— 它是消融开关,开之前先在评估集上量一次(与 rag.rerank 同一套规矩)。
-  # 打开前确认下面两个路径在本机真的存在,否则日志里会有一条 WARNING 说
-  # 「分类器装配失败,退化回原样检索」—— 那时改写等于没开。
-  enabled: false
-  # lora = tools/lora 微调出的模型 / rule = 规则兜底(准确率差得多,只用来应急)
-  classifier: lora
+  enabled: true                 # 开 / 关
+  classifier: lora              # lora / rule
   adapter_dir: logs/lora/run1/lora_adapter
-  model_dir: ""              # 空 = 读 adapter_dir 旁边的 run_meta.json,再退 models/chinese-roberta-wwm-ext
-  device: cpu                # 显存留给嵌入与重排;4 分类短句在 CPU 上十几毫秒
-  max_length: 64             # 必须与训练时一致(tools/lora/train.py)
-  max_subqueries: 3          # 子查询分解最多拆几句(每句各跑一路召回,直接乘在耗时上)
-  max_query_chars: 400       # 单句检索语句的长度上限,防假设答案写成一整篇
-  confidence_threshold: 0.0  # 0 = 不做低置信回退(实测回退会让准确率变差,见 tools/lora/finetune_report.md)
+  model_dir: ""                 # 空 = 按 run_meta.json 找基座
+  device: cuda                  # cuda / cpu
+  max_length: 64                # 与训练一致
+  max_subqueries: 3
+  max_query_chars: 400
+  confidence_threshold: 0.0     # 0 = 不做低置信回退
 
 conversation:
-  # 会话历史 = **滑动窗口**,两半一起看:
-  #   ① history_rounds(N 轮):读写共用 —— 读最近 N 轮进提示词,写的时候把库里裁到最近 N 轮;
-  #   ② history_max_chars(字符预算):只影响进提示词的那一份
-  #      **整轮丢掉**(不截断半轮),至少保留最新一轮。
   table: conversations
   history_rounds: 5
   history_max_chars: 12000

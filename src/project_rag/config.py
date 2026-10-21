@@ -430,6 +430,13 @@ class RegistrationConfig(BaseModel):
 class ApiConfig(BaseModel):
     """HTTP/WebSocket 服务(``project-rag-api``)的运行参数。"""
 
+    @model_validator(mode="after")
+    def _check_threadpool(self) -> ApiConfig:
+        """输入:无。行为:线程池上限必须 >= 1。输出:self。"""
+        if self.threadpool_size < 1:
+            raise ValueError(f"api.threadpool_size 必须 >= 1,收到 {self.threadpool_size}")
+        return self
+
     # 是否由后端托管前端产物。**兼容模式默认 true**：桌面壳、旧的一体化部署与本地
     # `uv run project-rag-api` 仍然打开就能用；前后端分离部署在 compose 里显式设 false，
     # 后端只提供 API，前端由 Vite / Nginx 单独发。
@@ -471,6 +478,10 @@ class ApiConfig(BaseModel):
     # 自助注册。默认开着 = 员工用企业邮箱前缀自己开通;要审批制就关掉它,
     # 改由管理员 `project-rag user add` 建号。``invite_code`` 非空时还要填邀请码。
     registration: RegistrationConfig = RegistrationConfig()
+    # anyio 线程池上限。同步重活(嵌入/检索/重排/生成)全走 ``run_in_threadpool``,
+    # 这个数同时就是「服务端最多同时处理多少个请求」的上限。默认 40(anyio 默认值);
+    # 调大 = 更多请求进 GPU 队列,但争用更重,收益必须在压测里量。
+    threadpool_size: int = 40
 
 
 class MilvusIndexConfig(BaseModel):
@@ -582,6 +593,28 @@ class EmbeddingConfig(BaseModel):
     # 所以默认 false —— **不改现有行为**，要开自己开，开完拿评估集说话。
     # 只在 CUDA 上生效（CPU 上 fp16 更慢，适配器里判 device）。
     rerank_use_f16: bool = False
+    # 批处理:同刻排队的调用合成一批,减少小前向在 GPU 上互相切片。
+    # ``*_batch_size`` = 单次前向的条数(显存旋钮);``*_max_*`` = 一次调度最多攒多少条
+    # (吞吐与尾延迟的取舍)。单个调用没有额外等待:队列里只有它时立刻开跑。
+    embed_batch_size: int = 32
+    embed_batch_max_texts: int = 64
+    rerank_batch_size: int = 32
+    rerank_batch_max_pairs: int = 128
+
+    @model_validator(mode="after")
+    def _check_batching(self) -> EmbeddingConfig:
+        """输入:无。行为:批处理四个旋钮必须 >= 1。输出:self。"""
+        for name in (
+            "embed_batch_size",
+            "embed_batch_max_texts",
+            "rerank_batch_size",
+            "rerank_batch_max_pairs",
+        ):
+            value = getattr(self, name)
+            if value < 1:
+                raise ValueError(f"embedding.{name} 必须 >= 1，收到 {value}")
+        return self
+
     # 嵌入实现:**默认必须是真语义模型**。``hashing`` 只为演示与验收存在 ——
     # 它是字符 bigram 哈希(零依赖、零模型、确定性),只保证「文本越像、向量越近」,
     # **不保证语义相近**。默认值一旦被改成 hashing,没有模型的新机器会「看起来一切正常、
@@ -699,6 +732,10 @@ class RewriteConfig(BaseModel):
     # 因为判错的样本真值大多落在第二位,回退没利用这个信息。
     # 读数见 `tools/lora/finetune_report.md`;换分类器时可以再调它。
     confidence_threshold: float = 0.0
+    # 分类器批处理:同刻排队的判定合成一批前向(与嵌入/重排同一个 Batcher)。
+    # 单条没有额外等待;batch_size = 单次前向条数,batch_max_texts = 单批上限。
+    classifier_batch_size: int = 32
+    classifier_batch_max_texts: int = 64
 
     @model_validator(mode="after")
     def _check_knobs(self) -> RewriteConfig:
@@ -720,6 +757,10 @@ class RewriteConfig(BaseModel):
                 f"confidence_threshold 是概率阈值,必须落在 [0, 1)，收到 "
                 f"{self.confidence_threshold}"
             )
+        for name in ("classifier_batch_size", "classifier_batch_max_texts"):
+            value = getattr(self, name)
+            if value < 1:
+                raise ValueError(f"rewrite.{name} 必须 >= 1,收到 {value}")
         return self
 
 
