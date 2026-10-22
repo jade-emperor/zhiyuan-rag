@@ -84,15 +84,17 @@ jobs:
       - name: 把不合格的脚本贴到 job summary（失败时）
         if: failure()
         run: |
+          section=$(sed -n '/^不合格脚本的最后几行输出/,$p' acceptance.log || true)
           {
             echo "### 第 ${{ matrix.shard }} 片不合格的脚本"
             echo '```'
-            grep -E '^  ✘' acceptance.log || echo '(没有 ✘ 行：失败发生在验收之前，比如 sync)'
+            if [ -n "$section" ]; then echo "$section"; else echo '(验收没跑到：失败发生在它之前，比如 uv sync)'; fi
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          grep -E '^  ✘' acceptance.log | while IFS= read -r line; do
-            echo "::error title=验收不合格::$line"
-          done || true
+          # 每个不合格脚本打一行 annotation：job 页上一眼能看到，不用翻 summary
+          sed -n '/^不合格：$/,/^不合格脚本的最后几行输出/p' acceptance.log \
+            | grep -E '^  ✘' \
+            | while IFS= read -r line; do echo "::error title=验收不合格::$line"; done || true
 
   frontend:
     name: 前端 typecheck + 产物与源码同源

@@ -74,6 +74,9 @@ class Result:
     ok: bool
     seconds: float
     detail: str
+    # 失败脚本输出的最后几行。**为什么留着**:CI 上的 job 日志匿名看不了(403),
+    # 只有 job summary 是公开的 —— 没有这一段,失败详情就只剩一行,判不了是哪条用例。
+    tail: str = ""
 
 
 def _scripts(checks: bool, reverse: bool) -> list[Path]:
@@ -134,12 +137,15 @@ def _run(path: Path, timeout_s: int) -> Result:
     seconds = time.perf_counter() - start
     if proc.returncode == 0:
         return Result(path.name, True, seconds, "")
-    # 失败时给出最有信息量的一行：检查脚本是「✘ [FAIL] …」，反向 runner 是「✘ 还是绿的…」
+    # 失败时给出最有信息量的一行。**反向 runner 的裁决行优先**（「✘ 还是绿的」「N 条没红」）：
+    # 它会把每一条检查的红线都打出来，第一条 ✘ 往往只是正常的那条红 —— 照它读会读错
+    # （实测踩过：详情指向 RT-1（正常红），真正没红的是另一条）。
     lines = [ln.strip() for ln in (proc.stdout + proc.stderr).splitlines()]
-    detail = next((ln for ln in lines if ln.startswith("✘")), "")
+    verdict = next((ln for ln in lines if "还是绿的" in ln or "条没红" in ln or "锚点" in ln), "")
+    detail = verdict or next((ln for ln in lines if ln.startswith("✘")), "")
     if not detail:
         detail = next((ln for ln in lines if "FAIL" in ln or "Traceback" in ln), "见完整输出")
-    return Result(path.name, False, seconds, detail[:200])
+    return Result(path.name, False, seconds, detail[:200], "\n".join(lines[-14:]))
 
 
 def _lock_or_die() -> object | None:
@@ -238,6 +244,12 @@ def main() -> int:
             "\n排查提示：反向着看比顺着看快 —— 先确认这条**是不是本机缺外部条件**"
             "（缺模型/语料会 SKIP，不该 FAIL；真 FAIL 就是代码或契约坏了）。"
         )
+        # 这一段是给「看不到 job 日志」的场合准备的(CI 的 job summary 只贴这一段):
+        # 反向 runner 挂在哪条用例、检查报的什么,全在这几行里
+        print("\n不合格脚本的最后几行输出：")
+        for result in bad:
+            print(f"── {result.name} " + "─" * max(3, 56 - len(result.name)))
+            print(result.tail or "(这个脚本没有输出)")
     return 1 if bad else 0
 
 
