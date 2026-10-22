@@ -56,6 +56,10 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # Python 大版本要改 requires-python 并重跑全套验收，不是一次镜像 bump
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps(docker)"
     labels: ["dependencies", "docker"]
