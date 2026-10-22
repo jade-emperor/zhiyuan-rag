@@ -8,6 +8,7 @@
     uv run python scripts/acceptance/run_all.py --set local     # 全套：还需要真实语料/真 DeepSeek key
     uv run python scripts/acceptance/run_all.py --set all       # 39 套检查 + 29 份反向，一个不落
     uv run python scripts/acceptance/run_all.py --list          # 只打印分组，不跑
+    uv run python scripts/acceptance/run_all.py --set ci --shard 2/3   # 只跑第 2 片（CI 拿它分机器）
 
 **为什么需要它**：在此之前"全量回归"是一段手写的 shell 循环，只在某个人的终端里存在；
 新机器/CI 想知道"我这儿能跑哪些"只能逐份读脚本。这个 runner 把那份知识**变成可执行的清单**。
@@ -24,6 +25,12 @@
 
 裁决口径与单份脚本一致：**检查脚本 exit 0 = 该套 0 失败；反向 runner exit 0 = 全红**。
 任一条不合就整份返回非 0，并在末尾把不合格的列出来。
+
+**为什么有 ``--shard``**：整个 ``ci`` 集在单机上实测 30 分钟往上（一份 20~50s：反向 runner
+要「绿的跑一遍、改坏源码再红的跑一遍」），而 CI 的 job 有 ``timeout-minutes`` 上限 —— 撞上上限时
+GitHub 把 job 记成 ``cancelled``，PR 页面上就是一个 ✗，**看着像代码坏了，其实是跑不完**（这个坑
+已经踩过一次：40 分钟上限、单机 33 分钟，PR #8 连挂两轮）。于是按固定的下标隔取切成 N 片，
+CI 用 matrix 并行跑，墙钟时间随之降到 1/N 左右。
 """
 
 from __future__ import annotations
@@ -89,6 +96,26 @@ def _selected(set_name: str, checks: bool, reverse: bool) -> list[Path]:
         return [p for p in everything if p.name not in excluded]
     wanted = SERVICES if set_name == "services" else LOCAL_ONLY
     return [p for p in everything if p.name in set(wanted)]
+
+
+def _shard(scripts: list[Path], spec: str) -> list[Path]:
+    """输入:脚本列表 + ``i/n``。行为:按固定顺序隔 n 取 1,取第 i 份。输出:该片的脚本。
+
+    **为什么按隔取、不按前缀切**:``check_*`` 与 ``reverse_*`` 的单份开销差一个量级
+    (前者跑一遍就判,后者要「绿一遍 → 改坏源码 → 红一遍 → 还原」)。按前缀切会把 30 份检查
+    全压给第一片、29 份反向全压给第二片,等于没分;隔取在**排序后**的列表上交替取样,
+    两类的份数自然相等,每片用时也就接近。
+
+    **为什么必须是「排序后」**:``_scripts`` 已按文件名排序,同一份清单在任何机器上切出来的
+    分片都一样 —— 否则 CI 上的片与本地 ``--shard`` 调试的片对不上,排查时会被误导。
+    """
+    try:
+        mine, total = (int(part) for part in spec.split("/", 1))
+    except ValueError:
+        raise ValueError(f"应为 i/n 形式（i 从 1 起），收到 {spec!r}") from None
+    if total < 1 or not 1 <= mine <= total:
+        raise ValueError(f"i 必须落在 1..n 之间，收到 {spec!r}")
+    return scripts[mine - 1 :: total]
 
 
 def _run(path: Path, timeout_s: int) -> Result:
@@ -161,12 +188,24 @@ def main() -> int:
     parser.add_argument("--reverse-only", action="store_true", help="只跑 reverse_*.py")
     parser.add_argument("--timeout", type=int, default=900, help="单个脚本的超时秒数")
     parser.add_argument("--list", action="store_true", help="只打印选中哪些脚本")
+    parser.add_argument(
+        "--shard",
+        metavar="I/N",
+        default=None,
+        help="只跑第 I 片（I 从 1 起，共 N 片）—— CI 用它把整份清单摊到几台机器上并行",
+    )
     parser.add_argument("--force", action="store_true", help="跳过「不许并发」这道闸(调试 runner 时用)")
     args = parser.parse_args()
 
     checks = not args.reverse_only
     reverse = not args.checks_only
     scripts = _selected(args.set_name, checks, reverse)
+    if args.shard:
+        try:
+            scripts = _shard(scripts, args.shard)
+        except ValueError as exc:
+            print(f"--shard 参数不对：{exc}", file=sys.stderr)
+            return 2
     # 反向测试会改源码再还原,所以**必须**独占跑。--list 不改任何东西,不必抢锁
     _lock = None if (args.list or args.force) else _lock_or_die()
     _ = _lock  # 持有到进程结束(局部变量被回收 = 释放) —— 所以这里刻意不让它出作用域
@@ -178,7 +217,8 @@ def main() -> int:
         print(f"集合 {args.set_name} 里没有脚本 —— 参数写错了？", file=sys.stderr)
         return 2
 
-    print(f"集合 {args.set_name}：{len(scripts)} 份脚本（超时 {args.timeout}s/份）\n" + "─" * 68)
+    label = f"集合 {args.set_name}" + (f" 第 {args.shard} 片" if args.shard else "")
+    print(f"{label}：{len(scripts)} 份脚本（超时 {args.timeout}s/份）\n" + "─" * 68)
     results: list[Result] = []
     for path in scripts:
         result = _run(path, args.timeout)
