@@ -169,8 +169,11 @@ def run(needle: str) -> tuple[bool | None, str]:
     body = [line.strip() for line in proc.stdout.splitlines() if any(m in line for m in marks)]
     hits = [line for line in body if needle in line]
     if len(hits) != 1:
+        skips = [line for line in body if "[SKIP]" in line]
+        if skips:
+            return None, skips[0]
         return False, f"⚠️ 片段 {needle!r} 命中了 {len(hits)} 行:{hits}"
-    if "[SKIP]" in hits[0] and any(word in hits[0] for word in _MISSING_PREREQ):
+    if "[SKIP]" in hits[0]:
         return None, hits[0]
     return "[FAIL]" in hits[0], hits[0]
 

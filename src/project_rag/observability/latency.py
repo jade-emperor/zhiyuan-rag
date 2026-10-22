@@ -153,7 +153,7 @@ class StreamTiming:
     - ``"sources"``:不用手动打 —— ``streaming.timed`` 收到 sources 帧时自动记;
     - ``"retrieve"``:整个检索返回(``stream_rag`` 里 ``retrieve()`` 的下一步);
     - ``"embed"`` / ``"vector"`` / ``"bm25"`` / ``"fuse"`` / ``"collapse"`` / ``"rerank"``:
-      检索内部的六段(查询嵌入 → 向量检索 → 关键字那一路 → 融合 → 折叠父块 → 重排),
+      检索内部的六段(查询嵌入 → 向量检索 → 关键字那一路 → 融合 → 重排 → 按父块折叠),
       由 ``retrieve()`` 打 —— 它们让「检索 1.8s 到底花在哪」不用猜。
       ``"vector"``/``"bm25"`` 这两路**并行**跑,所以那两格的分段值由各路 ``span()`` 自报
       (相邻打点之差在这里量不出各自时长,见 ``span``);两条打点仍在召回段结束时落下,
@@ -409,8 +409,8 @@ class StreamTiming:
         (见 ``_AFTER_REWRITE``),``rewrite_ms`` 单独报改写那段;
         ``vector_ms``/``bm25_ms`` 是**这两路各自报的自己的时长**(两路并行跑,会重叠,
         所以六段之和**可以大于** ``retrieve_ms``;自己没报时退回相邻打点之差);
-        ``fuse_ms``/``collapse_ms``/``rerank_ms`` 是**相邻两个打点之差**
-        (段耗时,这三段串行,和 ≈ ``retrieve_ms`` 减去两路召回那一段);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
+        ``fuse_ms``/``rerank_ms``/``collapse_ms`` 是**相邻两个打点之差**
+        (段耗时,顺序是融合 → 重排 → 按父块折叠,和 ≈ ``retrieve_ms`` 减去两路召回那一段);``llm_think_ms`` 是 ``llm_start`` 到**最后一帧思考**;
         ``llm_ttft_ms`` 是 ``llm_start`` 到第一帧 token;``think_tokens``/``tokens`` 是帧数;
         ``llm_model``/``llm_input_tokens``/``llm_cached_input_tokens``/``llm_output_tokens`` 是
         **provider 回报的计费口径**(没调模型或没回报时是 ``-``,报表按它们算钱,
@@ -434,8 +434,14 @@ class StreamTiming:
             "vector_ms": _ms(self._segment("vector", "embed", "vector")),
             "bm25_ms": _ms(self._segment("bm25", "vector", "bm25")),
             "fuse_ms": _ms(self._gap("bm25", "fuse")),
-            "collapse_ms": _ms(self._gap("fuse", "collapse")),
-            "rerank_ms": _ms(self._gap("collapse", "rerank")),
+            # 顺序:融合 → 重排 → 按父块折叠。没装重排器时没有 rerank 打点,
+            # 折叠直接从融合之后算起。
+            "rerank_ms": _ms(self._gap("fuse", "rerank")),
+            "collapse_ms": _ms(
+                self._gap("rerank", "collapse")
+                if "rerank" in self.marks
+                else self._gap("fuse", "collapse")
+            ),
             "llm_think_ms": _ms(self.llm_think_ms),
             "llm_ttft_ms": _ms(self._since("llm_start", self.first_token)),
             "think_tokens": str(self.think_tokens),

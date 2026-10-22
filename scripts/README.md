@@ -16,9 +16,14 @@
 
 ```bash
 ./scripts/dev.sh            # 列出所有短命令
-./scripts/dev.sh ci         # 零容器零网络：pyright + 29 套契约 + 29 份反向（CI 跑的就是这条）
-./scripts/dev.sh all        # 全套：38 套契约 + 29 份反向（要中间件 + 语料 + key）
+./scripts/dev.sh ci         # 零容器零网络：pyright + 30 套契约 + 29 份反向（CI 跑的就是这条）
+./scripts/dev.sh all        # 全套：39 套契约 + 29 份反向（要中间件 + 语料 + key）
 ```
+
+> CI 里 `ci` 这条**拆成 3 片并行**（`run_all.py --set ci --shard i/3`）：59 份脚本单机要跑
+> 30 分钟往上（反向 runner 每份都要绿一遍、改坏源码再红一遍），**贴着 job 的 `timeout-minutes`
+> 上限** —— 撞上限时 GitHub 把 job 记成 `cancelled`，PR 上就是一个 ✗，看着像代码坏了。
+> 分片按**排序后的下标隔取**，所以每片都同时有检查与反向 runner；想复现某一片的红就加 `--shard i/3`。
 
 > `ci` 集合**不需要 `.env`**：新克隆上没有 `.env` 时，验收自己会填三处占位密钥（与 CI 同一组）；
 > 有 `.env` 时一个都不覆盖。需要真连接的检查连不上会 SKIP 并点名 owner。
@@ -55,7 +60,7 @@
 
 `run_all.py` 把"每套脚本需要什么外部条件"**变成了可执行的清单**（`--set ci|services|local|all`，
 分组依据是**一次实测探测**：把中间件端口指向 1、模型目录指向不存在、key 换成假值，
-再跑全部 38 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与维护者的 WSL
+再跑全部 39 套看谁 PASS/FAIL/SKIP）。**为什么不用 Makefile**：这台开发机与维护者的 WSL
 都没装 `make` —— 跑不起来的入口比没有入口更糟。CI 里是等价的 uv/python 命令，
 三边（本地 / `dev.sh` / CI）指向同一份清单，没有第二处定义。
 
@@ -83,7 +88,7 @@ from _fakes import FakeEmbedder, FakeLLM    # 端口的内存替身
 4. **同一时刻只跑一份改源码的 runner** —— 反向测试改的是**同一份源码**，两个 runner 并行时「读原件 → 改坏 → 还原」会互相踩：B 在 A 的坏窗口里读到了坏内容，还原时把**坏版本**写回去，于是 `src/**` 永久留在坏版本上（而备份目录也被对方清掉了，`restore_stale_patches()` 无从还原）。真踩过：`--set ci`（里面 20 份 runner 串行改源码）与手工跑的 `reverse_m7_2_live_kb.py` 同时进行，`application/documents.py` 里留下一句 `if False:  # 反向测试` —— 症状是下一轮**一批**检查莫名其妙地红，而且看着像产品代码坏了。回归要跑就独占跑；要并行就只并行**不碰源码**的那些。**这条被踩过三次** —— 最近一次是 FAQ 那轮：`--set ci` 在跑的同时手工跑了一个反向 runner，两个 runner 共用 `.cache/reverse_backup/`，`restore_stale_patches()` 互相把对方的坏版本还原回去，结果 `reverse_m7_4_security.py` 有一条用例没红（单跑立刻全红）。症状永远是「一批看起来不相干的检查莫名地红 / 不红」。
 
 抽之前（当时 13 份脚本）：同一段壳子各抄一遍（≈687 行）、`_FakeLLM` 有 5 个版本、`_FakeConversationStore`
-有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 38 份检查 + 29 份反向），
+有 3 个版本；抽之后那 13 份合计 **12562 → 11326 行**。**这几个数字不再维护**（现在 39 份检查 + 29 份反向），
 要的是那条结论：壳子只有一处，改一次口径只改一处。
 
 > **评估的范围（定）**：只跑 RAGAS 四指标
@@ -276,7 +281,7 @@ uv run python scripts/acceptance/check_m3_bm25_cache.py     # 5 通过 / 0 失�
 uv run python scripts/acceptance/reverse_m3_bm25.py         # 反向测试：4 条全红（原地改 adapters/bm25_index.py，finally 还原）
 ```
 
-**权威 = `check_m3_bm25_cache.py` 的 docstring**：3938 块时 `VectorStore.fingerprint()` 要
+**权威 = `check_m3_bm25_cache.py` 的 docstring**：当时 3938 块的语料上，`VectorStore.fingerprint()` 要
 **397.6ms** 而**每次检索都要调**，真正的 BM25 打分只要 **~1ms** —— 所以指纹先问 Redis（存 sha256
 摘要，不是 250KB 的整条指纹），未命中才回源。五条契约分别钉「省了」与「没省出问题」：
 TTL 内不再回源 / 过期后变化仍被发现 / 缓存故障只降级（**不许"当作没变"**，那是静默错误）/
@@ -300,7 +305,7 @@ uv run python scripts/acceptance/reverse_p0_8_account.py   # 反向测试：5 �
 **切分与写入**（切分器两级偏移都切得出自己且与 `split_text` 分段一致、`chunk_documents` 算页码
 并在偏移数不符时**当场报错**、不报偏移的切分器给 `None`（**不许猜**）、跨页块取起始页、
 `Citation.page` 跟着子块走、Milvus 往返、**老集合读得回来但写入当场报错**）。
-⚠️ 页码是「块**开始**的那一页」：真语料里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」；
+⚠️ 页码是「块**开始**的那一页」：当时那批 PDF 里 **22.9% 的块跨页**（2644 块里 606 个），有的块甚至只在一页上占最后 1~2 个字符 —— 判据要按这个约定写，别写成「整块都在这一页里」；
 ⚠️ 造 PDF 夹具用 **ASCII**；
 ⚠️ 夹具的**尺度**要让被测行为看得见（子块比一页还大就会把两页并进同一块，第二页永远验不到 ——
 ）；⚠️ langchain **1.x** 的 `add_start_index` 是**构造参数**。
@@ -312,7 +317,7 @@ uv run python scripts/acceptance/reverse_p0_8_account.py   # 反向测试：5 �
 uv run python scripts/acceptance/check_p0_4_ab.py      # 6 通过 / 0 失败（除阈值那条要真 FAQ 表外全内存）
 uv run python scripts/acceptance/reverse_p0_4.py       # 反向测试：6 条全红
 uv run python scripts/tools/ab_retrieval.py --limit 112 --configs rrf,weighted-5-5,weighted-3-7,weighted-7-3
-uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（真表 463 条，约 1 分钟；E 组最慢）
+uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（读真实 faq 表；约 1 分钟，E 组最慢）
 ```
 
 **权威 = `check_p0_4_ab.py` 的 docstring**：`overlaps()`（reference 的字符 3-gram 被某条 citation
@@ -322,7 +327,7 @@ uv run python scripts/acceptance/calibrate_threshold.py  # FAQ 阈值标定（�
 
 **第六条是第三组（FAQ 阈值）**：`check_p0_4_ab` 直接 import 标定工具的 `probe` 与
 `NOISE_PROBES`（**探针口径只有一处**），只跑最快的 A/B/C 三组（0.8 秒）并断言
-`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数：**463 条语料上
+`faq.threshold` 落在实测可用区间 `(C 上界, B 下界]` 里。读数（当时 463 条语料）：**463 条语料上
 区间 (0.303, 1.000]、余量 0.697，0.85 在区间内 → 不改默认**；反向 RT-4 把配置改成 0.20 会让它红。
 ⚠️ 区间只挡「分数太低」，挡不住「答成了隔壁那条」（近邻混淆）—— 那是排序问题，见
 规则见本节上一条。
@@ -388,8 +393,9 @@ uv run python scripts/acceptance/reverse_m6_deploy.py       # 反向测试：34 
 `.dockerignore` 按**整行**匹配、**`unstructured` 那一档不许回到运行时依赖**（`en-core-web-sm` 的 wheel
 只有 GitHub 一个源，回去就意味着 `docker build` 要去 github.com 取一个产品路径不用的模型）。
 
-**它证明「配置自洽」，不证明「镜像能构建」** —— 后者只能在装了 docker 的机器上跑
-`docker compose up -d --build`（开发机没有 `docker` 命令，见 README 的「仓库里有什么、没有什么」）。
+**它证明「配置自洽」，不证明「镜像在你这台机器上能构建」** —— 后者要跑
+`docker compose up -d --build` + `docker compose ps`（app 要 `healthy`）。镜像在作者那台
+Windows/WSL 机器上构建并实测过（见 README §8），但换机器 / 换网络 / 换缓存仍要自己跑一遍。
 
 ## 前端：源码在 `web/`、产物入库、契约在 `check_m7_frontend.py`
 

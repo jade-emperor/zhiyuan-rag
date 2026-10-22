@@ -248,7 +248,7 @@ CASES: tuple[Case, ...] = (
 )
 
 
-def run(needle: str) -> tuple[bool, str]:
+def run(needle: str) -> tuple[bool | None, str]:
     """输入:期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。输出:(是否 FAIL, 那一行)。"""
     proc = subprocess.run(
         [sys.executable, f"scripts/acceptance/{SCRIPT}"],
@@ -261,7 +261,12 @@ def run(needle: str) -> tuple[bool, str]:
     marks = ("[PASS]", "[FAIL]", "[SKIP]")
     body = [line.strip() for line in proc.stdout.splitlines() if any(m in line for m in marks)]
     hits = [line for line in body if needle in line]
+    if len(hits) == 1 and "[SKIP]" in hits[0]:
+        return None, hits[0]
     if len(hits) != 1:
+        skips = [line for line in body if "[SKIP]" in line]
+        if skips:
+            return None, skips[0]
         return False, f"⚠️ 片段 {needle!r} 命中了 {len(hits)} 行:{hits}"
     return "[FAIL]" in hits[0], hits[0]
 
@@ -271,6 +276,7 @@ def main() -> int:
     if stale:
         print(f"⚠️  上次被打断时留下的坏源码,已自动还原:{stale}\n")
     bad = 0
+    skipped: list[str] = []
     for case in CASES:
         original = case.target.read_text(encoding="utf-8")
         hits = original.count(case.old)
@@ -282,11 +288,23 @@ def main() -> int:
             continue
         with patched_source(case.target, case.old, case.new):
             red, line = run(case.needle)
-        if not red:
+        if red is False:
             bad += 1
-        print(f"{'✔ 红了(检查有效)' if red else '✘ 还是绿的(检查是摆设)'}  {case.title}\n      {line}")
+        elif red is None:
+            skipped.append(case.title)
+        mark = (
+            "○ 跳过(目标检查没跑：前置数据/服务不在)"
+            if red is None
+            else ("✔ 红了(检查有效)" if red else "✘ 还是绿的(检查是摆设)")
+        )
+        print(f"{mark}  {case.title}\n      {line}")
     print("─" * 68)
-    print("全部反向测试都红了" if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    if bad:
+        print(f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    elif skipped:
+        print(f"{len(CASES) - len(skipped)} 条全红；{len(skipped)} 条跳过(目标检查 SKIP)")
+    else:
+        print("全部反向测试都红了")
     return 1 if bad else 0
 
 

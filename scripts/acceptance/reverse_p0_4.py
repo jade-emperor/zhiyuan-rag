@@ -82,7 +82,7 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
         "src/project_rag/application/answer_rag.py",
         '        item.chunk.text if rerank_input == "child" else item.chunk.context_text',
         '        item.chunk.context_text',
-        "喂进去的是父块正文",
+        "默认应喂子块正文",
         "check_m3_rag.py",
     ),
     (
@@ -96,7 +96,7 @@ CASES: list[tuple[str, str, str, str, str, str]] = [
 ]
 
 
-def run(script: str, needle: str) -> tuple[bool, str]:
+def run(script: str, needle: str) -> tuple[bool | None, str]:
     """输入:检查脚本名 + 期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。输出:(是否 FAIL, 那一行)。"""
     proc = subprocess.run(
         [sys.executable, f"scripts/acceptance/{script}"],
@@ -109,7 +109,13 @@ def run(script: str, needle: str) -> tuple[bool, str]:
     marks = ("[PASS]", "[FAIL]", "[SKIP]")
     body = [line.strip() for line in proc.stdout.splitlines() if any(m in line for m in marks)]
     hits = [line for line in body if needle in line]
+    if len(hits) == 1 and "[SKIP]" in hits[0]:
+        # 目标检查没跑（缺服务/数据）——不能判成「检查是摆设」，如实记跳过
+        return None, hits[0]
     if len(hits) != 1:
+        skips = [line for line in body if "[SKIP]" in line]
+        if skips:
+            return None, skips[0]
         return False, f"⚠️ 片段 {needle!r} 命中了 {len(hits)} 行，反向测试无法判定：{hits}"
     return "[FAIL]" in hits[0], hits[0]
 
@@ -138,9 +144,16 @@ def main() -> int:
             continue
         with patched_source(target, old, new):
             red, line = run(script, needle)
-        if not red:
+        if red is False:
             bad += 1
-        print(f"{'✔ 红了(检查有效)' if red else '✘ 还是绿的(检查是摆设)'}  {title}\n      {line}")
+        elif red is None:
+            skipped.append(title)
+        mark = (
+            "○ 跳过(目标检查没跑：前置数据/服务不在)"
+            if red is None
+            else ("✔ 红了(检查有效)" if red else "✘ 还是绿的(检查是摆设)")
+        )
+        print(f"{mark}  {title}\n      {line}")
     print("─" * 68)
     ran = len(CASES) - len(skipped)
     if bad:

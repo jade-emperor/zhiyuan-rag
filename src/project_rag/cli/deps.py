@@ -370,6 +370,8 @@ def build_real_deps() -> Deps:
             model_dir=settings.rewrite.model_dir or None,
             device=settings.rewrite.device,
             max_length=settings.rewrite.max_length,
+            batch_size=settings.rewrite.classifier_batch_size,
+            batch_max_texts=settings.rewrite.classifier_batch_max_texts,
         )
 
     @lru_cache(maxsize=1)

@@ -15,12 +15,12 @@
     embedding: model_dir=models/bge-m3 rerank_model_dir=models/bge-reranker-v2-m3
                device/use_f16 是**部署选择**（本机 cuda + f16），不进默认值契约
     rag:       parent_chunk_size=1200 child_chunk_size=300 chunk_overlap=50
-               retrieval_k=5 candidate_m=2 fusion=rrf rrf_k=60
-               bm25_weight=0.5 vector_weight=0.5 rerank=True
+               fusion=rrf rrf_k=60 bm25_weight=0.5 vector_weight=0.5 rerank=True
 
-``retrieval_k`` / ``candidate_m`` 曾被调成 10/3、随后又被评估集
-量回了 5/2（均值 0.9347 vs 0.9313）——
-**这就是评估集存在的意义：调参不再靠感觉**。
+``retrieval_k`` / ``candidate_m`` 是**调参旋钮**，不钉具体值（钉了就会在换参时
+误报「配置错了」）：只验 ``retrieval_k >= 1`` 与 ``1 <= candidate_m <= 2 * retrieval_k``。
+历史 A/B（5/2 vs 10/3）的读数见评估数据集与 ``check_m4_eval``。
+
 ⚠️ ``config.py`` 里 ``RagConfig`` 的字段默认值**也要一起改**（本文件检查的是
 **生效值**，所以它拦不住「yaml 改了、类默认值没改」这种半成品）。
 
@@ -65,25 +65,19 @@
     ports:  Reranker.rerank(query, texts) -> Sequence[float]   # 同序等长,越大越相关
     domain: Citation.rerank_score: float | None = None          # None = 没重排过
 
-    管道顺序：
+    管道顺序（标准做法）：
 
-        召回(k×2) → 融合 → 折叠父块 → 重排 → 截断到 candidate_m
+        召回(k×2) → 融合 → 取前 k 条子块 → 重排这些子块 → 按父块折叠 → 截断到 candidate_m
 
-    顺序一一对应（左 = 常见做法，右 = 本项目与它的差别）：
+    和"先折叠父块再重排"的差别：
 
-        先按父块去重                  ←→  折叠父块（先去重，别重排重复的子块）
-        pairs = [[query, 正文]]        ←→  重排**父块正文**（context_text）
-        len(parent_docs) < 2: 跳过重排  ←→  只有 1 条候选时不调模型（排序不可能变）
-        ranked_parent_docs[:M]        ←→  截断
+        - 重排看的是**融合后的前 k 条子块**（两路各 k 条、并集约 2k，这里截到 k），
+          而不是"每个父块融合分最高的那个子块"——让 CrossEncoder 自己挑；
+        - 折叠放在重排**之后**：同一父块只留重排分最高的子块；
+        - 只留前 k 条：不截的话重排对数会随"两路差异"漂（实测融合 14–20 条）。
 
-    **为什么重排父块而不是子块**:喂进去的必须是模型真正会读的那段文字,
-    引用清单上的分数才核对得上（RAGFlow / 得物技术 / 本节都这么做）。
-    另一派（RAG-BUILD-SKILLS、LlamaIndex sentence-window）主张重排子块再映射父块,
-    理由是「多数 Cross-Encoder 只有 512 token」——**那条在我们这里不成立**:
-    bge-reranker-v2-m3 的 max_seq_length 实测 8192,而我们父块平均 498 / 最长 675 token。
-    两边都没被证伪,所以**重排单位是个待评估的选择,不是定论**:换的代价是把
-    ``collapse_parents`` 与 ``rerank_citations`` 换个位置（约 3 行）,
-    触发条件与改法看这个旋钮自己的说明;评估集是唯一裁判。
+    **喂什么文字：默认子块**（约 150–200 token），要可核对的重排分时传
+    ``rerank_input="parent"`` 喂父块正文（约 600–670 token）。
 
     **排序分与重排分是两个字段,不合并**:``Citation.score`` 仍是召回/融合分。
     合并成一个字段就再也看不出「重排把融合的第 3 提到了第 1」——而那正是调重排时唯一要看的东西。
@@ -129,6 +123,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "project_rag"
 # 验收语料:课程大纲(来源与形状见 data/README.md)
 CORPUS_DIR = ROOT / "data" / "corpus" / "ai_data"
+# ``ingest`` 的默认 --path(dry-run 那条用例跑的就是它,与 CORPUS_DIR 不是一个目录)
+INGEST_DIR = ROOT / "data" / "corpus" / "pdf_data"
 
 # 契约默认值（必须与 config/config.yaml 一致）。
 # 10086 是宿主端口；default 是当前唯一存在的 Milvus 库。
@@ -152,11 +148,6 @@ EXPECTED_RAG = {
     "parent_chunk_size": 1200,
     "child_chunk_size": 300,
     "chunk_overlap": 50,
-    # 一度调成 retrieval_k=10 / candidate_m=3，评估集量过之后**回退到 5/2**
-    # （四指标均值 0.9347 → 0.9313：recall 涨了，但 precision 与 faithfulness 掉了，
-    # 代价是多喂一块父块）。A/B 证据在，数据集按旋钮命名、可重跑。
-    "retrieval_k": 5,
-    "candidate_m": 2,
     "fusion": "rrf",
     "rrf_k": 60,
     "bm25_weight": 0.5,
@@ -282,7 +273,7 @@ def _imported_roots(path: Path) -> set[str]:
 
 
 # ── 1. 配置（的真实内容） ────────────────────────────────────────────────
-@check("配置：milvus / embedding / rag 三段齐全、是嵌套模型、默认值与契约一致")
+@check("配置：milvus / embedding / rag 三段齐全、是嵌套模型、固定字段一致（k/m 只验边界）")
 def _() -> str:
     from pydantic import BaseModel
 
@@ -306,6 +297,14 @@ def _() -> str:
             got = getattr(obj, field, None)
             if got != want:
                 raise AssertionError(f"{section}.{field} 期望 {want!r}，实际 {got!r}")
+    # k / m 是调参旋钮：只验边界，不钉具体值 —— 否则每次调参验收都会红
+    rag = settings.rag
+    if rag.retrieval_k < 1:
+        raise AssertionError(f"rag.retrieval_k 必须 >= 1，实际 {rag.retrieval_k}")
+    if not 1 <= rag.candidate_m <= 2 * rag.retrieval_k:
+        raise AssertionError(
+            f"rag.candidate_m 应在 [1, 2*retrieval_k={2 * rag.retrieval_k}] 内，实际 {rag.candidate_m}"
+        )
     return (
         f"milvus={settings.milvus.host}:{settings.milvus.port}/{settings.milvus.database} "
         f"collection={settings.milvus.collection} retrieval_k={settings.rag.retrieval_k}"
@@ -1216,6 +1215,10 @@ def _() -> str:
 def _() -> str:
     import subprocess
 
+    # dry-run 不加载模型、不写库,但**要读语料**:没有 data/ 的机器上它会以
+    # 「路径不存在」退出 1 —— 那是环境问题(SKIP 并点名),不是 CLI 坏了
+    if not INGEST_DIR.exists():
+        raise SkipCheck(f"语料目录不存在（{INGEST_DIR}，ingest 的默认 --path）；owner：数据装载")
     proc = subprocess.run(
         [sys.executable, "-m", "project_rag", "ingest", "--dry-run"],
         capture_output=True,
@@ -2224,7 +2227,7 @@ def _() -> str:
     )
 
 
-@check("retrieve：传了重排器就真用它，且喂进去的是父块正文（模型读什么就重排什么）")
+@check("retrieve：传了重排器就真用它；默认喂子块正文，parent 旋钮喂父块正文")
 def _() -> str:
     from project_rag.adapters import HashingEmbedder
     from project_rag.application import retrieve
@@ -2241,17 +2244,16 @@ def _() -> str:
         raise AssertionError("没传重排器时 rerank_score 必须留空 —— 别假装重排过")
 
     target = plain[-1].chunk  # 融合排在最后的那个父块
-    fake = _RecordingReranker(prefer=target.parent_content or target.text)
+    # 默认(child)：喂子块正文 —— 更短、重排吞吐更高
+    fake = _RecordingReranker(prefer=target.text)
     ranked = retrieve("课程", embedder=embedder, store=store, reranker=fake, options=options)
 
     if not fake.calls:
         raise AssertionError("传了重排器却一次都没调用 —— retrieve 没把它接上")
     fed = fake.calls[0][1]
-    if any("子块" in text for text in fed):
+    if any("父块" in text for text in fed):
         raise AssertionError(
-            f"喂给重排器的是子块正文 {fed} —— 必须是 context_text（父块正文）。"
-            "重排子块更快，但那样「分数最高」对应的是一段模型没读过的文字，"
-            "引用清单上的分数就没法核对了"
+            f"默认应喂子块正文，实际喂了父块 {fed} —— rerank_input 默认值没生效"
         )
     if ranked[0].chunk.parent_id != target.parent_id:
         raise AssertionError(
@@ -2259,25 +2261,24 @@ def _() -> str:
             f"实际 {ranked[0].chunk.parent_id} —— 重排没有真的改变排序"
         )
 
-    # 那组检索 A/B 的旋钮：rerank_input="child" 要真的换成**子块正文**。
-    # **两个方向都要钉**：只钉 parent 的话，旋钮没接上（永远喂父块）也照样绿。
-    child_fake = _RecordingReranker(prefer=target.text)
+    # parent 旋钮：喂父块正文（分数对得上模型读到的文字）。
+    # **两个方向都要钉**：只钉默认的话，旋钮没接上（永远喂子块）也照样绿。
+    parent_fake = _RecordingReranker(prefer=target.parent_content or target.text)
     retrieve(
         "课程",
         embedder=embedder,
         store=store,
-        reranker=child_fake,
-        options=RetrievalOptions(k=3, rerank_input="child"),
+        reranker=parent_fake,
+        options=RetrievalOptions(k=3, rerank_input="parent"),
     )
-    fed_child = child_fake.calls[0][1]
-    if any("父块" in text for text in fed_child):
+    fed_parent = parent_fake.calls[0][1]
+    if any("子块" in text for text in fed_parent):
         raise AssertionError(
-            f'rerank_input="child" 时喂的该是子块正文，实际 {fed_child} —— 旋钮没接上'
-            "（读出来会显示「两种喂法一样」，把 A/B 做成平局）"
+            f'rerank_input="parent" 时喂的该是父块正文，实际 {fed_parent} —— 旋钮没接上'
         )
     return (
-        f"喂进 {len(fed)} 条父块正文；融合末位 {target.parent_id} → 重排首位；"
-        f'rerank_input="child" 时 {len(fed_child)} 条喂的是子块正文'
+        f"默认 {len(fed)} 条子块正文；融合末位 {target.parent_id} → 重排首位；"
+        f'rerank_input="parent" 时 {len(fed_parent)} 条喂的是父块正文'
     )
 
 
@@ -2295,7 +2296,7 @@ def _() -> str:
         raise AssertionError(f"这条检查需要 ≥2 个候选才有意义，实际 {len(plain)}")
     target = plain[-1].chunk
 
-    fake = _RecordingReranker(prefer=target.parent_content or target.text)
+    fake = _RecordingReranker(prefer=target.text)
     only = retrieve(
         "课程",
         embedder=embedder,

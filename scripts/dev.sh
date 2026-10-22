@@ -23,12 +23,12 @@
 #
 # 用法：
 #   ./scripts/dev.sh            # 列出所有命令
-#   ./scripts/dev.sh ci         # 零容器零网络：pyright + 29 套契约 + 29 份反向（CI 跑的就是这条）
+#   ./scripts/dev.sh ci         # 零容器零网络：pyright + 30 套契约 + 29 份反向（CI 跑的就是这条）
 #   ./scripts/dev.sh check      # 只跑契约
 #   ./scripts/dev.sh reverse    # 只跑反向 runner
 #   ./scripts/dev.sh services   # 需要真中间件的那 5 套（先 up）
 #   ./scripts/dev.sh local      # 还需要真语料 / 真 DeepSeek key 的 3 套（花钱）
-#   ./scripts/dev.sh all        # 全套 38 套契约 + 29 份反向
+#   ./scripts/dev.sh all        # 全套 39 套契约 + 29 份反向
 #   ./scripts/dev.sh up|down    # 起/停中间件（up 会先建好 ./logs 与 ./data/uploads）
 #   ./scripts/dev.sh app [--build]  # 起**容器后端**（8080 API-only；--build 重建镜像）
 #   ./scripts/dev.sh status     # 三个角色 + 容器/工作区的产物摘要 + 在跑的服务

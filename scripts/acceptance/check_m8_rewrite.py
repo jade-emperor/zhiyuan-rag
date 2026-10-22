@@ -808,20 +808,26 @@ def _() -> str:
     return f"enabled={rewrite.enabled} classifier={rewrite.classifier} device={rewrite.device}"
 
 
-@check("组合根：配置关着时不装配改写器（不接 = 与「没这功能」逐字等价）")
+@check("组合根：改写器的装配跟着配置走（关 = 不接；开 = 接上）")
 def _() -> str:
     from project_rag.cli import Deps
 
     if Deps().query_rewriter_factory is not None:
         raise AssertionError("Deps 默认必须是 None：注入式调用不该被塞一个改写器")
     from project_rag.cli.deps import build_real_deps
+    from project_rag.config import get_settings
 
+    enabled = get_settings().rewrite.enabled
     built = build_real_deps()
-    if built.query_rewriter_factory is not None:
+    if enabled and built.query_rewriter_factory is None:
         raise AssertionError(
-            "config.yaml 里 rewrite.enabled 是 false，build_real_deps 不该接上改写器"
+            "config.yaml 里 rewrite.enabled=true，build_real_deps 必须接上改写器"
         )
-    return "Deps() 与 build_real_deps() 都是 None"
+    if not enabled and built.query_rewriter_factory is not None:
+        raise AssertionError(
+            "config.yaml 里 rewrite.enabled=false，build_real_deps 不该接上改写器"
+        )
+    return f"enabled={enabled}，改写器{'已接上' if built.query_rewriter_factory else '未接'}"
 
 
 @check("组合根：装配失败退化成原样检索（而不是抛出去把问答搞挂），并且留着原因")
