@@ -39,15 +39,15 @@ env:
 
 jobs:
   contracts:
-    # 为什么拆片、为什么是 3 片：见文件头的注释。每片 ≈ 20 份脚本，实测验收 9~13 分钟，
-    # 加上 uv sync（缓存没命中时 9 分钟上下）仍在 30 分钟以内 —— 不再贴着上限跑。
+    # 为什么拆片、为什么是 3 片：见文件头的注释。每片 ≈ 20 份脚本，实测验收 9~13 分钟；
+    # uv sync 没命中缓存时要 8~17 分钟（三片同时冷启动会并发拉同一批 wheel），所以超时给到 45。
     name: 契约 + 反向测试（零容器零网络）${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
         shard: ["1/3", "2/3", "3/3"]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +58,16 @@ jobs:
           enable-cache: true
 
       - name: 同步依赖（--locked：pyproject 与 uv.lock 不一致就当场失败）
-        run: uv sync --locked
+        run: |
+          # 三片同时冷启动会并发拉同一批 wheel,实测偶发一次下载失败(第 3 片那次跑了 7 分半才挂)。
+          # 重试仍带 --locked:pyproject 与 uv.lock 真的不一致时**不能被重试混过去**,那是 fail-fast 的本意。
+          for attempt in 1 2 3; do
+            if uv sync --locked; then exit 0; fi
+            echo "uv sync 第 ${attempt} 次失败"
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::uv sync 连续三次失败,见上面的输出"
+          exit 1
 
       # 类型检查只跑一片：它是整树扫描，跟分片无关，跑三遍只是白烧三份时间
       - name: 类型检查
@@ -66,7 +75,24 @@ jobs:
         run: uv run pyright src scripts
 
       - name: 验收（ci 集合第 ${{ matrix.shard }} 片：30 套契约 + 29 份反向 runner 分摊）
-        run: uv run python scripts/acceptance/run_all.py --set ci --shard ${{ matrix.shard }}
+        run: |
+          set -o pipefail
+          uv run python scripts/acceptance/run_all.py --set ci --shard ${{ matrix.shard }} 2>&1 | tee acceptance.log
+
+      # 公开仓库的 **job 日志要登录才看得到**（匿名访问 /logs 是 403），而下面这两处不用：
+      # job summary 在运行页上、annotation 在 job 页上，都是公开的。失败时把不合格的脚本贴过去。
+      - name: 把不合格的脚本贴到 job summary（失败时）
+        if: failure()
+        run: |
+          {
+            echo "### 第 ${{ matrix.shard }} 片不合格的脚本"
+            echo '```'
+            grep -E '^  ✘' acceptance.log || echo '(没有 ✘ 行：失败发生在验收之前，比如 sync)'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E '^  ✘' acceptance.log | while IFS= read -r line; do
+            echo "::error title=验收不合格::$line"
+          done || true
 
   frontend:
     name: 前端 typecheck + 产物与源码同源
