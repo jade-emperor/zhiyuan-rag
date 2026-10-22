@@ -159,8 +159,15 @@ CASES: tuple[Case, ...] = (
 )
 
 
-def run(script: str, needle: str) -> tuple[bool, str]:
-    """输入:检查脚本名、期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。输出:(是否 FAIL, 那一行)。"""
+def run(script: str, needle: str) -> tuple[bool | None, str]:
+    """输入:检查脚本名、期望红的检查名片段。行为:跑契约脚本、只看带裁决标记的行。
+
+    输出:(是否 FAIL；``None`` = 目标那条自己 SKIP 了,这一条坏代码无从证明,附那一行)。
+
+    ``None`` 与 ``False`` 要分开:``False`` 是「改坏了它还是绿的」= 检查是摆设;
+    ``None`` 是「这条检查在本机跑不了」(RT-5 要真 Milvus)= 没测。混为一谈会把
+    「没测」说成「抓不到坏代码」,那是误导性结论。
+    """
     proc = subprocess.run(
         [sys.executable, f"scripts/acceptance/{script}"],
         cwd=str(ROOT), capture_output=True, text=True, timeout=120, env=dict(os.environ),
@@ -170,6 +177,8 @@ def run(script: str, needle: str) -> tuple[bool, str]:
     hits = [line for line in body if needle in line]
     if len(hits) != 1:
         return False, f"⚠️ 片段 {needle!r} 命中了 {len(hits)} 行:{hits}"
+    if "[SKIP]" in hits[0]:
+        return None, hits[0]
     return "[FAIL]" in hits[0], hits[0]
 
 
@@ -188,6 +197,7 @@ def main() -> int:
         print(f"⚠️  上次被打断时留下的坏源码,已自动还原:{stale}\n")
 
     bad = 0
+    skipped = 0
     for case in CASES:
         original = case.target.read_text(encoding="utf-8")
         hits = original.count(case.old)
@@ -199,13 +209,16 @@ def main() -> int:
             continue
         with patched_source(case.target, case.old, case.new):
             red, line = run(case.script, case.needle)
+        if red is None:  # 目标那条检查自己 SKIP(没 Milvus 等) —— 没测,不是没红
+            skipped += 1
+            print(f"○ 跳过(这一条检查本身 SKIP)  {case.title}\n      {line}")
+            continue
         if not red:
             bad += 1
-            if "[SKIP]" in line:
-                line += "\n      ⚠️ 这一条是 SKIP(环境不满足,比如 Milvus 没起)—— 反向测试证明不了它"
         print(f"{'✔ 红了(检查有效)' if red else '✘ 还是绿的(检查是摆设)'}  {case.title}\n      {line}")
     print("─" * 68)
-    print("全部反向测试都红了" if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
+    tail = f";{skipped} 条跳过(目标检查自己 SKIP)" if skipped else ""
+    print("全部反向测试都红了" + tail if not bad else f"{bad} 条没红 —— 那些检查抓不到坏代码")
     return 1 if bad else 0
 
 

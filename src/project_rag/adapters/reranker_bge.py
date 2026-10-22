@@ -30,6 +30,8 @@ from sentence_transformers import CrossEncoder
 from project_rag.config import EmbeddingConfig
 from project_rag.ports import Reranker
 
+from .batching import Batcher
+
 
 class BGEReranker(Reranker):
     """BGE 系列的重排模型(默认 bge-reranker-v2-m3)。"""
@@ -48,15 +50,32 @@ class BGEReranker(Reranker):
             # CPU 上 fp16 反而更慢,所以只在 CUDA 上开(和嵌入适配器一个口径)。
             # CrossEncoder 没有自己的 half(),要落到里面那个 transformers 模型上
             self._model.half()
+        self._batch_size = int(config.rerank_batch_size)
+        # 每次请求只带 12–31 对,40 路并发就是 40 次小前向;批处理器把同时排队的
+        # 请求合成一批,前向次数少了、每次吃得更满
+        self._batcher: Batcher[tuple[str, str], float] = Batcher(
+            self._score,
+            max_items=int(config.rerank_batch_max_pairs),
+            name="rerank",
+        )
 
     def rerank(self, query: str, texts: Sequence[str]) -> Sequence[float]:
-        """输入:一个问题 + 一批候选正文。行为:拼成 (问题, 正文) 对批量前向。输出:同序等长的相关性分。"""
+        """输入:一个问题 + 一批候选正文。行为:交给批处理器(同刻排队的调用合成一批)打分。输出:同序等长的相关性分。"""
         if not texts:
             # 空批直接返回,不去问模型:predict([]) 的行为随版本变,
             # 而「没有候选」本来就该是空结果
             return []
+        pairs = [(query, str(text)) for text in texts]
+        return self._batcher.submit(pairs)
+
+    def _score(self, pairs: Sequence[tuple[str, str]]) -> list[float]:
+        """输入:一批 (问题, 正文) 对(批处理器合批后的)。行为:一次前向打分。输出:同序等长的分数。
+
+        **只该由批处理器调用**:这是真正碰模型的地方,单线程执行,不必考虑并发重入。
+        """
         scores = self._model.predict(
-            [(query, str(text)) for text in texts],
+            list(pairs),
+            batch_size=self._batch_size,
             show_progress_bar=False,
             convert_to_numpy=True,
         )

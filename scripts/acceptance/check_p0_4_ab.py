@@ -41,7 +41,13 @@ TOOL = ROOT / "scripts" / "tools" / "ab_retrieval.py"
 
 
 def _tool():
-    """输入:无。行为:按文件路径加载那个脚本(它不是包,import 不到)。输出:模块。"""
+    """输入:无。行为:按文件路径加载那个脚本(它不是包,import 不到)。输出:模块。
+
+    ``scripts/tools/`` **整目录不公开**(见 .gitignore),公开 clone 上没有这个文件 ——
+    那是环境问题、不是契约坏了:说清楚缺什么、找谁,然后按 SKIP 记。
+    """
+    if not TOOL.exists():
+        raise SkipCheck(f"裁判工具不在（{TOOL}）；owner：评估工具（scripts/tools/ 不公开）")
     spec = importlib.util.spec_from_file_location("ab_retrieval", TOOL)
     if spec is None or spec.loader is None:
         raise AssertionError(f"加载不了 {TOOL}")

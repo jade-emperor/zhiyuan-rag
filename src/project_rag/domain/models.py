@@ -502,11 +502,11 @@ class RetrievalOptions:
     rrf_k: int = 60  # RRF 的平滑常数:越大越弱化「头部优势」
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
-    # 喂给重排器的是**父块正文**(``"parent"``,默认)还是**子块正文**(``"child"``):
-    # 前者是「模型会读到的那段文字」,所以引用清单上的重排分核对得上;后者是「检索命中的那个单元」,
-    # 更短更聚焦,但那个对应关系就断了。**默认保持 parent** —— 换默认要等 A/B 的读数;
-    # 这个旋钮现在只给 A/B 用,还没进 YAML。
-    rerank_input: Literal["parent", "child"] = "parent"
+    # 喂给重排器的是**父块正文**(``"parent"``)还是**子块正文**(``"child"``):
+    # 子块约 150–200 token,父块约 600–670;并发下重排是吞吐瓶颈,子块的吞吐约高 3.8×。
+    # 代价是「重排分」对应的文字与模型真正读到的父块不是同一段。
+    # **默认 child**(按吞吐选);要可核对的重排分时显式传 "parent"。
+    rerank_input: Literal["parent", "child"] = "child"
 
     # 「这些文档这一次**不许**被检索到」 —— 可见范围在检索这一侧的落地(见 application/access.py)。
     #

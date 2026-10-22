@@ -54,8 +54,8 @@ ragas 读不了它,但「检索到底给了什么」只能从这里看,而且 ``
 （``bagu_v1`` = k5/m2；调参时另有一份 ``bagu_v1_k10m3``）。这些检查**遍历目录里所有**
 ``*_dataset.json``,不写死名字 —— 每一份都要同样合格,否则 A/B 的两条腿一条粗一条细。
 
-的第一组 A/B（``retrieval_k`` 5→10、``candidate_m`` 2→3）**结论是回退到 5/2**
-（均值 0.9347 vs 0.9313）,那份 10/3 的数据集已按结论删除;它那次的**结果 CSV 保留在
+的第一组 A/B（``retrieval_k`` 5→10、``candidate_m`` 2→3）**当时的结论是回退到 5/2**
+（均值 0.9347 vs 0.9313）,那份 10/3 的数据集已按当时结论删除;它那次的**结果 CSV 保留在
 ``ragas_runs/`` 里作为历史读数**（输入已删,不再可核 —— provenance 检查会显式报出来,
 不报的话下一个人会以为它还核得动）。
 
@@ -877,8 +877,8 @@ def _() -> str:
     pairs = {name: knobs for name, knobs in by_eval_set.items() if len(knobs) >= 2}
     if not pairs:
         raise SkipCheck(
-            "现在只有一组可追溯的检索旋钮：retrieval_k/candidate_m 那组已经量过并**回退到 5/2**"
-            "，10/3 的数据集按结论删了。"
+            "现在只有一组可追溯的检索旋钮：retrieval_k/candidate_m 那组量过 5/2 与 10/3"
+            "，10/3 的数据集按当时结论删了。"
             "剩下三组还没跑：融合 rrf vs weighted、重排父块 vs 子块、FAQ 阈值 0.85 重标定 —— "
             "**一轮 = 改一次配置 + 跑一次四指标**（112 条约 15 分钟 + 一次 judge 费用），"
             "不为量噪声重复跑；owner：评估"
