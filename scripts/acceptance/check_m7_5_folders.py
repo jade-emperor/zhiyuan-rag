@@ -1028,6 +1028,9 @@ def _migration() -> str:
 
 @check("迁移：目录名在库里唯一（两条 SQL 都撞同一个约束，命令行按名字解析才可靠）")
 def _unique_name() -> str:
+    # 先探一次连接:这条走适配器自己的 init_schema(连不上抛 RuntimeError,不是 SkipCheck),
+    # 不先探的话,没有 MySQL 的机器上会被记成 FAIL —— 上一行那条用例有 _mysql_connect() 挡着,这条漏了
+    _mysql_connect().close()
     store, table, folders = _probe_store()
     try:
         store.init_schema()

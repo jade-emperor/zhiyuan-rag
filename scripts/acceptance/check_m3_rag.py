@@ -123,6 +123,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "project_rag"
 # 验收语料:课程大纲(来源与形状见 data/README.md)
 CORPUS_DIR = ROOT / "data" / "corpus" / "ai_data"
+# ``ingest`` 的默认 --path(dry-run 那条用例跑的就是它,与 CORPUS_DIR 不是一个目录)
+INGEST_DIR = ROOT / "data" / "corpus" / "pdf_data"
 
 # 契约默认值（必须与 config/config.yaml 一致）。
 # 10086 是宿主端口；default 是当前唯一存在的 Milvus 库。
@@ -1213,6 +1215,10 @@ def _() -> str:
 def _() -> str:
     import subprocess
 
+    # dry-run 不加载模型、不写库,但**要读语料**:没有 data/ 的机器上它会以
+    # 「路径不存在」退出 1 —— 那是环境问题(SKIP 并点名),不是 CLI 坏了
+    if not INGEST_DIR.exists():
+        raise SkipCheck(f"语料目录不存在（{INGEST_DIR}，ingest 的默认 --path）；owner：数据装载")
     proc = subprocess.run(
         [sys.executable, "-m", "project_rag", "ingest", "--dry-run"],
         capture_output=True,
