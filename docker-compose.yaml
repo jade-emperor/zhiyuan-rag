@@ -49,23 +49,28 @@ services:
 
   # ---------------------------------------------------------------------------
   # 2) MinIO —— 对象存储,存索引文件和 binlog
+  #
+  # **为什么不是 minio/minio:RELEASE.2023-03-20T20-16-18Z**:那个 tag 已经从 Docker Hub 撤掉了
+  # (整个 `minio/minio` 仓库现在经几个镜像站都是 403 / not found,实测 docker.xuanyuan.me、
+  # docker.m.daocloud.io、docker.1ms.run 三处都一样)。换 Chainguard 构建的同一支 minio:
+  # Milvus 只用它的 S3 API,够用。**与旧版有三处不同,老配置别照抄**:
+  #   ① 变量名是 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD(旧名 2023-04 之后废弃);
+  #   ② 镜像是 nonroot(65532),而旧卷里的文件属主是 root,所以要 `user: "0"`;
+  #   ③ distroless 里没有 curl/sh,所以**没有 healthcheck**(app 本来也不等 minio,见 depends_on)。
+  # digest 钉死:tag 会漂,Chainguard 的 latest 不是固定的。
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    image: cgr.dev/chainguard/minio:latest@sha256:c47b1779bfd12cdf5a4fcd3bd50671b8d66465fdae45271babc2fb467958b712
+    user: "0"
     environment:
-      MINIO_ACCESS_KEY: minioadmin     # 该版本 MinIO 仍用这两个旧变量名,保持与文档一致
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     ports:
       - "10089:9000"                   # S3 API(内部使用)
       - "10090:9001"                   # Web 控制台(基本不用)
     volumes:
-      - minio_data:/minio/data
-    command: minio server /minio/data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      - minio_data:/minio/data         # 路径保持 /minio/data:旧卷里的数据在这儿
+    command: server /minio/data --address ":9000" --console-address ":9001"
 
   # ---------------------------------------------------------------------------
   # 3) Milvus standalone —— 向量库本体
