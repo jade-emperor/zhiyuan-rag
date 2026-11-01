@@ -44,7 +44,7 @@
 # -----------------------------------------------------------------------------
 # 一、builder:装依赖(带 uv 缓存挂载),产物是 /app/.venv
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS builder
+FROM python:3.15-slim AS builder
 
 # 国内构建优先走镜像源;要换回官方源就 `--build-arg DEBIAN_MIRROR=deb.debian.org` 覆盖。
 ARG DEBIAN_MIRROR=mirrors.aliyun.com
@@ -113,7 +113,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # -----------------------------------------------------------------------------
 # 二、runtime:只要 venv + 代码,不要 uv、不要构建缓存
 # -----------------------------------------------------------------------------
-FROM python:3.13-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # 非 root 跑:语料与模型是只读挂载,只有 /app/logs 需要写
 RUN useradd --create-home --uid 1000 app \
